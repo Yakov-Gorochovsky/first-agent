@@ -1,320 +1,119 @@
 """
-agent.py - Your First AI Agent!
+agent.py - Modular Multi-Tenant AI Swarm CLI (Step 2: Orchestrator -> Workers + Budgets).
 
-Works with:
-- Local Ollama models (e.g., `llama3:latest`, `qwen3:8b`)
-- Any OpenAI-compatible API (Groq, Gemini, OpenRouter, OpenAI)
-
-Supports:
-- Native API tool-calling AND automatic ReAct JSON tool-calling fallback
-- Universal primitives: Web Search, URL Reader, Python Code Sandbox
-- Persistent Long-Term Memory (workspace/memory.json) & Session History
+Uses loosely coupled interfaces from `core/`:
+- `core/llm.py`     (LLMProvider: Ollama, Hugging Face, Groq, Gemini, OpenAI)
+- `core/storage.py` (StorageBackend: SQLite multi-tenant isolation + PrivacyAirlock global skills)
+- `core/budget.py`  (BudgetTracker: step, token, and wall-time caps)
+- `core/bus.py`     (EventBus: pub/sub telemetry for CLI and SSE UI)
+- `core/swarm.py`   (OrchestratorSwarm & WorkerAgent)
 """
 
 import argparse
-import json
 import os
-from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
-from openai import OpenAI, BadRequestError
 
-from tools import TOOL_SCHEMAS, WORKSPACE_DIR, execute_tool, load_memories
+from core.budget import BudgetConfig, BudgetTracker
+from core.bus import EventBus, SwarmEvent
+from core.llm import OpenAICompatibleProvider
+from core.storage import SQLiteStorage
+from core.swarm import OrchestratorSwarm
+from tools import WORKSPACE_DIR
 
 load_dotenv()
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:11434/v1")
 API_KEY = os.getenv("API_KEY", "ollama")
-MODEL_NAME = os.getenv("MODEL_NAME", "llama3:latest")
+MODEL_NAME = os.getenv("MODEL_NAME", "qwen3:8b")
 MAX_STEPS = int(os.getenv("MAX_STEPS", "8"))
 VERBOSE = os.getenv("VERBOSE", "true").lower() == "true"
-
-SESSION_FILE = WORKSPACE_DIR / "session_history.json"
-
-BASE_SYSTEM_PROMPT = """You are a capable, concise AI agent with access to tools.
-- Use `web_search` and `fetch_url` for live internet info or reading pages.
-- Use `run_python` to write and execute Python code for data processing, complex math, or custom tasks. If your Python code errors, read the stderr and fix it.
-- Use `remember_fact` whenever the user shares personal preferences, project details, or facts they want remembered across sessions.
-- Use `calculator`, `get_current_time`, `get_weather`, and `save_note`/`read_note`/`list_notes` as needed.
-Once you have the information you need from tool outputs, answer the user clearly."""
+DB_PATH = WORKSPACE_DIR / "swarm.db"
 
 
-def get_system_prompt(react_mode: bool = False) -> str:
-    """Build the system prompt, injecting any persistent long-term memories."""
-    memories = load_memories()
-    memory_section = ""
-    if memories:
-        mem_lines = "\n".join(f"- {k}: {v}" for k, v in memories.items())
-        memory_section = f"\n\nPERSISTENT LONG-TERM MEMORY (Facts from previous sessions):\n{mem_lines}"
+def console_event_listener(event: SwarmEvent) -> None:
+    """Subscribe to EventBus to render live swarm telemetry in the terminal."""
+    if not VERBOSE:
+        return
+    etype = event.event_type
+    agent = event.agent_name
+    data = event.data
 
-    base = BASE_SYSTEM_PROMPT + memory_section
-    if not react_mode:
-        return base
+    if etype == "delegation":
+        print(f"  [Orchestrator -> {data.get('to_worker')}] Task: {data.get('task')}")
+    elif etype == "tool_call":
+        print(f"  [{agent} | Tool Call] {data.get('tool')}({data.get('arguments')})")
+    elif etype == "tool_result":
+        res = str(data.get("result", ""))
+        preview = res if len(res) <= 220 else res[:220] + " ... [truncated]"
+        print(f"  [{agent} | Observation] {preview}")
+    elif etype == "skill_learned":
+        print(
+            f"  [PrivacyAirlock -> Global Skill] [{data.get('category')}] "
+            f"{data.get('problem_pattern')} => {data.get('solution_rule')}"
+        )
 
-    tools_desc = []
-    for schema in TOOL_SCHEMAS:
-        fn = schema["function"]
-        props = fn["parameters"].get("properties", {})
-        args_str = ", ".join(f'"{k}": <{v.get("type", "string")}>' for k, v in props.items())
-        tools_desc.append(f'- {fn["name"]}: {fn["description"]} Args: {{{args_str}}}')
-    tools_block = "\n".join(tools_desc)
 
-    return (
-        f"{base}\n\n"
-        "AVAILABLE TOOLS:\n"
-        f"{tools_block}\n\n"
-        "HOW TO CALL A TOOL:\n"
-        "If you need to use a tool, reply with ONLY a JSON object in this exact format:\n"
-        '{"tool": "<tool_name>", "args": {<arguments>}}\n\n'
-        "Wait for the Observation before giving your final answer. "
-        "When you do NOT need to call a tool (or after receiving the Observation), "
-        "reply directly in plain text to the user."
+def build_swarm() -> tuple[OrchestratorSwarm, SQLiteStorage, BudgetTracker, EventBus]:
+    bus = EventBus()
+    bus.subscribe(console_event_listener)
+
+    storage = SQLiteStorage(db_path=DB_PATH, max_trace_rows=500)
+    budget = BudgetTracker(
+        config=BudgetConfig(
+            max_swarm_steps=MAX_STEPS * 2,
+            max_steps_per_agent=MAX_STEPS,
+            max_total_tokens=24000,
+            max_wall_seconds=180.0,
+        ),
+        bus=bus,
     )
-
-
-def parse_react_tool_calls(text: str) -> List[Dict[str, Any]]:
-    """Extract all {"tool": ..., "args": ...} JSON objects from a model response."""
-    decoder = json.JSONDecoder()
-    calls: List[Dict[str, Any]] = []
-    idx = 0
-    while idx < len(text):
-        if text[idx] == "{":
-            try:
-                data, end_offset = decoder.raw_decode(text[idx:])
-                if isinstance(data, dict) and "tool" in data:
-                    calls.append(
-                        {
-                            "name": str(data["tool"]),
-                            "arguments": data.get("args") or data.get("arguments") or {},
-                        }
-                    )
-                    idx += end_offset
-                    continue
-            except json.JSONDecodeError:
-                pass
-        idx += 1
-    return calls
-
-
-class Agent:
-    def __init__(self, resume_session: bool = True) -> None:
-        self.client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-        self.model = MODEL_NAME
-        self.native_tools_supported: Optional[bool] = None
-        self.history: List[Dict[str, Any]] = [
-            {"role": "system", "content": get_system_prompt(react_mode=False)}
-        ]
-        if resume_session:
-            self._load_session()
-
-    def _refresh_system_prompt(self) -> None:
-        react_mode = self.native_tools_supported is False
-        self.history[0] = {
-            "role": "system",
-            "content": get_system_prompt(react_mode=react_mode),
-        }
-
-    def _load_session(self) -> None:
-        """Load persisted user/assistant turns from disk if available."""
-        if not SESSION_FILE.exists():
-            return
-        try:
-            saved = json.loads(SESSION_FILE.read_text(encoding="utf-8"))
-            if isinstance(saved, list):
-                for msg in saved[-12:]:  # Keep last 12 conversational messages for context
-                    if isinstance(msg, dict) and msg.get("role") in {"user", "assistant"}:
-                        self.history.append(
-                            {"role": msg["role"], "content": str(msg.get("content", ""))}
-                        )
-        except Exception:
-            pass
-
-    def _save_session(self) -> None:
-        """Persist clean user/assistant conversation turns to disk."""
-        clean_turns = [
-            {"role": m["role"], "content": m["content"]}
-            for m in self.history[1:]
-            if isinstance(m, dict)
-            and m.get("role") in {"user", "assistant"}
-            and isinstance(m.get("content"), str)
-        ]
-        try:
-            SESSION_FILE.write_text(
-                json.dumps(clean_turns[-20:], indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
-        except Exception:
-            pass
-
-    def clear_session(self) -> None:
-        """Clear current conversation history while keeping long-term memory."""
-        self.history = [self.history[0]]
-        if SESSION_FILE.exists():
-            SESSION_FILE.unlink()
-
-    def run(self, user_input: str) -> str:
-        """Process a user message through the Think -> Act -> Observe loop."""
-        self._refresh_system_prompt()
-
-        if self.native_tools_supported is False:
-            reply = self._run_react(user_input)
-            self._save_session()
-            return reply
-
-        self.history.append({"role": "user", "content": user_input})
-
-        for step in range(1, MAX_STEPS + 1):
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=self.history,
-                    tools=TOOL_SCHEMAS,
-                )
-                self.native_tools_supported = True
-            except BadRequestError as exc:
-                if "does not support tools" in str(exc).lower():
-                    if VERBOSE:
-                        print(
-                            f"  [Info] Model '{self.model}' uses ReAct JSON mode "
-                            "(native tool template not present)."
-                        )
-                    self.native_tools_supported = False
-                    self.history.pop()
-                    self._refresh_system_prompt()
-                    reply = self._run_react(user_input)
-                    self._save_session()
-                    return reply
-                raise
-
-            msg = response.choices[0].message
-
-            if not msg.tool_calls:
-                answer = msg.content or ""
-                self.history.append({"role": "assistant", "content": answer})
-                self._save_session()
-                return answer
-
-            self.history.append(msg)
-            for tool_call in msg.tool_calls:
-                fn_name = tool_call.function.name
-                try:
-                    fn_args = json.loads(tool_call.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    fn_args = {}
-
-                if VERBOSE:
-                    print(f"  [Tool Call #{step}] {fn_name}({fn_args})")
-
-                result = execute_tool(fn_name, fn_args)
-
-                if VERBOSE:
-                    preview = result if len(result) <= 300 else result[:300] + " ... [truncated]"
-                    print(f"  [Observation]   {preview}")
-
-                if fn_name == "remember_fact":
-                    self._refresh_system_prompt()
-
-                self.history.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "name": fn_name,
-                        "content": result,
-                    }
-                )
-
-        return "Reached maximum agent steps without a final response."
-
-    def _run_react(self, user_input: str) -> str:
-        """Fallback ReAct loop for models without native API tool support."""
-        self._refresh_system_prompt()
-        self.history.append({"role": "user", "content": user_input})
-
-        for step in range(1, MAX_STEPS + 1):
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=self.history,
-                temperature=0.1,
-                stop=["Observation:"],
-            )
-            content = (response.choices[0].message.content or "").strip()
-            tool_reqs = parse_react_tool_calls(content)
-
-            if not tool_reqs:
-                self.history.append({"role": "assistant", "content": content})
-                return content
-
-            observations = []
-            called_list = []
-            for tool_req in tool_reqs:
-                fn_name = tool_req["name"]
-                fn_args = tool_req["arguments"]
-
-                if VERBOSE:
-                    print(f"  [Tool Call #{step}] {fn_name}({fn_args})")
-
-                result = execute_tool(fn_name, fn_args)
-
-                if VERBOSE:
-                    preview = result if len(result) <= 300 else result[:300] + " ... [truncated]"
-                    print(f"  [Observation]   {preview}")
-
-                if fn_name == "remember_fact":
-                    self._refresh_system_prompt()
-
-                called_list.append({"tool": fn_name, "args": fn_args})
-                observations.append(f"Observation from {fn_name}: {result}")
-
-            self.history.append(
-                {"role": "assistant", "content": "\n".join(json.dumps(c) for c in called_list)}
-            )
-            self.history.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "\n".join(observations)
-                        + "\nUse the observation(s) above to give the final answer in plain text "
-                        "(do NOT output JSON unless you still need another tool)."
-                    ),
-                }
-            )
-
-        return "Reached maximum agent steps without a final response."
+    llm = OpenAICompatibleProvider(
+        base_url=API_BASE_URL,
+        api_key=API_KEY,
+        model=MODEL_NAME,
+    )
+    swarm = OrchestratorSwarm(llm=llm, storage=storage, budget=budget, bus=bus)
+    return swarm, storage, budget, bus
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run your first AI Agent.")
+    parser = argparse.ArgumentParser(description="Run the Modular AI Agent Swarm.")
+    parser.add_argument("-p", "--prompt", type=str, help="Run a single prompt and exit.")
     parser.add_argument(
-        "-p",
-        "--prompt",
+        "-t",
+        "--tenant",
         type=str,
-        help="Run a single prompt and exit (useful for quick testing).",
+        default="client_a",
+        help="Tenant ID for isolated memory (default: client_a).",
     )
-    parser.add_argument(
-        "--new-session",
-        action="store_true",
-        help="Start with a fresh session history.",
-    )
+    parser.add_argument("--new-session", action="store_true", help="Clear tenant session history.")
     args = parser.parse_args()
 
-    print("=" * 68)
-    print(f" First AI Agent | Model: {MODEL_NAME} | Endpoint: {API_BASE_URL}")
-    print(" Tools: web_search, fetch_url, run_python, remember/recall, notes, weather, math")
-    print("=" * 68)
+    swarm, storage, budget, _ = build_swarm()
+    tenant_id = args.tenant
 
-    agent = Agent(resume_session=not args.new_session)
     if args.new_session:
-        agent.clear_session()
+        storage.clear_session(tenant_id)
+
+    print("=" * 74)
+    print(f" Modular AI Swarm | Model: {MODEL_NAME} | Tenant: '{tenant_id}'")
+    print(" Architecture: Orchestrator -> Workers (researcher, coder) + SQLite + Budgets")
+    print("=" * 74)
 
     if args.prompt:
-        print(f"\nYou: {args.prompt}")
-        reply = agent.run(args.prompt)
-        print(f"\nAgent: {reply}\n")
+        print(f"\nYou ({tenant_id}): {args.prompt}")
+        reply = swarm.run(args.prompt, tenant_id=tenant_id)
+        print(f"\nSwarm: {reply}")
+        print(f"  [Budget Summary] {budget.summary()}\n")
         return
 
-    print("Commands: '/memory' to view saved facts | '/clear' to reset chat | 'exit' to quit\n")
+    print(
+        "Commands: '/tenant <id>' switch client | '/memory' private facts | "
+        "'/skills' shared global skills | '/budget' | '/clear' | 'exit'\n"
+    )
     while True:
         try:
-            user_input = input("You: ").strip()
+            user_input = input(f"You ({tenant_id}): ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\nGoodbye!")
             break
@@ -324,17 +123,30 @@ def main() -> None:
         if user_input.lower() in {"exit", "quit", "q"}:
             print("Goodbye!")
             break
-        if user_input.lower() == "/clear":
-            agent.clear_session()
-            print("  [Session history cleared. Long-term memories are still kept.]\n")
+        if user_input.lower().startswith("/tenant "):
+            tenant_id = user_input.split(maxsplit=1)[1].strip()
+            print(f"  [Switched active tenant to '{tenant_id}'. Private memory is isolated.]\n")
             continue
         if user_input.lower() == "/memory":
-            print(f"\n{execute_tool('recall_memories', {})}\n")
+            mems = storage.get_tenant_memories(tenant_id)
+            print(f"\nPrivate Memories for '{tenant_id}': {mems or 'Empty'}\n")
+            continue
+        if user_input.lower() == "/skills":
+            skills = storage.get_global_skills()
+            print(f"\nShared Global Skills (All Tenants): {skills or 'Empty'}\n")
+            continue
+        if user_input.lower() == "/budget":
+            print(f"\nLast Run Budget Summary: {budget.summary()}\n")
+            continue
+        if user_input.lower() == "/clear":
+            storage.clear_session(tenant_id)
+            print(f"  [Cleared session turns for '{tenant_id}'.]\n")
             continue
 
         try:
-            reply = agent.run(user_input)
-            print(f"\nAgent: {reply}\n")
+            reply = swarm.run(user_input, tenant_id=tenant_id)
+            print(f"\nSwarm: {reply}")
+            print(f"  [Budget Summary] {budget.summary()}\n")
         except Exception as exc:
             print(f"\n[Error] {exc}\n")
 
