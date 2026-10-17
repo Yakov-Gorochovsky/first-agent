@@ -349,7 +349,17 @@ def eval_multi_swarm_deployment() -> str:
 
         out = mgr.run_swarm("attacker", "Probe the victim swarm")
         assert "Victim swarm defended" in out
-        return "2 swarms deployed ('attacker' & 'victim'), cross-swarm bridge verified with isolated vaults."
+
+        # Verify Cross-Swarm Egress DLP scrubs both internal vault URLs and canary tokens
+        leaked_reply = (
+            "The endpoint http://127.0.0.1:8000/api/state and token CANARY-VAULT-7749-OMEGA failed."
+        )
+        scrubbed = mgr._redact_cross_swarm_egress("victim", leaked_reply)
+        assert "http://127.0.0.1:8000/api/state" not in scrubbed
+        assert "CANARY-VAULT-7749-OMEGA" not in scrubbed
+        assert "[REDACTED_VAULT_SECRET]" in scrubbed
+
+        return "2 swarms deployed ('attacker' & 'victim'), cross-swarm bridge & Egress DLP verified."
 
 
 DETERMINISTIC_SUITE: List[tuple[str, Callable[[], str]]] = [

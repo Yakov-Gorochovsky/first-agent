@@ -11,7 +11,7 @@
     "max_swarm_steps": 16,
     "max_steps_per_agent": 8,
     "max_total_tokens": 24000,
-    "max_wall_seconds": 180.0
+    "max_wall_seconds": 600.0
   },
   "storage": {
     "db_filename": "swarm.db",

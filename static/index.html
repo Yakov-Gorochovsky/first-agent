@@ -1567,9 +1567,12 @@
         document.getElementById('swarmStatusPill').textContent = `ACTIVE · SWARM '${ev.tenant_id.toUpperCase()}' RUNNING`;
         document.getElementById('answerDrawer').classList.remove('visible');
         appendLog('peer_message', `DISPATCH [${ev.tenant_id.toUpperCase()}]`, d.prompt);
-      } else if (etype === 'agent_start') {
+      } else if (etype === 'agent_start' || etype === 'inbox_pickup') {
         activeNode = nodeId(sId, ev.agent_name);
-        document.getElementById('activeNodePill').textContent = `NODE: ${sId.toUpperCase()}:${ev.agent_name.toUpperCase()}`;
+        document.getElementById('activeNodePill').textContent = `NODE: ${sId.toUpperCase()}:${ev.agent_name.toUpperCase()} (THINKING...)`;
+        if (etype === 'inbox_pickup' && d.messages && d.messages.length) {
+          appendLog('peer_message', `[${sId}] ${ev.agent_name.toUpperCase()} · THINKING`, `Processing ${d.messages.length} inbox message(s) via Ollama...`);
+        }
       } else if (etype === 'peer_message') {
         const fromKey = nodeId(sId, d.from_agent);
         const toKey = nodeId(sId, d.to_agent);
@@ -1599,6 +1602,13 @@
         document.getElementById('elapsedLabel').textContent = `${d.elapsed_seconds}s`;
         document.getElementById('stepBar').style.width = `${Math.min(100, (d.total_steps / d.max_swarm_steps) * 100)}%`;
         document.getElementById('tokenBar').style.width = `${Math.min(100, (d.total_tokens / d.max_total_tokens) * 100)}%`;
+      } else if (etype === 'budget_exceeded') {
+        appendLog('arena_attack', `[${sId}] BUDGET GUARDRAIL`, d.error || 'Budget exceeded');
+        if (d.answer) {
+          document.getElementById('answerText').textContent = d.answer;
+          document.getElementById('answerDrawer').classList.add('visible');
+        }
+        refreshState();
       } else if (etype === 'swarm_complete' || etype === 'mission_end') {
         if (etype === 'mission_end') {
           activeNode = null;

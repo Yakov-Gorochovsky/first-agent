@@ -341,10 +341,15 @@ class PeerSwarm:
 
         except BudgetExceededError as exc:
             msg = f"[Budget Guardrail Triggered] {exc}"
+            if last_output:
+                msg = f"{last_output}\n\n{msg}"
+            self.storage.append_session_turn(tenant_id, "user", user_input)
+            self.storage.append_session_turn(tenant_id, "assistant", msg)
             self.bus.emit(
                 "budget_exceeded",
                 agent_name="coordinator",
                 tenant_id=tenant_id,
                 error=str(exc),
+                answer=msg,
             )
             return msg

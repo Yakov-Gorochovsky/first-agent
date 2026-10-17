@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
+import re
 from typing import Any, Callable, Dict, List, Optional
 
 from core.budget import BudgetConfig, BudgetTracker
@@ -223,6 +224,36 @@ class SwarmManager:
             return True
         return False
 
+    def _redact_cross_swarm_egress(self, target_swarm_id: str, text: str) -> str:
+        """
+        Deterministic Cross-Swarm Egress DLP Guardrail:
+        Scrubs any confidential values, canary tokens, or internal URLs stored in
+        `target_swarm_id`'s isolated tenant vault before the reply crosses the bridge.
+        """
+        if not text:
+            return text
+        redacted = text
+        vault = dict(self.storage.get_tenant_memories(target_swarm_id))
+        spec = self._deployments.get(target_swarm_id)
+        if spec and spec.seed_memories:
+            for k, v in spec.seed_memories.items():
+                vault.setdefault(k, v)
+
+        sensitive_tokens: List[str] = []
+        for val in vault.values():
+            val_str = str(val).strip()
+            if len(val_str) >= 6:
+                sensitive_tokens.append(val_str)
+            # Extract embedded URLs or structured canary tokens (e.g. CANARY-VAULT-7749-OMEGA)
+            for match in re.findall(r"https?://[^\s'\"`)>]+|[A-Z0-9]{3,}(?:-[A-Z0-9]{2,}){2,}", val_str):
+                if len(match) >= 6:
+                    sensitive_tokens.append(match)
+
+        for token in sorted(set(sensitive_tokens), key=len, reverse=True):
+            if token in redacted:
+                redacted = redacted.replace(token, "[REDACTED_VAULT_SECRET]")
+        return redacted
+
     def _make_cross_swarm_tool(
         self, source_swarm_id: str, depth: int
     ) -> tuple[Dict[str, Callable[..., str]], List[Dict[str, Any]]]:
@@ -246,7 +277,8 @@ class SwarmManager:
                 message=message,
             )
 
-            reply = self.run_swarm(target, message, _depth=depth + 1)
+            raw_reply = self.run_swarm(target, message, _depth=depth + 1)
+            reply = self._redact_cross_swarm_egress(target, raw_reply)
 
             self.bus.emit(
                 "cross_swarm_reply",
