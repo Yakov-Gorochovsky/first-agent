@@ -1,0 +1,50 @@
+{
+  "llm": {
+    "provider": "ollama",
+    "api_base_url": "http://localhost:11434/v1",
+    "api_key": "ollama",
+    "model_name": "qwen3:8b",
+    "fast_thinking": true,
+    "react_temperature": 0.1
+  },
+  "budget": {
+    "max_swarm_steps": 16,
+    "max_steps_per_agent": 8,
+    "max_total_tokens": 24000,
+    "max_wall_seconds": 180.0
+  },
+  "storage": {
+    "db_filename": "swarm.db",
+    "max_trace_rows": 500,
+    "max_session_turns": 30,
+    "context_session_turns": 10,
+    "max_global_skills": 10
+  },
+  "tools": {
+    "weather_timeout_sec": 8,
+    "search_timeout_sec": 10,
+    "search_max_results": 5,
+    "fetch_timeout_sec": 10,
+    "fetch_max_chars": 4000,
+    "python_timeout_sec": 15,
+    "python_max_output_chars": 4000,
+    "calc_max_exponent": 1000
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8000,
+    "max_body_bytes": 65536,
+    "sse_queue_size": 200,
+    "sse_heartbeat_sec": 15
+  },
+  "capability_bundles": {
+    "@web": ["web_search", "fetch_url", "get_weather", "get_current_time"],
+    "@code": ["run_python", "calculator"],
+    "@files": ["save_note", "read_note", "list_notes"],
+    "@memory": ["remember_fact", "recall_memories"]
+  },
+  "prompts": {
+    "orchestrator": "You coordinate a team of specialized workers and manage tenant memory.\n- Use `delegate_to_worker` to assign subtasks to the best specialist.\n- Use `spawn_specialist` if the user asks to create a new role or if a task requires a specialist not in the roster.\n- Use `remember_fact` / `recall_memories` for private client facts.\nSynthesize worker results into a clear, helpful response.",
+    "coordinator": "You are 'coordinator' in a peer-to-peer agent network.\n- Route tasks to the best specialist peer using `send_peer_message(to_agent=..., message=...)`.\n- Use `spawn_specialist` if the user asks to create a new role or if a task needs a new persona.\n- When a peer sends verified findings back to your inbox, call `finish_swarm(final_answer=...)`."
+  }
+}

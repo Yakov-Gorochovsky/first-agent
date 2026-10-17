@@ -12,9 +12,7 @@ Uses loosely coupled interfaces from `core/`:
 """
 
 import argparse
-import os
 import sys
-from dotenv import load_dotenv
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -23,26 +21,17 @@ if hasattr(sys.stderr, "reconfigure"):
 
 from core.budget import BudgetConfig, BudgetTracker
 from core.bus import EventBus, SwarmEvent
+from core.config import CONFIG
 from core.llm import OpenAICompatibleProvider
 from core.peer_swarm import PeerSwarm
 from core.roles import CAPABILITY_BUNDLES, RoleRegistry
 from core.storage import SQLiteStorage
 from core.swarm import OrchestratorSwarm
-from tools import WORKSPACE_DIR
-
-load_dotenv()
-
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:11434/v1")
-API_KEY = os.getenv("API_KEY", "ollama")
-MODEL_NAME = os.getenv("MODEL_NAME", "qwen3:8b")
-MAX_STEPS = int(os.getenv("MAX_STEPS", "8"))
-VERBOSE = os.getenv("VERBOSE", "true").lower() == "true"
-DB_PATH = WORKSPACE_DIR / "swarm.db"
 
 
 def console_event_listener(event: SwarmEvent) -> None:
     """Subscribe to EventBus to render live swarm telemetry in the terminal."""
-    if not VERBOSE:
+    if not CONFIG.verbose:
         return
     etype = event.event_type
     agent = event.agent_name
@@ -78,22 +67,10 @@ def build_swarms() -> tuple[OrchestratorSwarm, PeerSwarm, RoleRegistry, SQLiteSt
     bus = EventBus()
     bus.subscribe(console_event_listener)
 
-    storage = SQLiteStorage(db_path=DB_PATH, max_trace_rows=500)
+    storage = SQLiteStorage()
     role_registry = RoleRegistry()
-    budget = BudgetTracker(
-        config=BudgetConfig(
-            max_swarm_steps=MAX_STEPS * 2,
-            max_steps_per_agent=MAX_STEPS,
-            max_total_tokens=24000,
-            max_wall_seconds=180.0,
-        ),
-        bus=bus,
-    )
-    llm = OpenAICompatibleProvider(
-        base_url=API_BASE_URL,
-        api_key=API_KEY,
-        model=MODEL_NAME,
-    )
+    budget = BudgetTracker(config=BudgetConfig(), bus=bus)
+    llm = OpenAICompatibleProvider()
     orch = OrchestratorSwarm(
         llm=llm, storage=storage, budget=budget, bus=bus, role_registry=role_registry
     )
@@ -133,9 +110,9 @@ def main() -> None:
 
     role_names = ", ".join(r.name for r in role_registry.list_roles())
     print("=" * 78)
-    print(f" Modular AI Swarm | Model: {MODEL_NAME} | Tenant: '{tenant_id}' | Mode: {mode.upper()}")
-    print(f" Active Roles: [{role_names}] (Managed via core/roles.py & workspace/roles.json)")
-    print(" Web UI:       Run `python server.py` and open http://localhost:8000")
+    print(f" Modular AI Swarm | Model: {CONFIG.model_name} | Tenant: '{tenant_id}' | Mode: {mode.upper()}")
+    print(f" Active Roles: [{role_names}] (Managed via core/roles.py & config/default_roles.json)")
+    print(f" Web UI:       Run `python server.py` and open http://{CONFIG.host}:{CONFIG.port}")
     print("=" * 78)
 
     def run_active(prompt_text: str) -> str:

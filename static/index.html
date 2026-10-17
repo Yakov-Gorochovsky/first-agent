@@ -1127,14 +1127,27 @@
     }
     requestAnimationFrame(renderNetwork);
 
+    function escapeHtml(str) {
+      return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function safeColor(color) {
+      return /^#[0-9a-fA-F]{3,8}$/.test(String(color || '').trim()) ? String(color).trim() : '#10b981';
+    }
+
     function appendLog(type, title, body) {
       const feed = document.getElementById('telemetryFeed');
       const div = document.createElement('div');
-      div.className = `trace-item ${type}`;
+      div.className = `trace-item ${escapeHtml(type)}`;
       const now = new Date().toLocaleTimeString([], { hour12: false });
       div.innerHTML = `
-        <div class="trace-meta"><strong>${title}</strong><span>${now}</span></div>
-        <div class="trace-content">${body}</div>
+        <div class="trace-meta"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(now)}</span></div>
+        <div class="trace-content">${escapeHtml(body)}</div>
       `;
       feed.prepend(div);
     }
@@ -1154,31 +1167,35 @@
       // Render specialist roster
       const rolesBox = document.getElementById('rolesList');
       rolesBox.innerHTML = roles
-        .map(r => `
+        .map(r => {
+          const col = safeColor(r.color);
+          const safeName = escapeHtml(r.name);
+          return `
           <div class="role-row">
             <div class="role-info">
-              <span class="role-dot" style="background:${r.color || '#10b981'}; box-shadow: 0 0 8px ${r.color || '#10b981'};"></span>
+              <span class="role-dot" style="background:${col}; box-shadow: 0 0 8px ${col};"></span>
               <div style="min-width:0;">
-                <div class="role-name">${r.name}</div>
-                <div class="role-sub">${r.title}</div>
+                <div class="role-name">${safeName}</div>
+                <div class="role-sub">${escapeHtml(r.title)}</div>
                 <div class="tag-list">
-                  ${(r.capabilities || []).map(c => `<span class="mini-tag">${c}</span>`).join('')}
+                  ${(r.capabilities || []).map(c => `<span class="mini-tag">${escapeHtml(c)}</span>`).join('')}
                 </div>
               </div>
             </div>
-            <button class="icon-btn" title="Remove role" onclick="deleteRole('${r.name}')">✕</button>
+            <button class="icon-btn" title="Remove role" onclick="deleteRole('${safeName}')">✕</button>
           </div>
-        `)
+        `;
+        })
         .join('');
 
       // Render tenant memories
       const memBox = document.getElementById('memoryList');
       const memEntries = Object.entries(data.tenant_memories || {});
       if (memEntries.length === 0) {
-        memBox.innerHTML = `<div style="color:var(--text-muted); font-size:11px; padding:4px;">Vault empty for <b>${tenant}</b>.</div>`;
+        memBox.innerHTML = `<div style="color:var(--text-muted); font-size:11px; padding:4px;">Vault empty for <b>${escapeHtml(tenant)}</b>.</div>`;
       } else {
         memBox.innerHTML = memEntries
-          .map(([k, v]) => `<div class="vault-item"><div class="vault-key">${k}</div><div>${v}</div></div>`)
+          .map(([k, v]) => `<div class="vault-item"><div class="vault-key">${escapeHtml(k)}</div><div>${escapeHtml(v)}</div></div>`)
           .join('');
       }
 
@@ -1192,11 +1209,11 @@
           .map(s => `
             <div class="skill-item">
               <div class="skill-head">
-                <span class="skill-badge">${s.category}</span>
-                <span style="font-family:var(--font-mono); font-size:9.5px; color:var(--text-muted);">x${s.learned_count}</span>
+                <span class="skill-badge">${escapeHtml(s.category)}</span>
+                <span style="font-family:var(--font-mono); font-size:9.5px; color:var(--text-muted);">x${escapeHtml(s.learned_count)}</span>
               </div>
-              <div style="color:var(--text-secondary); margin-bottom:3px;">${s.problem_pattern}</div>
-              <div style="color:var(--accent-emerald); font-weight:500;">→ ${s.solution_rule}</div>
+              <div style="color:var(--text-secondary); margin-bottom:3px;">${escapeHtml(s.problem_pattern)}</div>
+              <div style="color:var(--accent-emerald); font-weight:500;">→ ${escapeHtml(s.solution_rule)}</div>
             </div>
           `)
           .join('');

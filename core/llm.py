@@ -10,10 +10,10 @@ without changing a single line of agent or swarm code.
 
 from dataclasses import dataclass, field
 import json
-import os
 import re
 from typing import Any, Dict, List, Optional, Protocol
 from openai import BadRequestError, OpenAI
+from core.config import CONFIG
 
 _THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
@@ -104,17 +104,18 @@ class OpenAICompatibleProvider:
 
     def __init__(
         self,
-        base_url: str,
-        api_key: str,
-        model: str,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        model: Optional[str] = None,
         fast_qwen_mode: Optional[bool] = None,
     ) -> None:
-        self.client = OpenAI(base_url=base_url, api_key=api_key)
-        self.model = model
+        self.client = OpenAI(
+            base_url=base_url or CONFIG.api_base_url,
+            api_key=api_key or CONFIG.api_key,
+        )
+        self.model = model or CONFIG.model_name
         self.native_tools_supported: Optional[bool] = None
-        if fast_qwen_mode is None:
-            fast_qwen_mode = os.getenv("FAST_THINKING", "true").lower() == "true"
-        self.fast_qwen_mode = fast_qwen_mode
+        self.fast_qwen_mode = CONFIG.fast_thinking if fast_qwen_mode is None else fast_qwen_mode
 
     def _prepare_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Inject /no_think for Qwen3 models when fast_qwen_mode is enabled (5-10x faster local runs)."""

@@ -236,6 +236,42 @@ def eval_framework_abstractions() -> str:
     return "LangGraph StateGraph (14^2=196) & OpenAI SDK Handoff chain verified."
 
 
+def eval_security_hardening() -> str:
+    """Verify SSRF block, subprocess secret scrubbing, exponent DoS protection, and path traversal guardrails."""
+    from tools import calculator, fetch_url, run_python, save_note
+
+    # 1. SSRF blocks loopback & cloud metadata IPs
+    ssrf_local = fetch_url("http://127.0.0.1:8000/api/state")
+    ssrf_meta = fetch_url("http://169.254.169.254/latest/meta-data/")
+    assert "SSRF protection blocked" in ssrf_local, ssrf_local
+    assert "SSRF protection blocked" in ssrf_meta, ssrf_meta
+
+    # 2. Subprocess environment secret scrubbing
+    os.environ["TEST_SECRET_API_KEY"] = "super_secret_token_999"
+    try:
+        py_out = run_python("import os; print(os.environ.get('TEST_SECRET_API_KEY', 'SCRUBBED_OK'))")
+        assert "SCRUBBED_OK" in py_out and "super_secret_token_999" not in py_out, py_out
+    finally:
+        os.environ.pop("TEST_SECRET_API_KEY", None)
+
+    # 3. Calculator exponent DoS cap
+    dos_calc = calculator("999999 ** 999999")
+    assert "exceeds safe limit" in dos_calc, dos_calc
+
+    # 4. Path traversal & .env protection in workspace notes
+    from tools import WORKSPACE_DIR
+
+    env_write = save_note(".env", "malicious")
+    traversal_write = save_note("../../outside.txt", "malicious")
+    try:
+        assert "Invalid or restricted filename" in env_write, env_write
+        assert "workspace/outside.txt" in traversal_write, traversal_write
+    finally:
+        (WORKSPACE_DIR / "outside.txt").unlink(missing_ok=True)
+
+    return "SSRF blocked (127.0.0.1 & 169.254.169.254), env secrets scrubbed, exponent DoS & .env write blocked."
+
+
 DETERMINISTIC_SUITE: List[tuple[str, Callable[[], str]]] = [
     ("Budget Step Cap Guardrail", eval_budget_step_guardrail),
     ("Budget Token Cap Guardrail", eval_budget_token_guardrail),
@@ -245,6 +281,7 @@ DETERMINISTIC_SUITE: List[tuple[str, Callable[[], str]]] = [
     ("Universal Tools & AST Sandbox Safety", eval_universal_tools_sandbox),
     ("PeerSwarm Multi-Hop Inbox Handoff", eval_peer_swarm_inbox_handoff),
     ("Step 6 Framework Patterns (LangGraph/SDK)", eval_framework_abstractions),
+    ("Security Hardening (SSRF/Env/DoS/Path)", eval_security_hardening),
 ]
 
 
@@ -288,9 +325,7 @@ def run_eval_suite(bus: Optional[EventBus] = None) -> Dict[str, Any]:
 
 def run_live_llm_eval() -> Dict[str, Any]:
     """Run a live end-to-end regression task against the configured LLMProvider."""
-    base_url = os.getenv("API_BASE_URL", "http://localhost:11434/v1")
-    api_key = os.getenv("API_KEY", "ollama")
-    model = os.getenv("MODEL_NAME", "qwen3:8b")
+    from core.config import CONFIG
 
     with tempfile.TemporaryDirectory() as tmp:
         bus = EventBus()
@@ -300,7 +335,7 @@ def run_live_llm_eval() -> Dict[str, Any]:
             bus=bus,
         )
         reg = RoleRegistry(roles_file=Path(tmp) / "roles.json")
-        llm = OpenAICompatibleProvider(base_url=base_url, api_key=api_key, model=model)
+        llm = OpenAICompatibleProvider()
         swarm = OrchestratorSwarm(llm=llm, storage=store, budget=budget, bus=bus, role_registry=reg)
 
         t0 = time.time()
@@ -311,7 +346,7 @@ def run_live_llm_eval() -> Dict[str, Any]:
         elapsed = round(time.time() - t0, 2)
         ok = "437" in reply
         return {
-            "name": f"Live LLM Eval ({model})",
+            "name": f"Live LLM Eval ({CONFIG.model_name})",
             "status": "PASS" if ok else "FAIL",
             "expected": "437",
             "reply": reply,

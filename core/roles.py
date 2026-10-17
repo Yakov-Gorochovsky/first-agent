@@ -13,17 +13,15 @@ import json
 from pathlib import Path
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from tools import AVAILABLE_TOOLS, WORKSPACE_DIR
+from core.config import CONFIG
+from tools import AVAILABLE_TOOLS
 
-DEFAULT_ROLES_FILE = Path(__file__).parent.parent / "config" / "default_roles.json"
-ROLES_FILE = WORKSPACE_DIR / "roles.json"
+DEFAULT_ROLES_FILE = CONFIG.default_roles_path
+ROLES_FILE = CONFIG.roles_path
 
-# High-level Capability Bundles map human-friendly tags to underlying atomic tools
+# Loaded from config/settings.json + '@all' dynamic bundle
 CAPABILITY_BUNDLES: Dict[str, List[str]] = {
-    "@web": ["web_search", "fetch_url", "get_weather", "get_current_time"],
-    "@code": ["run_python", "calculator"],
-    "@files": ["save_note", "read_note", "list_notes"],
-    "@memory": ["remember_fact", "recall_memories"],
+    **CONFIG.capability_bundles,
     "@all": list(AVAILABLE_TOOLS.keys()),
 }
 

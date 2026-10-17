@@ -17,7 +17,14 @@ from pathlib import Path
 import re
 import sqlite3
 import time
-from typing import Any, Dict, Iterator, List, Protocol, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Protocol, Tuple
+from core.config import CONFIG
+
+
+def sanitize_tenant_id(tenant_id: str) -> str:
+    """Restrict tenant_id to safe alphanumeric, underscore, and hyphen characters."""
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]", "_", (tenant_id or "").strip())[:64]
+    return cleaned or "default"
 
 
 class PrivacyAirlock:
@@ -62,10 +69,16 @@ class StorageBackend(Protocol):
 class SQLiteStorage:
     """Zero-cost local SQLite storage with multi-tenant isolation and auto-pruning."""
 
-    def __init__(self, db_path: Path, max_trace_rows: int = 500) -> None:
-        self.db_path = db_path
+    def __init__(
+        self,
+        db_path: Optional[Path] = None,
+        max_trace_rows: Optional[int] = None,
+        max_session_turns: Optional[int] = None,
+    ) -> None:
+        self.db_path = db_path or CONFIG.db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.max_trace_rows = max_trace_rows
+        self.max_trace_rows = max_trace_rows if max_trace_rows is not None else CONFIG.max_trace_rows
+        self.max_session_turns = max_session_turns if max_session_turns is not None else CONFIG.max_session_turns
         self._init_schema()
 
     @contextmanager
@@ -121,6 +134,7 @@ class SQLiteStorage:
             )
 
     def save_tenant_memory(self, tenant_id: str, key: str, fact: str) -> None:
+        safe_tenant = sanitize_tenant_id(tenant_id)
         with self._connect() as conn:
             conn.execute(
                 """
@@ -130,14 +144,15 @@ class SQLiteStorage:
                     fact = excluded.fact,
                     updated_at = excluded.updated_at;
                 """,
-                (tenant_id, key.strip(), fact.strip(), time.time()),
+                (safe_tenant, key.strip()[:120], fact.strip()[:2000], time.time()),
             )
 
     def get_tenant_memories(self, tenant_id: str) -> Dict[str, str]:
+        safe_tenant = sanitize_tenant_id(tenant_id)
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT key, fact FROM tenant_memories WHERE tenant_id = ? ORDER BY key",
-                (tenant_id,),
+                (safe_tenant,),
             ).fetchall()
             return {row["key"]: row["fact"] for row in rows}
 
@@ -165,7 +180,7 @@ class SQLiteStorage:
             "solution_rule": safe_solution,
         }
 
-    def get_global_skills(self, limit: int = 10) -> List[Dict[str, Any]]:
+    def get_global_skills(self, limit: int = CONFIG.max_global_skills) -> List[Dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -179,23 +194,24 @@ class SQLiteStorage:
             return [dict(row) for row in rows]
 
     def append_session_turn(self, tenant_id: str, role: str, content: str) -> None:
+        safe_tenant = sanitize_tenant_id(tenant_id)
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO tenant_sessions (tenant_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                (tenant_id, role, content, time.time()),
+                (safe_tenant, role, content, time.time()),
             )
-            # Keep at most 30 turns per tenant so session history stays compact
             conn.execute(
                 """
                 DELETE FROM tenant_sessions
                 WHERE tenant_id = ? AND id NOT IN (
-                    SELECT id FROM tenant_sessions WHERE tenant_id = ? ORDER BY id DESC LIMIT 30
+                    SELECT id FROM tenant_sessions WHERE tenant_id = ? ORDER BY id DESC LIMIT ?
                 )
                 """,
-                (tenant_id, tenant_id),
+                (safe_tenant, safe_tenant, self.max_session_turns),
             )
 
-    def get_session_turns(self, tenant_id: str, limit: int = 12) -> List[Dict[str, str]]:
+    def get_session_turns(self, tenant_id: str, limit: int = CONFIG.context_session_turns) -> List[Dict[str, str]]:
+        safe_tenant = sanitize_tenant_id(tenant_id)
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -204,13 +220,14 @@ class SQLiteStorage:
                     WHERE tenant_id = ? ORDER BY id DESC LIMIT ?
                 ) ORDER BY id ASC
                 """,
-                (tenant_id, limit),
+                (safe_tenant, limit),
             ).fetchall()
             return [{"role": row["role"], "content": row["content"]} for row in rows]
 
     def clear_session(self, tenant_id: str) -> None:
+        safe_tenant = sanitize_tenant_id(tenant_id)
         with self._connect() as conn:
-            conn.execute("DELETE FROM tenant_sessions WHERE tenant_id = ?", (tenant_id,))
+            conn.execute("DELETE FROM tenant_sessions WHERE tenant_id = ?", (safe_tenant,))
 
     def log_trace(
         self,
@@ -219,12 +236,12 @@ class SQLiteStorage:
         event_type: str,
         payload: Dict[str, Any],
     ) -> None:
+        safe_tenant = sanitize_tenant_id(tenant_id)
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO swarm_traces (tenant_id, agent_name, event_type, payload, created_at) VALUES (?, ?, ?, ?, ?)",
-                (tenant_id, agent_name, event_type, json.dumps(payload, default=str), time.time()),
+                (safe_tenant, agent_name, event_type, json.dumps(payload, default=str), time.time()),
             )
-            # Auto-prune old trace logs so swarm.db never grows unbounded
             conn.execute(
                 """
                 DELETE FROM swarm_traces

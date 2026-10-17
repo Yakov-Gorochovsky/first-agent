@@ -16,6 +16,7 @@ import time
 from typing import Callable, Deque, Dict, List, Optional
 from core.budget import BudgetExceededError, BudgetTracker
 from core.bus import EventBus
+from core.config import CONFIG
 from core.llm import LLMProvider
 from core.roles import RoleRegistry, RoleSpec
 from core.storage import StorageBackend
@@ -99,13 +100,7 @@ class PeerSwarm:
         coord_worker = WorkerAgent(
             name="coordinator",
             role="Mission Router & Synthesizer",
-            instructions=(
-                "You are 'coordinator' in a peer-to-peer agent network.\n"
-                f"ACTIVE PEER SPECIALISTS:\n{roster_summary}\n\n"
-                "- Route tasks to the best specialist peer using `send_peer_message(to_agent=..., message=...)`.\n"
-                "- Use `spawn_specialist` if the user asks to create a new role or if a task needs a new persona.\n"
-                "- When a peer sends verified findings back to your inbox, call `finish_swarm(final_answer=...)`."
-            ),
+            instructions=f"{CONFIG.coordinator_prompt}\n\nACTIVE PEER SPECIALISTS:\n{roster_summary}",
             llm=self.llm,
             storage=self.storage,
             budget=self.budget,

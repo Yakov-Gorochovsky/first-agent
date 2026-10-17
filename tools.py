@@ -1,33 +1,99 @@
 """
-tools.py - Tools that the AI Agent can call to interact with the world.
+tools.py - Security-Hardened Tools & Primitives for the AI Swarm.
 
-To add a new tool:
-1. Write a Python function below.
-2. Register its schema in TOOL_SCHEMAS and map its name in AVAILABLE_TOOLS.
+Security Controls Built In:
+1. AST-Whitelisted Calculator with Exponent DoS Cap (`_safe_pow`).
+2. SSRF-Protected `fetch_url` (`_validate_public_url` blocks localhost, RFC-1918 private IPs,
+   and 169.254.169.254 cloud metadata endpoints).
+3. Secret-Scrubbed Python Sandbox (`_get_sandbox_env` strips API_KEY/TOKEN/SECRET env vars
+   before launching the child Python process).
+4. Strict Path Traversal Prevention (`_safe_workspace_path` confines all file I/O to `workspace/`).
 """
 
 import ast
 import datetime
 from html.parser import HTMLParser
+import ipaddress
 import json
 import math
 import operator
+import os
 from pathlib import Path
 import re
+import socket
 import subprocess
 import sys
 from typing import Any, Callable, Dict, List
-from urllib.parse import quote_plus, unquote, urlparse, parse_qs
+from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 import requests
 
-WORKSPACE_DIR = Path(__file__).parent / "workspace"
-WORKSPACE_DIR.mkdir(exist_ok=True)
+from core.config import CONFIG, WORKSPACE_DIR
+
 MEMORY_FILE = WORKSPACE_DIR / "memory.json"
 
+_SENSITIVE_ENV_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH", "CREDENTIAL")
+
 
 # ---------------------------------------------------------------------------
-# HTML Helpers (Zero external dependencies beyond requests)
+# Security & HTML Helpers
 # ---------------------------------------------------------------------------
+
+def _safe_workspace_path(filename: str) -> Path:
+    """Resolve filename strictly inside WORKSPACE_DIR, blocking path traversal."""
+    clean_name = Path(filename).name
+    if not clean_name or clean_name in {".", ".."} or clean_name.startswith(".env"):
+        raise ValueError(f"Invalid or restricted filename: '{filename}'")
+    ws_resolved = WORKSPACE_DIR.resolve()
+    target = (ws_resolved / clean_name).resolve()
+    if target.parent != ws_resolved:
+        raise ValueError(f"Path traversal blocked for '{filename}'")
+    return target
+
+
+def _validate_public_url(url: str) -> str:
+    """Validate URL scheme and block SSRF against localhost, private networks, and metadata IPs."""
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError(f"Blocked URL scheme '{parsed.scheme}'. Only http/https are allowed.")
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname.")
+    if hostname.lower() in {"localhost", "0.0.0.0"}:
+        raise ValueError("SSRF blocked: localhost access is not permitted.")
+
+    try:
+        addr_info = socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80))
+    except socket.gaierror as exc:
+        raise ValueError(f"Could not resolve hostname '{hostname}': {exc}") from exc
+
+    for entry in addr_info:
+        ip_str = entry[4][0]
+        ip_obj = ipaddress.ip_address(ip_str)
+        if (
+            ip_obj.is_loopback
+            or ip_obj.is_private
+            or ip_obj.is_link_local
+            or ip_obj.is_reserved
+            or ip_obj.is_multicast
+            or ip_obj.is_unspecified
+        ):
+            raise ValueError(
+                f"SSRF protection blocked access to non-public IP address ({ip_str}) for '{hostname}'."
+            )
+    return url.strip()
+
+
+def _get_sandbox_env() -> Dict[str, str]:
+    """Return a copy of os.environ with all API keys, tokens, and secrets stripped."""
+    safe_env: Dict[str, str] = {}
+    for k, v in os.environ.items():
+        upper_k = k.upper()
+        if any(sub in upper_k for sub in _SENSITIVE_ENV_SUBSTRINGS):
+            continue
+        safe_env[k] = v
+    safe_env["PYTHONIOENCODING"] = "utf-8"
+    return safe_env
+
 
 class _TextExtractor(HTMLParser):
     """Strip HTML tags, scripts, and styles to extract readable text."""
@@ -69,8 +135,16 @@ def _html_to_text(html_content: str) -> str:
 # 1. Tool Implementations
 # ---------------------------------------------------------------------------
 
+def _safe_pow(base: float, exp: float) -> float:
+    if abs(exp) > CONFIG.calc_max_exponent:
+        raise ValueError(f"Exponent {exp} exceeds safe limit ({CONFIG.calc_max_exponent}).")
+    if abs(base) > 1_000_000 and abs(exp) > 20:
+        raise ValueError("Base and exponent combination too large.")
+    return float(operator.pow(base, exp))
+
+
 def calculator(expression: str) -> str:
-    """Safely evaluate a mathematical expression."""
+    """Safely evaluate a mathematical expression using a strict AST whitelist."""
     allowed_names = {
         k: v for k, v in math.__dict__.items() if not k.startswith("__")
     }
@@ -81,7 +155,7 @@ def calculator(expression: str) -> str:
         ast.Div: operator.truediv,
         ast.FloorDiv: operator.floordiv,
         ast.Mod: operator.mod,
-        ast.Pow: operator.pow,
+        ast.Pow: _safe_pow,
         ast.USub: operator.neg,
         ast.UAdd: operator.pos,
     }
@@ -122,7 +196,11 @@ def get_weather(city: str) -> str:
     """Fetch current weather for a city using wttr.in (no API key needed)."""
     try:
         url = f"https://wttr.in/{requests.utils.quote(city)}?format=j1"
-        resp = requests.get(url, timeout=8, headers={"User-Agent": "first-agent/1.0"})
+        resp = requests.get(
+            url,
+            timeout=CONFIG.weather_timeout_sec,
+            headers={"User-Agent": "first-agent/1.0"},
+        )
         resp.raise_for_status()
         data = resp.json()
         current = data["current_condition"][0]
@@ -149,11 +227,10 @@ def web_search(query: str) -> str:
                 "Chrome/122.0.0.0 Safari/537.36"
             )
         }
-        resp = requests.get(url, headers=headers, timeout=10)
+        resp = requests.get(url, headers=headers, timeout=CONFIG.search_timeout_sec)
         resp.raise_for_status()
         html = resp.text
 
-        # Parse result titles, links, and snippets from DuckDuckGo HTML
         link_pattern = re.compile(
             r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
             re.DOTALL,
@@ -167,10 +244,9 @@ def web_search(query: str) -> str:
         snippets = snippet_pattern.findall(html)
 
         results = []
-        for idx, (raw_href, raw_title) in enumerate(links[:5], start=1):
+        for idx, (raw_href, raw_title) in enumerate(links[: CONFIG.search_max_results], start=1):
             title = _html_to_text(raw_title).strip()
             snippet = _html_to_text(snippets[idx - 1]).strip() if idx - 1 < len(snippets) else ""
-            # Unwrap DuckDuckGo redirect URLs (?uddg=...)
             parsed_href = urlparse(raw_href)
             qs = parse_qs(parsed_href.query)
             clean_url = unquote(qs["uddg"][0]) if "uddg" in qs else raw_href
@@ -184,8 +260,9 @@ def web_search(query: str) -> str:
 
 
 def fetch_url(url: str) -> str:
-    """Fetch a webpage URL and return its readable text content (truncated to 4000 chars)."""
+    """Fetch a public webpage URL (SSRF-protected) and return readable text content."""
     try:
+        safe_url = _validate_public_url(url)
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -193,12 +270,17 @@ def fetch_url(url: str) -> str:
                 "Chrome/122.0.0.0 Safari/537.36"
             )
         }
-        resp = requests.get(url, headers=headers, timeout=10)
+        resp = requests.get(
+            safe_url,
+            headers=headers,
+            timeout=CONFIG.fetch_timeout_sec,
+            allow_redirects=False,
+        )
         resp.raise_for_status()
         text = _html_to_text(resp.text)
         if not text:
-            return f"Fetched {url}, but no readable text was found."
-        max_chars = 4000
+            return f"Fetched {safe_url}, but no readable text was found."
+        max_chars = CONFIG.fetch_max_chars
         if len(text) > max_chars:
             return text[:max_chars] + f"\n... [Truncated {len(text) - max_chars} chars]"
         return text
@@ -207,14 +289,15 @@ def fetch_url(url: str) -> str:
 
 
 def run_python(code: str) -> str:
-    """Execute Python code in a subprocess inside the workspace directory and return stdout/stderr."""
+    """Execute Python code in a secret-scrubbed subprocess inside workspace/."""
     try:
         completed = subprocess.run(
             [sys.executable, "-c", code],
             cwd=str(WORKSPACE_DIR),
+            env=_get_sandbox_env(),
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=CONFIG.python_timeout_sec,
         )
         stdout = completed.stdout.strip()
         stderr = completed.stderr.strip()
@@ -228,9 +311,9 @@ def run_python(code: str) -> str:
         elif completed.returncode != 0:
             parts.append(f"(Exit code: {completed.returncode})")
         output = "\n".join(parts)
-        return output[:4000]
+        return output[: CONFIG.python_max_output_chars]
     except subprocess.TimeoutExpired:
-        return "Error: Python execution timed out after 15 seconds."
+        return f"Error: Python execution timed out after {CONFIG.python_timeout_sec} seconds."
     except Exception as exc:
         return f"Error running Python code: {exc}"
 
@@ -266,20 +349,24 @@ def recall_memories() -> str:
 
 
 def save_note(filename: str, content: str) -> str:
-    """Save text content to a file inside the agent's workspace folder."""
-    safe_name = Path(filename).name
-    target = WORKSPACE_DIR / safe_name
-    target.write_text(content, encoding="utf-8")
-    return f"Saved {len(content)} characters to workspace/{safe_name}"
+    """Save text content to a file strictly inside the agent's workspace folder."""
+    try:
+        target = _safe_workspace_path(filename)
+        target.write_text(content, encoding="utf-8")
+        return f"Saved {len(content)} characters to workspace/{target.name}"
+    except Exception as exc:
+        return f"Error saving note '{filename}': {exc}"
 
 
 def read_note(filename: str) -> str:
-    """Read text content from a file inside the agent's workspace folder."""
-    safe_name = Path(filename).name
-    target = WORKSPACE_DIR / safe_name
-    if not target.exists():
-        return f"File 'workspace/{safe_name}' does not exist."
-    return target.read_text(encoding="utf-8")
+    """Read text content from a file strictly inside the agent's workspace folder."""
+    try:
+        target = _safe_workspace_path(filename)
+        if not target.exists():
+            return f"File 'workspace/{target.name}' does not exist."
+        return target.read_text(encoding="utf-8")
+    except Exception as exc:
+        return f"Error reading note '{filename}': {exc}"
 
 
 def list_notes() -> str:
@@ -375,13 +462,13 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "fetch_url",
-            "description": "Fetch and extract the readable text content of any web page URL.",
+            "description": "Fetch and extract the readable text content of any public HTTP/HTTPS web page URL.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "url": {
                         "type": "string",
-                        "description": "Full HTTP/HTTPS URL to read.",
+                        "description": "Full public HTTP/HTTPS URL to read.",
                     }
                 },
                 "required": ["url"],
@@ -394,8 +481,7 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
             "name": "run_python",
             "description": (
                 "Execute Python 3 code in a sandboxed subprocess (working directory: workspace/) "
-                "and return stdout/stderr. Use this as a universal tool to solve arbitrary problems, "
-                "analyze data, generate files, or test code."
+                "and return stdout/stderr."
             ),
             "parameters": {
                 "type": "object",
@@ -419,7 +505,7 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
                 "properties": {
                     "key": {
                         "type": "string",
-                        "description": "Short label/topic for the memory (e.g., 'user_name', 'favorite_language').",
+                        "description": "Short label/topic for the memory (e.g., 'user_name').",
                     },
                     "fact": {
                         "type": "string",

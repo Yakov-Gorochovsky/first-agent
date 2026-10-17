@@ -12,6 +12,7 @@ import json
 from typing import Any, Callable, Dict, List, Optional
 from core.budget import BudgetExceededError, BudgetTracker
 from core.bus import EventBus
+from core.config import CONFIG
 from core.llm import LLMProvider
 from core.roles import RoleRegistry, RoleSpec
 from core.storage import StorageBackend
@@ -375,14 +376,7 @@ class OrchestratorSwarm:
         orchestrator = WorkerAgent(
             name="orchestrator",
             role="Lead Swarm Coordinator",
-            instructions=(
-                "You coordinate a team of specialized workers and manage tenant memory.\n"
-                f"ACTIVE WORKER ROSTER:\n{roster_text}\n\n"
-                "- Use `delegate_to_worker` to assign subtasks to the best specialist.\n"
-                "- Use `spawn_specialist` if the user asks to create a new role or if a task requires a specialist not in the roster.\n"
-                "- Use `remember_fact` / `recall_memories` for private client facts.\n"
-                "Synthesize worker results into a clear, helpful response."
-            ),
+            instructions=f"{CONFIG.orchestrator_prompt}\n\nACTIVE WORKER ROSTER:\n{roster_text}",
             llm=self.llm,
             storage=self.storage,
             budget=self.budget,

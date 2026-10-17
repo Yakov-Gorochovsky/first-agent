@@ -14,49 +14,30 @@ Usage:
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-import os
 from pathlib import Path
 import queue
 import threading
 import time
 from typing import Any, Dict, List
 from urllib.parse import parse_qs, urlparse
-from dotenv import load_dotenv
 
 from core.budget import BudgetConfig, BudgetTracker
 from core.bus import EventBus, SwarmEvent
+from core.config import CONFIG
 from core.llm import OpenAICompatibleProvider
 from core.peer_swarm import PeerSwarm
 from core.roles import CAPABILITY_BUNDLES, RoleRegistry
-from core.storage import SQLiteStorage
+from core.storage import SQLiteStorage, sanitize_tenant_id
 from core.swarm import OrchestratorSwarm
-from tools import WORKSPACE_DIR
-
-load_dotenv()
-
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:11434/v1")
-API_KEY = os.getenv("API_KEY", "ollama")
-MODEL_NAME = os.getenv("MODEL_NAME", "qwen3:8b")
-MAX_STEPS = int(os.getenv("MAX_STEPS", "8"))
-PORT = int(os.getenv("PORT", "8000"))
 
 STATIC_DIR = Path(__file__).parent / "static"
-DB_PATH = WORKSPACE_DIR / "swarm.db"
 
-# Shared application state
+# Shared application state initialized from centralized CONFIG
 bus = EventBus()
-storage = SQLiteStorage(db_path=DB_PATH, max_trace_rows=500)
+storage = SQLiteStorage()
 role_registry = RoleRegistry()
-budget = BudgetTracker(
-    config=BudgetConfig(
-        max_swarm_steps=MAX_STEPS * 2,
-        max_steps_per_agent=MAX_STEPS,
-        max_total_tokens=24000,
-        max_wall_seconds=240.0,
-    ),
-    bus=bus,
-)
-llm = OpenAICompatibleProvider(base_url=API_BASE_URL, api_key=API_KEY, model=MODEL_NAME)
+budget = BudgetTracker(config=BudgetConfig(), bus=bus)
+llm = OpenAICompatibleProvider()
 orchestrator_swarm = OrchestratorSwarm(
     llm=llm, storage=storage, budget=budget, bus=bus, role_registry=role_registry
 )
@@ -230,9 +211,14 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         pass
 
+    def _send_security_headers(self) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+
     def _send_json(self, data: Dict[str, Any], status: int = 200) -> None:
         body = json.dumps(data, default=str).encode("utf-8")
         self.send_response(status)
+        self._send_security_headers()
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-cache")
@@ -250,6 +236,7 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
                 return
             content = index_file.read_bytes()
             self.send_response(HTTPStatus.OK)
+            self._send_security_headers()
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(content)))
             self.end_headers()
@@ -258,12 +245,12 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/api/state":
             qs = parse_qs(parsed.query)
-            tenant_id = qs.get("tenant", ["client_a"])[0]
+            tenant_id = sanitize_tenant_id(qs.get("tenant", ["client_a"])[0])
             self._send_json(
                 {
                     "tenant_id": tenant_id,
-                    "model": MODEL_NAME,
-                    "endpoint": API_BASE_URL,
+                    "model": CONFIG.model_name,
+                    "endpoint": CONFIG.api_base_url,
                     "roles": role_registry.list_dicts(),
                     "capability_bundles": CAPABILITY_BUNDLES,
                     "tenant_memories": storage.get_tenant_memories(tenant_id),
@@ -283,6 +270,7 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/api/events":
             self.send_response(HTTPStatus.OK)
+            self._send_security_headers()
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "keep-alive")
@@ -297,7 +285,7 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
                 self.wfile.flush()
                 while True:
                     try:
-                        msg = client_q.get(timeout=15)
+                        msg = client_q.get(timeout=CONFIG.sse_heartbeat_sec)
                         self.wfile.write(f"data: {msg}\n\n".encode("utf-8"))
                         self.wfile.flush()
                     except queue.Empty:
@@ -315,8 +303,20 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
-        length = int(self.headers.get("Content-Length", "0"))
-        raw_body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self._send_json({"error": "Invalid Content-Length header."}, 400)
+            return
+
+        if length < 0 or length > CONFIG.max_body_bytes:
+            self._send_json(
+                {"error": f"Request payload exceeds limit ({CONFIG.max_body_bytes} bytes)."},
+                413,
+            )
+            return
+
+        raw_body = self.rfile.read(length).decode("utf-8", errors="replace") if length > 0 else "{}"
         try:
             body = json.loads(raw_body)
         except json.JSONDecodeError:
@@ -375,7 +375,7 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/run":
             prompt = str(body.get("prompt", "")).strip()
-            tenant_id = str(body.get("tenant_id", "client_a")).strip() or "client_a"
+            tenant_id = sanitize_tenant_id(str(body.get("tenant_id", "client_a")))
             mode = str(body.get("mode", "peer")).strip().lower()
             simulate = bool(body.get("simulate", False))
 
@@ -430,14 +430,14 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
             category = str(body.get("category", "security"))
             problem = str(body.get("problem", ""))
             solution = str(body.get("solution", ""))
-            tenant_id = str(body.get("tenant_id", "client_a"))
+            tenant_id = sanitize_tenant_id(str(body.get("tenant_id", "client_a")))
             sanitized = storage.add_global_skill(category, problem, solution)
             bus.emit("skill_learned", agent_name="privacy_airlock", tenant_id=tenant_id, **sanitized)
             self._send_json({"sanitized": sanitized})
             return
 
         if parsed.path == "/api/memory":
-            tenant_id = str(body.get("tenant_id", "client_a"))
+            tenant_id = sanitize_tenant_id(str(body.get("tenant_id", "client_a")))
             key = str(body.get("key", "")).strip()
             fact = str(body.get("fact", "")).strip()
             if key and fact:
@@ -449,13 +449,13 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), SwarmRequestHandler)
+    server = ThreadingHTTPServer((CONFIG.host, CONFIG.port), SwarmRequestHandler)
     print("=" * 72)
     print(f" NEURAL SWARM // COMMAND CENTER UI")
-    print(f" URL:      http://localhost:{PORT}")
-    print(f" Model:    {MODEL_NAME} ({API_BASE_URL})")
+    print(f" URL:      http://{CONFIG.host}:{CONFIG.port}")
+    print(f" Model:    {CONFIG.model_name} ({CONFIG.api_base_url})")
     print(f" Roles:    {', '.join(r.name for r in role_registry.list_roles())}")
-    print(f" Database: {DB_PATH}")
+    print(f" Database: {CONFIG.db_path}")
     print("=" * 72)
     print("Press Ctrl+C to stop the server.\n")
     try:

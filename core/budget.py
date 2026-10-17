@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import time
 from typing import Dict, Optional
 from core.bus import EventBus
+from core.config import CONFIG
 
 
 class BudgetExceededError(RuntimeError):
@@ -16,10 +17,10 @@ class BudgetExceededError(RuntimeError):
 
 @dataclass
 class BudgetConfig:
-    max_swarm_steps: int = 15
-    max_steps_per_agent: int = 6
-    max_total_tokens: int = 24000
-    max_wall_seconds: float = 120.0
+    max_swarm_steps: int = field(default_factory=lambda: CONFIG.max_swarm_steps)
+    max_steps_per_agent: int = field(default_factory=lambda: CONFIG.max_steps_per_agent)
+    max_total_tokens: int = field(default_factory=lambda: CONFIG.max_total_tokens)
+    max_wall_seconds: float = field(default_factory=lambda: CONFIG.max_wall_seconds)
 
 
 @dataclass
