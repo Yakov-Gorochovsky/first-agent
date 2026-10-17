@@ -10,8 +10,17 @@ without changing a single line of agent or swarm code.
 
 from dataclasses import dataclass, field
 import json
+import os
+import re
 from typing import Any, Dict, List, Optional, Protocol
 from openai import BadRequestError, OpenAI
+
+_THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def strip_think_tags(text: str) -> str:
+    """Remove internal <think>...</think> reasoning blocks from model outputs."""
+    return _THINK_TAG_RE.sub("", text or "").strip()
 
 
 @dataclass
@@ -93,21 +102,47 @@ def format_react_tool_instructions(tools: List[Dict[str, Any]]) -> str:
 class OpenAICompatibleProvider:
     """Adapter for Ollama, Hugging Face Router, Groq, Gemini, and OpenAI."""
 
-    def __init__(self, base_url: str, api_key: str, model: str) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        fast_qwen_mode: Optional[bool] = None,
+    ) -> None:
         self.client = OpenAI(base_url=base_url, api_key=api_key)
         self.model = model
         self.native_tools_supported: Optional[bool] = None
+        if fast_qwen_mode is None:
+            fast_qwen_mode = os.getenv("FAST_THINKING", "true").lower() == "true"
+        self.fast_qwen_mode = fast_qwen_mode
+
+    def _prepare_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Inject /no_think for Qwen3 models when fast_qwen_mode is enabled (5-10x faster local runs)."""
+        if not self.fast_qwen_mode or "qwen3" not in self.model.lower():
+            return messages
+        prepared = []
+        for idx, m in enumerate(messages):
+            if isinstance(m, dict) and idx == 0 and m.get("role") == "system":
+                content = str(m.get("content", ""))
+                if "/no_think" not in content:
+                    content = "/no_think\n" + content
+                prepared.append({**m, "content": content})
+            else:
+                prepared.append(m)
+        return prepared
 
     def generate(
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> LLMResponse:
+        prepared_messages = self._prepare_messages(messages)
+
         if tools and self.native_tools_supported is not False:
             try:
                 resp = self.client.chat.completions.create(
                     model=self.model,
-                    messages=messages,
+                    messages=prepared_messages,
                     tools=tools,
                 )
                 self.native_tools_supported = True
@@ -132,7 +167,7 @@ class OpenAICompatibleProvider:
                         )
 
                 return LLMResponse(
-                    content=msg.content or "",
+                    content=strip_think_tags(msg.content or ""),
                     tool_calls=parsed_calls,
                     prompt_tokens=p_toks,
                     completion_tokens=c_toks,
@@ -146,8 +181,8 @@ class OpenAICompatibleProvider:
                     raise
 
         # Fallback: ReAct JSON prompt mode
-        react_messages = [dict(m) for m in messages]
-        if tools and react_messages and react_messages[0].get("role") == "system":
+        react_messages = [dict(m) if isinstance(m, dict) else m for m in prepared_messages]
+        if tools and react_messages and isinstance(react_messages[0], dict) and react_messages[0].get("role") == "system":
             react_messages[0]["content"] = (
                 react_messages[0]["content"] + format_react_tool_instructions(tools)
             )
@@ -159,7 +194,7 @@ class OpenAICompatibleProvider:
             stop=["Observation:"],
         )
         msg = resp.choices[0].message
-        content = (msg.content or "").strip()
+        content = strip_think_tags(msg.content or "")
         usage = getattr(resp, "usage", None)
         p_toks = getattr(usage, "prompt_tokens", 0) or 0
         c_toks = getattr(usage, "completion_tokens", 0) or 0

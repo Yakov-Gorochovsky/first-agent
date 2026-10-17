@@ -1,0 +1,885 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NEURAL SWARM // Tactical Command Center</title>
+  <style>
+    :root {
+      --bg-deep: #050811;
+      --bg-panel: rgba(11, 18, 34, 0.78);
+      --border-glow: rgba(0, 240, 255, 0.25);
+      --cyan: #00f0ff;
+      --emerald: #00ff9d;
+      --violet: #b56bff;
+      --amber: #ffb800;
+      --rose: #ff3b6b;
+      --text-main: #e2f1ff;
+      --text-dim: #7b93b2;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: radial-gradient(circle at 50% 25%, #0d1b36 0%, #050811 70%);
+      color: var(--text-main);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      height: 100vh;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: 62px 1fr 78px;
+    }
+
+    /* Subtle cyber grid overlay */
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(0, 240, 255, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0, 240, 255, 0.03) 1px, transparent 1px);
+      background-size: 36px 36px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* Top Header HUD */
+    header {
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 22px;
+      background: rgba(6, 11, 22, 0.88);
+      border-bottom: 1px solid var(--border-glow);
+      backdrop-filter: blur(12px);
+      box-shadow: 0 4px 25px rgba(0, 240, 255, 0.08);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-pulse {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--cyan);
+      box-shadow: 0 0 12px var(--cyan);
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.35); opacity: 0.55; }
+    }
+
+    .brand-title {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 2.5px;
+      text-transform: uppercase;
+      color: var(--cyan);
+      text-shadow: 0 0 10px rgba(0, 240, 255, 0.4);
+    }
+
+    .brand-sub {
+      font-size: 11px;
+      color: var(--text-dim);
+      font-family: Consolas, monospace;
+    }
+
+    .controls-bar {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .hud-select, .hud-btn {
+      background: rgba(14, 26, 48, 0.9);
+      color: var(--text-main);
+      border: 1px solid var(--border-glow);
+      border-radius: 6px;
+      padding: 7px 12px;
+      font-size: 12px;
+      font-family: Consolas, monospace;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .hud-select:hover, .hud-btn:hover {
+      border-color: var(--cyan);
+      box-shadow: 0 0 12px rgba(0, 240, 255, 0.25);
+    }
+
+    .hud-btn.sim-btn {
+      border-color: var(--emerald);
+      color: var(--emerald);
+      background: rgba(0, 255, 157, 0.08);
+    }
+
+    .hud-btn.sim-btn:hover {
+      background: rgba(0, 255, 157, 0.18);
+      box-shadow: 0 0 15px rgba(0, 255, 157, 0.35);
+    }
+
+    /* Main 3-Column Mission Control Grid */
+    main {
+      z-index: 1;
+      display: grid;
+      grid-template-columns: 330px 1fr 390px;
+      gap: 14px;
+      padding: 14px;
+      overflow: hidden;
+    }
+
+    .panel {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-glow);
+      border-radius: 10px;
+      backdrop-filter: blur(14px);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: inset 0 0 25px rgba(0, 240, 255, 0.03);
+    }
+
+    .panel-header {
+      padding: 10px 14px;
+      border-bottom: 1px solid rgba(0, 240, 255, 0.16);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 1.8px;
+      text-transform: uppercase;
+      color: var(--cyan);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(0, 240, 255, 0.04);
+    }
+
+    .panel-body {
+      padding: 12px;
+      overflow-y: auto;
+      flex: 1;
+      font-size: 12.5px;
+    }
+
+    /* Left Column: Multi-Tenant Vault & Privacy Airlock */
+    .left-col {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      overflow: hidden;
+    }
+
+    .left-col .panel {
+      flex: 1;
+    }
+
+    .kv-item {
+      background: rgba(255, 255, 255, 0.03);
+      border-left: 3px solid var(--cyan);
+      padding: 8px 10px;
+      border-radius: 4px;
+      margin-bottom: 8px;
+      font-family: Consolas, monospace;
+      font-size: 11.5px;
+    }
+
+    .kv-key {
+      color: var(--cyan);
+      font-weight: 700;
+    }
+
+    .skill-card {
+      background: rgba(181, 107, 255, 0.07);
+      border-left: 3px solid var(--violet);
+      padding: 8px 10px;
+      border-radius: 4px;
+      margin-bottom: 8px;
+      font-size: 11.5px;
+    }
+
+    .skill-tag {
+      display: inline-block;
+      background: rgba(181, 107, 255, 0.22);
+      color: #dfb9ff;
+      font-family: Consolas, monospace;
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 3px;
+      margin-bottom: 4px;
+    }
+
+    /* Center Column: Interactive Network Canvas + Final Output Overlay */
+    .center-stage {
+      position: relative;
+      background: radial-gradient(circle at center, rgba(0, 240, 255, 0.06) 0%, rgba(5, 8, 17, 0.9) 85%);
+      border: 1px solid var(--border-glow);
+      border-radius: 10px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #networkCanvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .stage-overlay-top {
+      position: absolute;
+      top: 12px;
+      left: 14px;
+      right: 14px;
+      display: flex;
+      justify-content: space-between;
+      pointer-events: none;
+    }
+
+    .status-pill {
+      background: rgba(7, 14, 28, 0.85);
+      border: 1px solid var(--border-glow);
+      padding: 6px 12px;
+      border-radius: 20px;
+      font-family: Consolas, monospace;
+      font-size: 11px;
+      color: var(--emerald);
+    }
+
+    .answer-drawer {
+      position: absolute;
+      bottom: 12px;
+      left: 14px;
+      right: 14px;
+      max-height: 36%;
+      background: rgba(6, 13, 26, 0.92);
+      border: 1px solid var(--emerald);
+      border-radius: 8px;
+      padding: 12px 15px;
+      overflow-y: auto;
+      box-shadow: 0 0 25px rgba(0, 255, 157, 0.15);
+      display: none;
+    }
+
+    .answer-drawer.visible {
+      display: block;
+    }
+
+    .answer-title {
+      font-size: 11px;
+      font-family: Consolas, monospace;
+      color: var(--emerald);
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      margin-bottom: 6px;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .answer-text {
+      font-size: 13px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      color: var(--text-main);
+    }
+
+    /* Right Column: Budget Gauges & Live Telemetry Stream */
+    .right-col {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      overflow: hidden;
+    }
+
+    .budget-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .metric-box {
+      background: rgba(0, 240, 255, 0.04);
+      border: 1px solid rgba(0, 240, 255, 0.15);
+      border-radius: 6px;
+      padding: 8px;
+      text-align: center;
+    }
+
+    .metric-val {
+      font-family: Consolas, monospace;
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--cyan);
+    }
+
+    .metric-label {
+      font-size: 10px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      margin-top: 2px;
+    }
+
+    .progress-bar {
+      height: 5px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 3px;
+      overflow: hidden;
+      margin-top: 5px;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--cyan), var(--emerald));
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+
+    .log-entry {
+      font-family: Consolas, monospace;
+      font-size: 11.5px;
+      padding: 7px 9px;
+      border-radius: 5px;
+      margin-bottom: 7px;
+      background: rgba(255, 255, 255, 0.025);
+      border-left: 3px solid var(--text-dim);
+      line-height: 1.4;
+      word-break: break-word;
+    }
+
+    .log-entry.peer_message, .log-entry.delegation {
+      border-left-color: var(--cyan);
+      background: rgba(0, 240, 255, 0.06);
+    }
+
+    .log-entry.tool_call {
+      border-left-color: var(--amber);
+      background: rgba(255, 184, 0, 0.06);
+    }
+
+    .log-entry.tool_result {
+      border-left-color: var(--emerald);
+    }
+
+    .log-entry.skill_learned {
+      border-left-color: var(--violet);
+      background: rgba(181, 107, 255, 0.09);
+    }
+
+    .log-time {
+      color: var(--text-dim);
+      font-size: 10px;
+    }
+
+    /* Bottom Command Deck */
+    footer {
+      z-index: 2;
+      padding: 0 22px;
+      background: rgba(6, 11, 22, 0.92);
+      border-top: 1px solid var(--border-glow);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .prompt-input {
+      flex: 1;
+      background: rgba(13, 24, 46, 0.9);
+      border: 1px solid var(--border-glow);
+      border-radius: 8px;
+      padding: 12px 16px;
+      color: var(--text-main);
+      font-size: 13.5px;
+      outline: none;
+    }
+
+    .prompt-input:focus {
+      border-color: var(--cyan);
+      box-shadow: 0 0 15px rgba(0, 240, 255, 0.25);
+    }
+
+    .launch-btn {
+      background: linear-gradient(135deg, #00c6ff, #0072ff);
+      color: #fff;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      border: none;
+      border-radius: 8px;
+      padding: 12px 22px;
+      font-size: 12.5px;
+      cursor: pointer;
+      box-shadow: 0 0 18px rgba(0, 198, 255, 0.4);
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    .launch-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 0 24px rgba(0, 240, 255, 0.65);
+    }
+  </style>
+</head>
+<body>
+  <!-- TOP HUD HEADER -->
+  <header>
+    <div class="brand">
+      <div class="brand-pulse"></div>
+      <div>
+        <div class="brand-title">Neural Swarm // Command Center</div>
+        <div class="brand-sub" id="modelBadge">Model: Connecting...</div>
+      </div>
+    </div>
+
+    <div class="controls-bar">
+      <label class="brand-sub">TENANT:</label>
+      <select id="tenantSelect" class="hud-select">
+        <option value="client_a">Client A (Fintech Vault)</option>
+        <option value="client_b">Client B (Healthcare Vault)</option>
+        <option value="client_c">Client C (Retail Vault)</option>
+      </select>
+
+      <label class="brand-sub">TOPOLOGY:</label>
+      <select id="modeSelect" class="hud-select">
+        <option value="peer">Step 3: Peer Inbox Network</option>
+        <option value="orchestrator">Step 2: Orchestrator -> Workers</option>
+      </select>
+
+      <button class="hud-btn sim-btn" onclick="triggerSimulation()" title="Instant 8-second visual showcase of peer inboxes, Python execution, and Privacy Airlock">
+        ⚡ Instant Cinema Demo
+      </button>
+      <button class="hud-btn" onclick="testPrivacyAirlock()" title="Test scrubbing client PII into a Shared Global Skill">
+        🛡️ Test Privacy Airlock
+      </button>
+    </div>
+  </header>
+
+  <!-- MAIN 3-COLUMN HUD -->
+  <main>
+    <!-- LEFT: MULTI-TENANT VAULT & GLOBAL SKILLS -->
+    <div class="left-col">
+      <div class="panel">
+        <div class="panel-header">
+          <span>🔒 Tenant Private Memory</span>
+          <span id="tenantTag" style="color: var(--emerald);">client_a</span>
+        </div>
+        <div class="panel-body" id="memoryList">
+          <div style="color: var(--text-dim);">Loading tenant vault...</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <span>🌐 Shared Global Skills (Airlocked)</span>
+          <span style="color: var(--violet);">ALL SWARMS</span>
+        </div>
+        <div class="panel-body" id="skillsList">
+          <div style="color: var(--text-dim);">Loading shared playbooks...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CENTER: INTERACTIVE NEURAL GRAPH -->
+    <div class="center-stage">
+      <div class="stage-overlay-top">
+        <div class="status-pill" id="swarmStatusPill">STATUS: STANDBY // SSE STREAM ONLINE</div>
+        <div class="status-pill" style="color: var(--cyan);" id="activeNodePill">ACTIVE NODE: IDLE</div>
+      </div>
+
+      <canvas id="networkCanvas"></canvas>
+
+      <div class="answer-drawer" id="answerDrawer">
+        <div class="answer-title">
+          <span>✓ VERIFIED SWARM SYNTHESIS</span>
+          <span style="cursor:pointer; color:var(--text-dim);" onclick="document.getElementById('answerDrawer').classList.remove('visible')">[✕ Close]</span>
+        </div>
+        <div class="answer-text" id="answerText"></div>
+      </div>
+    </div>
+
+    <!-- RIGHT: BUDGET METERS & TELEMETRY MATRIX -->
+    <div class="right-col">
+      <div class="panel" style="flex: 0 0 auto;">
+        <div class="panel-header">
+          <span>⚡ Live Budget Guardrails</span>
+          <span id="elapsedLabel">0.0s</span>
+        </div>
+        <div class="panel-body">
+          <div class="budget-grid">
+            <div class="metric-box">
+              <div class="metric-val" id="stepMetric">0/16</div>
+              <div class="metric-label">Swarm Steps</div>
+              <div class="progress-bar"><div class="progress-fill" id="stepBar"></div></div>
+            </div>
+            <div class="metric-box">
+              <div class="metric-val" id="tokenMetric">0</div>
+              <div class="metric-label">Total Tokens</div>
+              <div class="progress-bar"><div class="progress-fill" id="tokenBar"></div></div>
+            </div>
+            <div class="metric-box">
+              <div class="metric-val" id="packetMetric">0</div>
+              <div class="metric-label">Inbox Packets</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="flex: 1;">
+        <div class="panel-header">
+          <span>📡 Live SSE Telemetry Stream</span>
+          <span style="cursor:pointer; color:var(--text-dim);" onclick="document.getElementById('telemetryFeed').innerHTML=''">[Clear]</span>
+        </div>
+        <div class="panel-body" id="telemetryFeed"></div>
+      </div>
+    </div>
+  </main>
+
+  <!-- BOTTOM COMMAND INPUT -->
+  <footer>
+    <input
+      id="promptInput"
+      class="prompt-input"
+      type="text"
+      placeholder="Enter mission prompt for the swarm (e.g., 'Use Python to compute the first 10 primes, verify with critic, and save to memory')..."
+    />
+    <button class="launch-btn" onclick="launchMission(false)">🚀 Execute Live Swarm</button>
+  </footer>
+
+  <script>
+    const canvas = document.getElementById('networkCanvas');
+    const ctx = canvas.getContext('2d');
+
+    let packetCount = 0;
+    let activeNode = null;
+    let activeToolBadge = {};
+    let inboxCounts = { coordinator: 0, researcher: 0, coder: 0, critic: 0 };
+
+    // Graph nodes positioned in orbital diamond layout
+    const nodes = {
+      user:        { label: 'USER',        role: 'Mission Client',     rx: 0.14, ry: 0.50, color: '#00f0ff' },
+      coordinator: { label: 'COORDINATOR', role: 'Orchestrator / Hub', rx: 0.42, ry: 0.50, color: '#00f0ff' },
+      researcher:  { label: 'RESEARCHER',  role: 'Web & Live Data',    rx: 0.68, ry: 0.22, color: '#00ff9d' },
+      coder:       { label: 'CODER',       role: 'Python Sandbox',     rx: 0.68, ry: 0.78, color: '#ffb800' },
+      critic:      { label: 'CRITIC',      role: 'QA & Verifier',      rx: 0.88, ry: 0.50, color: '#b56bff' },
+      airlock:     { label: 'AIRLOCK DB',  role: 'SQLite + Scrubbing', rx: 0.42, ry: 0.85, color: '#ff3b6b' },
+    };
+
+    const edges = [
+      ['user', 'coordinator'],
+      ['coordinator', 'researcher'],
+      ['coordinator', 'coder'],
+      ['coordinator', 'critic'],
+      ['researcher', 'coder'],
+      ['coder', 'critic'],
+      ['researcher', 'critic'],
+      ['coordinator', 'airlock'],
+      ['coder', 'airlock'],
+    ];
+
+    // Animated particle packets traveling between nodes
+    const particles = [];
+
+    function resizeCanvas() {
+      canvas.width = canvas.parentElement.clientWidth;
+      canvas.height = canvas.parentElement.clientHeight;
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    function spawnPacket(fromKey, toKey, color = '#00f0ff', label = '') {
+      if (fromKey === 'orchestrator') fromKey = 'coordinator';
+      if (toKey === 'orchestrator') toKey = 'coordinator';
+      if (!nodes[fromKey] || !nodes[toKey]) return;
+
+      packetCount++;
+      document.getElementById('packetMetric').textContent = packetCount;
+
+      for (let i = 0; i < 4; i++) {
+        particles.push({
+          from: fromKey,
+          to: toKey,
+          progress: -i * 0.06,
+          speed: 0.018,
+          color,
+          label: i === 0 ? label : '',
+        });
+      }
+    }
+
+    let radarAngle = 0;
+    function renderNetwork() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      radarAngle += 0.03;
+
+      const W = canvas.width;
+      const H = canvas.height;
+
+      // Draw static edges
+      for (const [a, b] of edges) {
+        const na = nodes[a];
+        const nb = nodes[b];
+        ctx.beginPath();
+        ctx.moveTo(na.rx * W, na.ry * H);
+        ctx.lineTo(nb.rx * W, nb.ry * H);
+        ctx.strokeStyle = 'rgba(0, 240, 255, 0.13)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+
+      // Update & draw animated packets
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.progress += p.speed;
+        if (p.progress > 1) {
+          particles.splice(i, 1);
+          continue;
+        }
+        if (p.progress < 0) continue;
+
+        const na = nodes[p.from];
+        const nb = nodes[p.to];
+        const x = (na.rx + (nb.rx - na.rx) * p.progress) * W;
+        const y = (na.ry + (nb.ry - na.ry) * p.progress) * H;
+
+        ctx.beginPath();
+        ctx.arc(x, y, 5, 0, Math.PI * 2);
+        ctx.fillStyle = p.color;
+        ctx.shadowBlur = 16;
+        ctx.shadowColor = p.color;
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        if (p.label) {
+          ctx.font = '10px Consolas, monospace';
+          ctx.fillStyle = '#ffffff';
+          ctx.fillText(p.label, x + 8, y - 8);
+        }
+      }
+
+      // Draw nodes
+      for (const [key, node] of Object.entries(nodes)) {
+        const x = node.rx * W;
+        const y = node.ry * H;
+        const isActive = (activeNode === key) || (activeNode === 'orchestrator' && key === 'coordinator');
+
+        // Rotating radar halo for active agent
+        if (isActive) {
+          ctx.save();
+          ctx.translate(x, y);
+          ctx.rotate(radarAngle);
+          ctx.beginPath();
+          ctx.arc(0, 0, 44, 0, Math.PI * 1.3);
+          ctx.strokeStyle = node.color;
+          ctx.lineWidth = 2.5;
+          ctx.stroke();
+          ctx.restore();
+        }
+
+        // Outer glow circle
+        ctx.beginPath();
+        ctx.arc(x, y, 30, 0, Math.PI * 2);
+        ctx.fillStyle = isActive ? 'rgba(0, 240, 255, 0.18)' : 'rgba(10, 20, 40, 0.92)';
+        ctx.strokeStyle = node.color;
+        ctx.lineWidth = isActive ? 3 : 1.8;
+        ctx.shadowBlur = isActive ? 24 : 10;
+        ctx.shadowColor = node.color;
+        ctx.fill();
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+
+        // Node Title & Role
+        ctx.textAlign = 'center';
+        ctx.font = 'bold 11px Consolas, monospace';
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(node.label, x, y + 4);
+
+        ctx.font = '10px Segoe UI, sans-serif';
+        ctx.fillStyle = '#8ba3c7';
+        ctx.fillText(node.role, x, y + 46);
+
+        // Inbox badge counter
+        const qCount = inboxCounts[key] || 0;
+        if (qCount > 0) {
+          ctx.beginPath();
+          ctx.arc(x + 24, y - 24, 10, 0, Math.PI * 2);
+          ctx.fillStyle = '#ff3b6b';
+          ctx.fill();
+          ctx.font = 'bold 10px Consolas, monospace';
+          ctx.fillStyle = '#fff';
+          ctx.fillText(String(qCount), x + 24, y - 20);
+        }
+
+        // Active tool call badge
+        if (activeToolBadge[key]) {
+          ctx.font = '10px Consolas, monospace';
+          ctx.fillStyle = '#ffb800';
+          ctx.fillText(`⚙ ${activeToolBadge[key]}`, x, y - 38);
+        }
+      }
+
+      requestAnimationFrame(renderNetwork);
+    }
+    requestAnimationFrame(renderNetwork);
+
+    function appendLog(type, title, body) {
+      const feed = document.getElementById('telemetryFeed');
+      const div = document.createElement('div');
+      div.className = `log-entry ${type}`;
+      const now = new Date().toLocaleTimeString();
+      div.innerHTML = `<div class="log-time">[${now}] <strong>${title}</strong></div><div>${body}</div>`;
+      feed.prepend(div);
+    }
+
+    async function refreshState() {
+      const tenant = document.getElementById('tenantSelect').value;
+      document.getElementById('tenantTag').textContent = tenant;
+      const res = await fetch(`/api/state?tenant=${encodeURIComponent(tenant)}`);
+      const data = await res.json();
+
+      document.getElementById('modelBadge').textContent = `Model: ${data.model} // Endpoint: ${data.endpoint}`;
+
+      // Render tenant memories
+      const memBox = document.getElementById('memoryList');
+      const memEntries = Object.entries(data.tenant_memories || {});
+      if (memEntries.length === 0) {
+        memBox.innerHTML = `<div style="color:var(--text-dim);">No isolated memories stored for <b>${tenant}</b> yet.</div>`;
+      } else {
+        memBox.innerHTML = memEntries
+          .map(([k, v]) => `<div class="kv-item"><div class="kv-key">${k}</div><div>${v}</div></div>`)
+          .join('');
+      }
+
+      // Render global skills
+      const skillBox = document.getElementById('skillsList');
+      const skills = data.global_skills || [];
+      if (skills.length === 0) {
+        skillBox.innerHTML = `<div style="color:var(--text-dim);">No global skills distilled yet.</div>`;
+      } else {
+        skillBox.innerHTML = skills
+          .map(s => `
+            <div class="skill-card">
+              <span class="skill-tag">${s.category} (x${s.learned_count})</span>
+              <div style="color:#b8cbe8; margin-bottom:3px;"><b>Pattern:</b> ${s.problem_pattern}</div>
+              <div style="color:var(--emerald);"><b>Playbook:</b> ${s.solution_rule}</div>
+            </div>
+          `)
+          .join('');
+      }
+    }
+
+    document.getElementById('tenantSelect').addEventListener('change', () => {
+      refreshState();
+      appendLog('system', 'TENANT VAULT SWITCHED', `Isolated memory context switched to '${document.getElementById('tenantSelect').value}'.`);
+    });
+
+    // Connect to Live SSE Stream
+    const evtSource = new EventSource('/api/events');
+    evtSource.onmessage = (e) => {
+      const ev = JSON.parse(e.data);
+      const etype = ev.event_type;
+      const agent = ev.agent_name === 'orchestrator' ? 'coordinator' : ev.agent_name;
+      const d = ev.data || {};
+
+      if (d.inboxes) {
+        inboxCounts = d.inboxes;
+      }
+
+      if (etype === 'mission_start') {
+        document.getElementById('swarmStatusPill').textContent = `STATUS: RUNNING (${d.mode.toUpperCase()})`;
+        document.getElementById('answerDrawer').classList.remove('visible');
+        appendLog('peer_message', `MISSION STARTED [${ev.tenant_id}]`, d.prompt);
+      } else if (etype === 'agent_start') {
+        activeNode = agent;
+        document.getElementById('activeNodePill').textContent = `ACTIVE NODE: ${agent.toUpperCase()}`;
+      } else if (etype === 'peer_message') {
+        spawnPacket(d.from_agent, d.to_agent, '#00f0ff', 'MSG');
+        appendLog('peer_message', `INBOX: ${d.from_agent.toUpperCase()} ➔ ${d.to_agent.toUpperCase()}`, d.message);
+      } else if (etype === 'delegation') {
+        spawnPacket('coordinator', d.to_worker, '#00ff9d', 'TASK');
+        appendLog('delegation', `DELEGATE: COORDINATOR ➔ ${d.to_worker.toUpperCase()}`, d.task);
+      } else if (etype === 'tool_call') {
+        activeNode = agent;
+        activeToolBadge[agent] = d.tool;
+        appendLog('tool_call', `${agent.toUpperCase()} // TOOL CALL`, `${d.tool}(${JSON.stringify(d.arguments)})`);
+      } else if (etype === 'tool_result') {
+        delete activeToolBadge[agent];
+        const preview = String(d.result || '').slice(0, 220);
+        appendLog('tool_result', `${agent.toUpperCase()} // OBSERVATION`, preview);
+        refreshState();
+      } else if (etype === 'skill_learned') {
+        spawnPacket(agent in nodes ? agent : 'coder', 'airlock', '#b56bff', 'AIRLOCK');
+        appendLog('skill_learned', `🛡️ PRIVACY AIRLOCK // SKILL DISTILLED`, `[${d.category}] ${d.problem_pattern} ➔ ${d.solution_rule}`);
+        refreshState();
+      } else if (etype === 'budget') {
+        document.getElementById('stepMetric').textContent = `${d.total_steps}/${d.max_swarm_steps}`;
+        document.getElementById('tokenMetric').textContent = d.total_tokens;
+        document.getElementById('elapsedLabel').textContent = `${d.elapsed_seconds}s`;
+        document.getElementById('stepBar').style.width = `${Math.min(100, (d.total_steps / d.max_swarm_steps) * 100)}%`;
+        document.getElementById('tokenBar').style.width = `${Math.min(100, (d.total_tokens / d.max_total_tokens) * 100)}%`;
+      } else if (etype === 'swarm_complete' || etype === 'mission_end') {
+        activeNode = null;
+        inboxCounts = { coordinator: 0, researcher: 0, coder: 0, critic: 0 };
+        document.getElementById('activeNodePill').textContent = 'ACTIVE NODE: IDLE';
+        document.getElementById('swarmStatusPill').textContent = 'STATUS: MISSION COMPLETE';
+        if (d.answer || d.reply) {
+          const text = d.answer || d.reply;
+          if (text !== 'Simulation complete.') {
+            document.getElementById('answerText').textContent = text;
+            document.getElementById('answerDrawer').classList.add('visible');
+          }
+        }
+        refreshState();
+      }
+    };
+
+    async function launchMission(simulate = false) {
+      const input = document.getElementById('promptInput');
+      const prompt = input.value.trim() || "Analyze live system throughput, run Python efficiency benchmark, verify with critic, and store findings.";
+      const tenant_id = document.getElementById('tenantSelect').value;
+      const mode = document.getElementById('modeSelect').value;
+
+      await fetch('/api/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, tenant_id, mode, simulate }),
+      });
+    }
+
+    function triggerSimulation() {
+      const promptInput = document.getElementById('promptInput');
+      if (!promptInput.value.trim()) {
+        promptInput.value = "Fetch live telemetry benchmarks, compute Python efficiency score, and verify accuracy with Critic.";
+      }
+      launchMission(true);
+    }
+
+    async function testPrivacyAirlock() {
+      const tenant_id = document.getElementById('tenantSelect').value;
+      await fetch('/api/airlock-test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tenant_id,
+          category: 'python_api',
+          problem: `Client ${tenant_id} user admin@${tenant_id}.com with key sk-987654321abcd failed scraping https://private.${tenant_id}.org:9443`,
+          solution: 'Always set a custom User-Agent header and retry with exponential backoff.',
+        }),
+      });
+    }
+
+    document.getElementById('promptInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') launchMission(false);
+    });
+
+    refreshState();
+  </script>
+</body>
+</html>

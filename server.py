@@ -1,0 +1,418 @@
+"""
+server.py - Step 4: Live SSE (Server-Sent Events) Backend for the Neural Swarm UI.
+
+Built using Python's standard-library `ThreadingHTTPServer` (zero extra dependencies!).
+Subscribes to `core/bus.py` (EventBus) and streams every agent thought, peer inbox
+message, tool call, PrivacyAirlock skill, and budget update in real time to the browser.
+
+Usage:
+    python server.py
+    Then open http://localhost:8000 in your browser.
+"""
+
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+import os
+from pathlib import Path
+import queue
+import threading
+import time
+from typing import Any, Dict, List
+from urllib.parse import parse_qs, urlparse
+from dotenv import load_dotenv
+
+from core.budget import BudgetConfig, BudgetTracker
+from core.bus import EventBus, SwarmEvent
+from core.llm import OpenAICompatibleProvider
+from core.peer_swarm import PeerSwarm
+from core.storage import PrivacyAirlock, SQLiteStorage
+from core.swarm import OrchestratorSwarm
+from tools import WORKSPACE_DIR
+
+load_dotenv()
+
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:11434/v1")
+API_KEY = os.getenv("API_KEY", "ollama")
+MODEL_NAME = os.getenv("MODEL_NAME", "qwen3:8b")
+MAX_STEPS = int(os.getenv("MAX_STEPS", "8"))
+PORT = int(os.getenv("PORT", "8000"))
+
+STATIC_DIR = Path(__file__).parent / "static"
+DB_PATH = WORKSPACE_DIR / "swarm.db"
+
+# Shared application state
+bus = EventBus()
+storage = SQLiteStorage(db_path=DB_PATH, max_trace_rows=500)
+budget = BudgetTracker(
+    config=BudgetConfig(
+        max_swarm_steps=MAX_STEPS * 2,
+        max_steps_per_agent=MAX_STEPS,
+        max_total_tokens=24000,
+        max_wall_seconds=240.0,
+    ),
+    bus=bus,
+)
+llm = OpenAICompatibleProvider(base_url=API_BASE_URL, api_key=API_KEY, model=MODEL_NAME)
+orchestrator_swarm = OrchestratorSwarm(llm=llm, storage=storage, budget=budget, bus=bus)
+peer_swarm = PeerSwarm(llm=llm, storage=storage, budget=budget, bus=bus)
+
+# Connected SSE client queues
+_sse_clients_lock = threading.Lock()
+_sse_clients: List[queue.Queue] = []
+_run_lock = threading.Lock()
+
+
+def _broadcast_event(event: SwarmEvent) -> None:
+    payload = json.dumps(event.to_dict(), default=str)
+    with _sse_clients_lock:
+        for q in list(_sse_clients):
+            try:
+                q.put_nowait(payload)
+            except queue.Full:
+                pass
+
+
+bus.subscribe(_broadcast_event)
+
+
+def _run_cinematic_simulation(tenant_id: str, prompt: str) -> None:
+    """Emit a realistic multi-agent peer-network flow for instant portfolio/client demos."""
+    budget.reset()
+    budget.tenant_id = tenant_id
+
+    def step_sleep(sec: float = 0.85) -> None:
+        time.sleep(sec)
+
+    bus.emit(
+        "peer_message",
+        agent_name="user",
+        tenant_id=tenant_id,
+        from_agent="user",
+        to_agent="coordinator",
+        message=prompt,
+        inboxes={"coordinator": 1, "researcher": 0, "coder": 0, "critic": 0},
+    )
+    step_sleep(0.7)
+
+    bus.emit("agent_start", agent_name="coordinator", tenant_id=tenant_id, task=prompt)
+    budget.check_and_increment_step("coordinator")
+    budget.record_tokens("coordinator", 310, 95)
+    step_sleep(0.8)
+
+    bus.emit(
+        "peer_message",
+        agent_name="coordinator",
+        tenant_id=tenant_id,
+        from_agent="coordinator",
+        to_agent="researcher",
+        message="Fetch live telemetry & weather benchmarks, then forward raw metrics directly to 'coder' inbox.",
+        inboxes={"coordinator": 0, "researcher": 1, "coder": 0, "critic": 0},
+    )
+    step_sleep(0.9)
+
+    bus.emit("agent_start", agent_name="researcher", tenant_id=tenant_id, task="Fetch live telemetry")
+    budget.check_and_increment_step("researcher")
+    bus.emit(
+        "tool_call",
+        agent_name="researcher",
+        tenant_id=tenant_id,
+        tool="web_search",
+        arguments={"query": prompt[:60]},
+    )
+    step_sleep(0.9)
+    bus.emit(
+        "tool_result",
+        agent_name="researcher",
+        tenant_id=tenant_id,
+        tool="web_search",
+        result="Found live benchmark data: latency_p95=42ms, throughput=14,200 req/s, temp=23C.",
+    )
+    budget.record_tokens("researcher", 480, 140)
+    step_sleep(0.7)
+
+    bus.emit(
+        "peer_message",
+        agent_name="researcher",
+        tenant_id=tenant_id,
+        from_agent="researcher",
+        to_agent="coder",
+        message="Raw telemetry ready (p95=42ms, 14200 rps). Compute efficiency score in Python and forward to 'critic'.",
+        inboxes={"coordinator": 0, "researcher": 0, "coder": 1, "critic": 0},
+    )
+    step_sleep(0.9)
+
+    bus.emit("agent_start", agent_name="coder", tenant_id=tenant_id, task="Run Python analysis")
+    budget.check_and_increment_step("coder")
+    bus.emit(
+        "tool_call",
+        agent_name="coder",
+        tenant_id=tenant_id,
+        tool="run_python",
+        arguments={"code": "rps, p95 = 14200, 42\nscore = round((rps / p95) * 1.15, 2)\nprint(f'Efficiency Index: {score}')"},
+    )
+    step_sleep(0.9)
+    bus.emit(
+        "tool_result",
+        agent_name="coder",
+        tenant_id=tenant_id,
+        tool="run_python",
+        result="STDOUT:\nEfficiency Index: 388.81",
+    )
+    budget.record_tokens("coder", 520, 165)
+
+    # Distill a PrivacyAirlock global skill
+    skill = storage.add_global_skill(
+        category="telemetry_analysis",
+        problem=f"Client {tenant_id} endpoint https://api.{tenant_id}.internal:8443 reported raw p95 metrics",
+        solution="Normalize throughput-to-latency ratio (RPS / p95_ms) in Python sandbox before QA handoff.",
+    )
+    bus.emit("skill_learned", agent_name="coder", tenant_id=tenant_id, **skill)
+    step_sleep(0.8)
+
+    bus.emit(
+        "peer_message",
+        agent_name="coder",
+        tenant_id=tenant_id,
+        from_agent="coder",
+        to_agent="critic",
+        message="Computed Efficiency Index = 388.81 via Python sandbox. Please verify accuracy.",
+        inboxes={"coordinator": 0, "researcher": 0, "coder": 0, "critic": 1},
+    )
+    step_sleep(0.9)
+
+    bus.emit("agent_start", agent_name="critic", tenant_id=tenant_id, task="Verify calculation")
+    budget.check_and_increment_step("critic")
+    bus.emit(
+        "tool_call",
+        agent_name="critic",
+        tenant_id=tenant_id,
+        tool="calculator",
+        arguments={"expression": "(14200 / 42) * 1.15"},
+    )
+    step_sleep(0.7)
+    bus.emit(
+        "tool_result",
+        agent_name="critic",
+        tenant_id=tenant_id,
+        tool="calculator",
+        result="(14200 / 42) * 1.15 = 388.8095238095238",
+    )
+    budget.record_tokens("critic", 410, 110)
+    step_sleep(0.6)
+
+    final_text = (
+        f"[Peer Swarm Verified Report for '{tenant_id}']\n"
+        "1. Researcher gathered live benchmark metrics (14,200 req/s @ 42ms p95).\n"
+        "2. Coder executed Python sandbox analysis -> Efficiency Index: 388.81.\n"
+        "3. Critic independently verified the math (388.8095) and approved the output.\n"
+        "4. PrivacyAirlock distilled the reusable normalization rule into Shared Global Skills (all client URLs & ports scrubbed)."
+    )
+    storage.save_tenant_memory(tenant_id, "last_efficiency_index", "388.81 (Verified)")
+    storage.append_session_turn(tenant_id, "user", prompt)
+    storage.append_session_turn(tenant_id, "assistant", final_text)
+
+    bus.emit(
+        "swarm_complete",
+        agent_name="critic",
+        tenant_id=tenant_id,
+        answer=final_text,
+    )
+    bus.emit(
+        "agent_finish",
+        agent_name="critic",
+        tenant_id=tenant_id,
+        answer=final_text,
+    )
+
+
+class SwarmRequestHandler(BaseHTTPRequestHandler):
+    def log_message(self, format: str, *args: Any) -> None:
+        # Keep console clean
+        pass
+
+    def _send_json(self, data: Dict[str, Any], status: int = 200) -> None:
+        body = json.dumps(data, default=str).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path in {"/", "/index.html"}:
+            index_file = STATIC_DIR / "index.html"
+            if not index_file.exists():
+                self._send_json({"error": "static/index.html not found"}, 404)
+                return
+            content = index_file.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+            return
+
+        if path == "/api/state":
+            qs = parse_qs(parsed.query)
+            tenant_id = qs.get("tenant", ["client_a"])[0]
+            self._send_json(
+                {
+                    "tenant_id": tenant_id,
+                    "model": MODEL_NAME,
+                    "endpoint": API_BASE_URL,
+                    "tenant_memories": storage.get_tenant_memories(tenant_id),
+                    "global_skills": storage.get_global_skills(limit=12),
+                    "session_turns": storage.get_session_turns(tenant_id, limit=10),
+                    "budget": {
+                        "total_steps": budget.total_steps,
+                        "max_swarm_steps": budget.config.max_swarm_steps,
+                        "total_tokens": budget.total_tokens,
+                        "max_total_tokens": budget.config.max_total_tokens,
+                        "elapsed_seconds": budget.elapsed_seconds,
+                        "agent_steps": budget.agent_steps,
+                    },
+                }
+            )
+            return
+
+        if path == "/api/events":
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+
+            client_q: queue.Queue = queue.Queue(maxsize=200)
+            with _sse_clients_lock:
+                _sse_clients.append(client_q)
+
+            try:
+                # Send initial connected ping
+                self.wfile.write(b"data: {\"event_type\": \"connected\"}\n\n")
+                self.wfile.flush()
+                while True:
+                    try:
+                        msg = client_q.get(timeout=15)
+                        self.wfile.write(f"data: {msg}\n\n".encode("utf-8"))
+                        self.wfile.flush()
+                    except queue.Empty:
+                        # Heartbeat comment to keep connection alive
+                        self.wfile.write(b": heartbeat\n\n")
+                        self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            finally:
+                with _sse_clients_lock:
+                    if client_q in _sse_clients:
+                        _sse_clients.remove(client_q)
+            return
+
+        self._send_json({"error": "Not found"}, 404)
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        length = int(self.headers.get("Content-Length", "0"))
+        raw_body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
+        try:
+            body = json.loads(raw_body)
+        except json.JSONDecodeError:
+            body = {}
+
+        if parsed.path == "/api/run":
+            prompt = str(body.get("prompt", "")).strip()
+            tenant_id = str(body.get("tenant_id", "client_a")).strip() or "client_a"
+            mode = str(body.get("mode", "peer")).strip().lower()
+            simulate = bool(body.get("simulate", False))
+
+            if not prompt:
+                self._send_json({"error": "Prompt is required"}, 400)
+                return
+
+            if not _run_lock.acquire(blocking=False):
+                self._send_json({"error": "A swarm mission is already running."}, 409)
+                return
+
+            def _worker() -> None:
+                try:
+                    bus.emit(
+                        "mission_start",
+                        agent_name="system",
+                        tenant_id=tenant_id,
+                        mode=mode,
+                        prompt=prompt,
+                        simulate=simulate,
+                    )
+                    if simulate:
+                        _run_cinematic_simulation(tenant_id, prompt)
+                        reply = "Simulation complete."
+                    elif mode == "orchestrator":
+                        reply = orchestrator_swarm.run(prompt, tenant_id=tenant_id)
+                    else:
+                        reply = peer_swarm.run(prompt, tenant_id=tenant_id)
+
+                    bus.emit(
+                        "mission_end",
+                        agent_name="system",
+                        tenant_id=tenant_id,
+                        mode=mode,
+                        reply=reply,
+                    )
+                except Exception as exc:
+                    bus.emit(
+                        "mission_error",
+                        agent_name="system",
+                        tenant_id=tenant_id,
+                        error=str(exc),
+                    )
+                finally:
+                    _run_lock.release()
+
+            threading.Thread(target=_worker, daemon=True).start()
+            self._send_json({"status": "started", "tenant_id": tenant_id, "mode": mode})
+            return
+
+        if parsed.path == "/api/airlock-test":
+            category = str(body.get("category", "security"))
+            problem = str(body.get("problem", ""))
+            solution = str(body.get("solution", ""))
+            tenant_id = str(body.get("tenant_id", "client_a"))
+            sanitized = storage.add_global_skill(category, problem, solution)
+            bus.emit("skill_learned", agent_name="privacy_airlock", tenant_id=tenant_id, **sanitized)
+            self._send_json({"sanitized": sanitized})
+            return
+
+        if parsed.path == "/api/memory":
+            tenant_id = str(body.get("tenant_id", "client_a"))
+            key = str(body.get("key", "")).strip()
+            fact = str(body.get("fact", "")).strip()
+            if key and fact:
+                storage.save_tenant_memory(tenant_id, key, fact)
+            self._send_json({"tenant_memories": storage.get_tenant_memories(tenant_id)})
+            return
+
+        self._send_json({"error": "Unknown endpoint"}, 404)
+
+
+def main() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), SwarmRequestHandler)
+    print("=" * 72)
+    print(f" NEURAL SWARM // COMMAND CENTER UI")
+    print(f" URL:      http://localhost:{PORT}")
+    print(f" Model:    {MODEL_NAME} ({API_BASE_URL})")
+    print(f" Database: {DB_PATH}")
+    print("=" * 72)
+    print("Press Ctrl+C to stop the server.\n")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down server...")
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()

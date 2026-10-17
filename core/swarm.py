@@ -52,6 +52,7 @@ class WorkerAgent:
         tool_names: Optional[List[str]] = None,
         extra_tools: Optional[Dict[str, Callable[..., str]]] = None,
         extra_schemas: Optional[List[Dict[str, Any]]] = None,
+        yield_on_tools: Optional[List[str]] = None,
     ) -> None:
         self.name = name
         self.role = role
@@ -63,6 +64,7 @@ class WorkerAgent:
         self.tool_names = tool_names if tool_names is not None else list(AVAILABLE_TOOLS.keys())
         self.extra_tools = extra_tools or {}
         self.extra_schemas = extra_schemas or []
+        self.yield_on_tools = set(yield_on_tools or [])
 
     def _get_tools_and_schemas(self, tenant_id: str) -> tuple[Dict[str, Callable[..., str]], List[Dict[str, Any]]]:
         """Bind tenant-scoped memory tools + global skill learning tool + selected tools."""
@@ -250,6 +252,9 @@ class WorkerAgent:
                 else:
                     react_called.append({"tool": tc.name, "args": tc.arguments})
                     react_observations.append(f"Observation from {tc.name}: {result}")
+
+            if any(tc.name in self.yield_on_tools for tc in resp.tool_calls):
+                return ""
 
             if resp.used_react_fallback:
                 messages.append(

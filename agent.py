@@ -1,12 +1,13 @@
 """
-agent.py - Modular Multi-Tenant AI Swarm CLI (Step 2: Orchestrator -> Workers + Budgets).
+agent.py - Modular Multi-Tenant AI Swarm CLI (Supports Step 2 Orchestrator & Step 3 Peer Network).
 
 Uses loosely coupled interfaces from `core/`:
-- `core/llm.py`     (LLMProvider: Ollama, Hugging Face, Groq, Gemini, OpenAI)
-- `core/storage.py` (StorageBackend: SQLite multi-tenant isolation + PrivacyAirlock global skills)
-- `core/budget.py`  (BudgetTracker: step, token, and wall-time caps)
-- `core/bus.py`     (EventBus: pub/sub telemetry for CLI and SSE UI)
-- `core/swarm.py`   (OrchestratorSwarm & WorkerAgent)
+- `core/llm.py`        (LLMProvider: Ollama, Hugging Face, Groq, Gemini, OpenAI)
+- `core/storage.py`    (StorageBackend: SQLite multi-tenant isolation + PrivacyAirlock global skills)
+- `core/budget.py`     (BudgetTracker: step, token, and wall-time caps)
+- `core/bus.py`        (EventBus: pub/sub telemetry for CLI and SSE UI)
+- `core/swarm.py`      (Step 2: OrchestratorSwarm)
+- `core/peer_swarm.py` (Step 3: PeerSwarm with decentralized inboxes)
 """
 
 import argparse
@@ -16,6 +17,7 @@ from dotenv import load_dotenv
 from core.budget import BudgetConfig, BudgetTracker
 from core.bus import EventBus, SwarmEvent
 from core.llm import OpenAICompatibleProvider
+from core.peer_swarm import PeerSwarm
 from core.storage import SQLiteStorage
 from core.swarm import OrchestratorSwarm
 from tools import WORKSPACE_DIR
@@ -40,6 +42,11 @@ def console_event_listener(event: SwarmEvent) -> None:
 
     if etype == "delegation":
         print(f"  [Orchestrator -> {data.get('to_worker')}] Task: {data.get('task')}")
+    elif etype == "peer_message":
+        print(
+            f"  [Inbox: {data.get('from_agent')} -> {data.get('to_agent')}] "
+            f"{str(data.get('message', ''))[:200]}"
+        )
     elif etype == "tool_call":
         print(f"  [{agent} | Tool Call] {data.get('tool')}({data.get('arguments')})")
     elif etype == "tool_result":
@@ -53,7 +60,7 @@ def console_event_listener(event: SwarmEvent) -> None:
         )
 
 
-def build_swarm() -> tuple[OrchestratorSwarm, SQLiteStorage, BudgetTracker, EventBus]:
+def build_swarms() -> tuple[OrchestratorSwarm, PeerSwarm, SQLiteStorage, BudgetTracker, EventBus]:
     bus = EventBus()
     bus.subscribe(console_event_listener)
 
@@ -72,8 +79,9 @@ def build_swarm() -> tuple[OrchestratorSwarm, SQLiteStorage, BudgetTracker, Even
         api_key=API_KEY,
         model=MODEL_NAME,
     )
-    swarm = OrchestratorSwarm(llm=llm, storage=storage, budget=budget, bus=bus)
-    return swarm, storage, budget, bus
+    orch = OrchestratorSwarm(llm=llm, storage=storage, budget=budget, bus=bus)
+    peer = PeerSwarm(llm=llm, storage=storage, budget=budget, bus=bus)
+    return orch, peer, storage, budget, bus
 
 
 def main() -> None:
@@ -86,34 +94,49 @@ def main() -> None:
         default="client_a",
         help="Tenant ID for isolated memory (default: client_a).",
     )
+    parser.add_argument(
+        "-m",
+        "--mode",
+        type=str,
+        choices=["peer", "orchestrator"],
+        default="peer",
+        help="Swarm topology: 'peer' (Step 3 Inbox Network) or 'orchestrator' (Step 2).",
+    )
     parser.add_argument("--new-session", action="store_true", help="Clear tenant session history.")
     args = parser.parse_args()
 
-    swarm, storage, budget, _ = build_swarm()
+    orch_swarm, peer_swarm, storage, budget, _ = build_swarms()
     tenant_id = args.tenant
+    mode = args.mode
 
     if args.new_session:
         storage.clear_session(tenant_id)
 
-    print("=" * 74)
-    print(f" Modular AI Swarm | Model: {MODEL_NAME} | Tenant: '{tenant_id}'")
-    print(" Architecture: Orchestrator -> Workers (researcher, coder) + SQLite + Budgets")
-    print("=" * 74)
+    print("=" * 76)
+    print(f" Modular AI Swarm | Model: {MODEL_NAME} | Tenant: '{tenant_id}' | Mode: {mode.upper()}")
+    print(" Topologies: 'peer' (Coordinator/Researcher/Coder/Critic Inboxes) | 'orchestrator'")
+    print(" Web UI:     Run `python server.py` and open http://localhost:8000")
+    print("=" * 76)
+
+    def run_active(prompt_text: str) -> str:
+        if mode == "orchestrator":
+            return orch_swarm.run(prompt_text, tenant_id=tenant_id)
+        return peer_swarm.run(prompt_text, tenant_id=tenant_id)
 
     if args.prompt:
         print(f"\nYou ({tenant_id}): {args.prompt}")
-        reply = swarm.run(args.prompt, tenant_id=tenant_id)
+        reply = run_active(args.prompt)
         print(f"\nSwarm: {reply}")
         print(f"  [Budget Summary] {budget.summary()}\n")
         return
 
     print(
-        "Commands: '/tenant <id>' switch client | '/memory' private facts | "
-        "'/skills' shared global skills | '/budget' | '/clear' | 'exit'\n"
+        "Commands: '/mode peer|orchestrator' | '/tenant <id>' | '/memory' | "
+        "'/skills' | '/budget' | '/clear' | 'exit'\n"
     )
     while True:
         try:
-            user_input = input(f"You ({tenant_id}): ").strip()
+            user_input = input(f"You ({tenant_id} | {mode}): ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\nGoodbye!")
             break
@@ -123,6 +146,14 @@ def main() -> None:
         if user_input.lower() in {"exit", "quit", "q"}:
             print("Goodbye!")
             break
+        if user_input.lower().startswith("/mode "):
+            new_mode = user_input.split(maxsplit=1)[1].strip().lower()
+            if new_mode in {"peer", "orchestrator"}:
+                mode = new_mode
+                print(f"  [Switched swarm topology to '{mode}'.]\n")
+            else:
+                print("  [Choose '/mode peer' or '/mode orchestrator'.]\n")
+            continue
         if user_input.lower().startswith("/tenant "):
             tenant_id = user_input.split(maxsplit=1)[1].strip()
             print(f"  [Switched active tenant to '{tenant_id}'. Private memory is isolated.]\n")
@@ -144,7 +175,7 @@ def main() -> None:
             continue
 
         try:
-            reply = swarm.run(user_input, tenant_id=tenant_id)
+            reply = run_active(user_input)
             print(f"\nSwarm: {reply}")
             print(f"  [Budget Summary] {budget.summary()}\n")
         except Exception as exc:
