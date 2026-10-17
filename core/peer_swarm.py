@@ -112,20 +112,24 @@ class PeerSwarm:
         coord_tools, coord_schemas = self._make_peer_comm_tools("coordinator", all_peer_names)
         coord_tools["spawn_specialist"] = spawn_fn
         coord_tools.update(self.extra_tools)
-        coord_schemas.append(spawn_schema)
         coord_schemas.extend(self.extra_schemas)
+        self._spawn_schema = spawn_schema
 
         directive_block = f"\nSWARM MISSION DIRECTIVE:\n{self.directive}\n" if self.directive else ""
 
         coord_worker = WorkerAgent(
             name="coordinator",
             role="Mission Router & Synthesizer",
-            instructions=f"{CONFIG.coordinator_prompt}{directive_block}\nACTIVE PEER SPECIALISTS:\n{roster_summary}",
+            instructions=(
+                f"{CONFIG.coordinator_prompt}{directive_block}\n"
+                f"ACTIVE PEER SPECIALISTS:\n{roster_summary}\n"
+                "IMPORTANT: Always call `send_peer_message` to route the user's task to the best specialist."
+            ),
             llm=self.llm,
             storage=self.storage,
             budget=self.budget,
             bus=self.bus,
-            tool_names=["remember_fact", "recall_memories"],
+            tool_names=[],
             extra_tools=coord_tools,
             extra_schemas=coord_schemas,
             yield_on_tools=["send_peer_message", "finish_swarm"],
@@ -143,8 +147,6 @@ class PeerSwarm:
     ) -> None:
         all_peer_names = ["coordinator"] + [s.name for s in self._active_role_specs()]
         comm_tools, comm_schemas = self._make_peer_comm_tools(spec.name, all_peer_names)
-        comm_tools.update(self.extra_tools)
-        comm_schemas.extend(self.extra_schemas)
         peer_list_str = ", ".join(p for p in all_peer_names if p != spec.name)
         directive_block = f"\nSWARM MISSION DIRECTIVE: {self.directive}\n" if self.directive else ""
 
@@ -291,7 +293,8 @@ class PeerSwarm:
                     batch.append(active_node.inbox.popleft())
 
                 inbox_prompt = "\n\n".join(
-                    f"[INBOX MESSAGE from '{m.sender}']: {m.content}" for m in batch
+                    m.content if m.sender == "user" else f"[INBOX MESSAGE from '{m.sender}']: {m.content}"
+                    for m in batch
                 )
                 self.bus.emit(
                     "inbox_pickup",
@@ -313,17 +316,7 @@ class PeerSwarm:
 
                 any_pending = any(len(n.inbox) > 0 for n in self.nodes.values())
                 if not any_pending and last_output:
-                    if active_node.name == "coordinator":
-                        self._final_answer = last_output
-                        break
-                    else:
-                        self.nodes["coordinator"].inbox.append(
-                            PeerMessage(
-                                sender=active_node.name,
-                                recipient="coordinator",
-                                content=last_output,
-                            )
-                        )
+                    if active_node.name != "coordinator":
                         self.bus.emit(
                             "peer_message",
                             agent_name=active_node.name,
@@ -333,6 +326,8 @@ class PeerSwarm:
                             message=last_output,
                             inboxes=self._inbox_snapshot(),
                         )
+                    self._final_answer = last_output
+                    break
 
             final = self._final_answer or last_output or "Swarm completed with no output."
             self.storage.append_session_turn(tenant_id, "user", user_input)

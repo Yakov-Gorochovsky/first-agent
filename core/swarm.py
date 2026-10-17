@@ -19,7 +19,7 @@ from core.storage import StorageBackend
 from tools import AVAILABLE_TOOLS, TOOL_SCHEMAS
 
 
-def _build_context_block(storage: StorageBackend, tenant_id: str) -> str:
+def _build_context_block(storage: StorageBackend, tenant_id: str, include_skills: bool = True) -> str:
     """Assemble strictly private tenant memories + shared sanitized global skills."""
     sections: List[str] = []
 
@@ -28,13 +28,14 @@ def _build_context_block(storage: StorageBackend, tenant_id: str) -> str:
         lines = "\n".join(f"  - {k}: {v}" for k, v in tenant_mems.items())
         sections.append(f"[PRIVATE TENANT MEMORY (tenant='{tenant_id}')]:\n{lines}")
 
-    global_skills = storage.get_global_skills(limit=8)
-    if global_skills:
-        s_lines = "\n".join(
-            f"  - [{s['category']}] When: {s['problem_pattern']} -> Do: {s['solution_rule']}"
-            for s in global_skills
-        )
-        sections.append(f"[SHARED GLOBAL SKILLS (Anonymized Cross-Swarm Playbooks)]:\n{s_lines}")
+    if include_skills:
+        global_skills = storage.get_global_skills(limit=5)
+        if global_skills:
+            s_lines = "\n".join(
+                f"  - [{s['category']}] When: {s['problem_pattern']} -> Do: {s['solution_rule']}"
+                for s in global_skills
+            )
+            sections.append(f"[SHARED GLOBAL SKILLS (Anonymized Cross-Swarm Playbooks)]:\n{s_lines}")
 
     return ("\n\n" + "\n\n".join(sections)) if sections else ""
 
@@ -112,36 +113,37 @@ class WorkerAgent:
             )
 
         tools_map["share_global_skill"] = _share_global_skill
-        schemas.append(
-            {
-                "type": "function",
-                "function": {
-                    "name": "share_global_skill",
-                    "description": (
-                        "Publish a reusable, generic technical lesson or bug-fix pattern "
-                        "to the shared Global Skills playbook (automatically scrubbed of private client data)."
-                    ),
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "category": {
-                                "type": "string",
-                                "description": "Category (e.g., 'python', 'web_scraping', 'math').",
+        if "share_global_skill" in self.tool_names:
+            schemas.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "share_global_skill",
+                        "description": (
+                            "Publish a reusable, generic technical lesson or bug-fix pattern "
+                            "to the shared Global Skills playbook (automatically scrubbed of private client data)."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "category": {
+                                    "type": "string",
+                                    "description": "Category (e.g., 'python', 'web_scraping', 'math').",
+                                },
+                                "problem": {
+                                    "type": "string",
+                                    "description": "Generic description of the technical problem or pitfall.",
+                                },
+                                "solution": {
+                                    "type": "string",
+                                    "description": "Generic reusable solution or best practice.",
+                                },
                             },
-                            "problem": {
-                                "type": "string",
-                                "description": "Generic description of the technical problem or pitfall.",
-                            },
-                            "solution": {
-                                "type": "string",
-                                "description": "Generic reusable solution or best practice.",
-                            },
+                            "required": ["category", "problem", "solution"],
                         },
-                        "required": ["category", "problem", "solution"],
                     },
-                },
-            }
-        )
+                }
+            )
 
         tools_map.update(self.extra_tools)
         schemas.extend(self.extra_schemas)
@@ -155,10 +157,11 @@ class WorkerAgent:
     ) -> str:
         """Run the Think -> Act -> Observe loop for this agent under budget constraints."""
         tools_map, schemas = self._get_tools_and_schemas(tenant_id)
+        include_skills = self.name not in ("coordinator", "orchestrator")
         system_prompt = (
             f"You are '{self.name}' ({self.role}).\n"
             f"{self.instructions}"
-            f"{_build_context_block(self.storage, tenant_id)}"
+            f"{_build_context_block(self.storage, tenant_id, include_skills=include_skills)}"
         )
 
         messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
