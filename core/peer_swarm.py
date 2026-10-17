@@ -179,7 +179,8 @@ class PeerSwarm:
                 f"{spec.instructions}{directive_block}\n"
                 f"You are in a peer network with: [{peer_list_str}].\n"
                 "- Use your tools to complete your part of the mission directly.\n"
-                "- Return your findings in plain text (they are automatically delivered to 'coordinator'), "
+                "- When ready to hand off, message the next peer using `send_peer_message(to_agent=..., message=...)`.\n"
+                "- Return your findings in plain text (they are automatically delivered to 'coordinator' for next-step routing), "
                 "or call `finish_swarm(final_answer=...)` if the entire user request is verified and complete."
             ),
             llm=self.llm,
@@ -386,8 +387,9 @@ class PeerSwarm:
                         break
                 elif last_output:
                     peer_outputs.append(f"[{active_node.name}]: {last_output}")
-                    if not any_pending and not self.extra_tools:
-                        # Single-specialist fast-path for standard swarms
+                    is_simple_single_specialist = (len(self.nodes) <= 2 and not self.extra_tools)
+                    if not any_pending and is_simple_single_specialist:
+                        # Single-specialist fast-path for standard 1-worker benchmark swarms
                         self.bus.emit(
                             "peer_message",
                             agent_name=active_node.name,
@@ -400,7 +402,7 @@ class PeerSwarm:
                         self._final_answer = last_output
                         break
                     else:
-                        # Multi-specialist fan-out or cross-swarm bridge: route output to coordinator inbox
+                        # Multi-specialist team, pipeline, fan-out, or cross-swarm bridge: route output to coordinator inbox
                         self.nodes["coordinator"].inbox.append(
                             PeerMessage(
                                 sender=active_node.name,
