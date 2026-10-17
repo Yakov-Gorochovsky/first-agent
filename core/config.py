@@ -52,8 +52,10 @@ class SwarmConfig:
     max_wall_seconds: float = 180.0
 
     # Storage settings
+    workspace_dir: Path = field(default_factory=lambda: WORKSPACE_DIR)
     db_path: Path = field(default_factory=lambda: WORKSPACE_DIR / "swarm.db")
     roles_path: Path = field(default_factory=lambda: WORKSPACE_DIR / "roles.json")
+    swarms_path: Path = field(default_factory=lambda: WORKSPACE_DIR / "swarms.json")
     default_roles_path: Path = field(default_factory=lambda: DEFAULT_ROLES_FILE)
     max_trace_rows: int = 500
     max_session_turns: int = 30
