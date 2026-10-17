@@ -56,6 +56,7 @@ class WorkerAgent:
         extra_tools: Optional[Dict[str, Callable[..., str]]] = None,
         extra_schemas: Optional[List[Dict[str, Any]]] = None,
         yield_on_tools: Optional[List[str]] = None,
+        max_steps: Optional[int] = None,
     ) -> None:
         self.name = name
         self.role = role
@@ -68,6 +69,7 @@ class WorkerAgent:
         self.extra_tools = extra_tools or {}
         self.extra_schemas = extra_schemas or []
         self.yield_on_tools = set(yield_on_tools or [])
+        self.max_steps = max_steps
 
     def _get_tools_and_schemas(self, tenant_id: str) -> tuple[Dict[str, Callable[..., str]], List[Dict[str, Any]]]:
         """Bind tenant-scoped memory tools + global skill learning tool + selected tools."""
@@ -181,7 +183,30 @@ class WorkerAgent:
             if self.name not in ("coordinator", "orchestrator") and local_turn >= 3 and collected_observations:
                 active_schemas = None
 
-            self.budget.check_and_increment_step(self.name)
+            try:
+                self.budget.check_and_increment_step(self.name, max_steps=self.max_steps)
+            except BudgetExceededError as exc:
+                if collected_observations:
+                    obs_text = "\n\n".join(collected_observations)
+                    answer = (
+                        f"{obs_text}\n\n"
+                        f"[Continuation: {exc} Returning gathered findings so the swarm can continue.]"
+                    )
+                else:
+                    answer = (
+                        f"[Continuation: {exc} Continue the workflow using existing findings or another specialist.]"
+                    )
+                self.bus.emit(
+                    "agent_finish",
+                    agent_name=self.name,
+                    tenant_id=tenant_id,
+                    answer=answer,
+                )
+                self.storage.log_trace(
+                    tenant_id, self.name, "agent_finish", {"answer": answer[:500]}
+                )
+                return answer
+
             resp = self.llm.generate(messages=messages, tools=active_schemas)
             self.budget.record_tokens(self.name, resp.prompt_tokens, resp.completion_tokens)
 
@@ -224,8 +249,6 @@ class WorkerAgent:
                 else:
                     try:
                         result = str(fn(**(tc.arguments or {})))
-                    except BudgetExceededError:
-                        raise
                     except Exception as exc:
                         result = f"Error running '{tc.name}': {exc}"
 
@@ -333,6 +356,7 @@ class OrchestratorSwarm:
             budget=self.budget,
             bus=self.bus,
             tool_names=spec.tool_names,
+            max_steps=spec.effective_max_steps,
         )
 
     def refresh_workers(self) -> None:
@@ -423,6 +447,7 @@ class OrchestratorSwarm:
             tool_names=["remember_fact", "recall_memories"],
             extra_tools=orch_tools,
             extra_schemas=orch_schemas,
+            max_steps=CONFIG.max_coordinator_steps,
         )
 
         past_turns = self.storage.get_session_turns(tenant_id, limit=10)

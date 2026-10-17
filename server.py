@@ -359,6 +359,11 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
             instructions = str(body.get("instructions", "")).strip()
             capabilities = body.get("capabilities", ["@web", "@code"])
             color = str(body.get("color", "#00f0ff")).strip()
+            raw_max_steps = body.get("max_steps")
+            try:
+                max_steps = int(raw_max_steps) if raw_max_steps is not None else None
+            except (ValueError, TypeError):
+                max_steps = None
 
             if not name or not title:
                 self._send_json({"error": "Role name and title are required."}, 400)
@@ -370,6 +375,7 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
                 instructions=instructions,
                 capabilities=capabilities if isinstance(capabilities, list) else ["@web", "@code"],
                 color=color,
+                max_steps=max_steps,
             )
             bus.emit("role_created", agent_name="system", tenant_id="default", role=spec.to_dict())
             self._send_json({"role": spec.to_dict(), "roles": role_registry.list_dicts()})

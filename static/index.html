@@ -967,9 +967,15 @@
           <label class="check-pill"><input type="checkbox" class="cap-check" value="@memory" /> @memory</label>
         </div>
       </div>
-      <div class="field">
-        <label>Node Accent Color</label>
-        <input id="roleColorInput" class="field-input" value="#38bdf8" />
+      <div class="field" style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+        <div>
+          <label>Max Steps (Per Run)</label>
+          <input id="roleMaxStepsInput" type="number" min="1" max="32" class="field-input" value="6" />
+        </div>
+        <div>
+          <label>Node Accent Color</label>
+          <input id="roleColorInput" class="field-input" value="#38bdf8" />
+        </div>
       </div>
       <div class="field">
         <label>System Prompt Instructions</label>
@@ -1398,12 +1404,13 @@
         .map(r => {
           const col = safeColor(r.color);
           const safeName = escapeHtml(r.name);
+          const stepCap = r.max_steps || 6;
           return `
           <div class="role-row">
             <div class="role-info">
               <span class="role-dot" style="background:${col}; box-shadow: 0 0 8px ${col};"></span>
               <div style="min-width:0;">
-                <div class="role-name">${safeName}</div>
+                <div class="role-name">${safeName} <span class="mini-tag" style="color:var(--accent-amber);">${escapeHtml(stepCap)} steps</span></div>
                 <div class="role-sub">${escapeHtml(r.title)}</div>
                 <div class="tag-list">
                   ${(r.capabilities || []).map(c => `<span class="mini-tag">${escapeHtml(c)}</span>`).join('')}
@@ -1504,6 +1511,7 @@
       const name = document.getElementById('roleNameInput').value.trim();
       const title = document.getElementById('roleTitleInput').value.trim();
       const color = document.getElementById('roleColorInput').value.trim() || '#38bdf8';
+      const max_steps = parseInt(document.getElementById('roleMaxStepsInput').value, 10) || 6;
       const instructions = document.getElementById('roleInstInput').value.trim();
       const capabilities = Array.from(document.querySelectorAll('.cap-check:checked')).map(c => c.value);
 
@@ -1515,7 +1523,7 @@
       await fetch('/api/roles', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, title, instructions, capabilities, color }),
+        body: JSON.stringify({ name, title, instructions, capabilities, color, max_steps }),
       });
       closeRoleModal();
       await refreshState();

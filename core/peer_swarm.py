@@ -147,6 +147,7 @@ class PeerSwarm:
             extra_tools=coord_tools,
             extra_schemas=coord_schemas,
             yield_on_tools=["send_peer_message", "finish_swarm"],
+            max_steps=CONFIG.max_coordinator_steps,
         )
         coord_node = PeerNode(coord_worker)
         if "coordinator" in old_inboxes:
@@ -165,7 +166,11 @@ class PeerSwarm:
             comm_tools.update(self.extra_tools)
             comm_schemas.extend(self.extra_schemas)
         peer_list_str = ", ".join(p for p in all_peer_names if p != spec.name)
-        directive_block = f"\nSWARM MISSION DIRECTIVE: {self.directive}\n" if self.directive else ""
+        directive_block = (
+            f"\nSWARM CONTEXT (Note: 'coordinator' handles routing/spawning; execute your assigned specialist task directly): {self.directive}\n"
+            if self.directive
+            else ""
+        )
 
         worker = WorkerAgent(
             name=spec.name,
@@ -173,8 +178,8 @@ class PeerSwarm:
             instructions=(
                 f"{spec.instructions}{directive_block}\n"
                 f"You are in a peer network with: [{peer_list_str}].\n"
-                "- Use your tools to complete your part of the mission.\n"
-                "- Then either forward your output to another specialist or 'coordinator' via `send_peer_message`, "
+                "- Use your tools to complete your part of the mission directly.\n"
+                "- Return your findings in plain text (they are automatically delivered to 'coordinator'), "
                 "or call `finish_swarm(final_answer=...)` if the entire user request is verified and complete."
             ),
             llm=self.llm,
@@ -185,6 +190,7 @@ class PeerSwarm:
             extra_tools=comm_tools,
             extra_schemas=comm_schemas,
             yield_on_tools=["send_peer_message", "finish_swarm"],
+            max_steps=spec.effective_max_steps,
         )
         node = PeerNode(worker)
         if existing_inbox:
@@ -293,9 +299,19 @@ class PeerSwarm:
 
         past_turns = self.storage.get_session_turns(tenant_id, limit=8)
         last_output = ""
+        peer_outputs: List[str] = []
 
         try:
             while self._final_answer is None:
+                if self.budget.total_steps >= self.budget.config.max_swarm_steps:
+                    combined = "\n\n".join(peer_outputs) if peer_outputs else last_output
+                    self._final_answer = (
+                        f"{combined}\n\n"
+                        f"[Continuation: Swarm step limit ({self.budget.config.max_swarm_steps} steps) reached for this turn. "
+                        f"Reply 'continue' to resume from these findings.]"
+                    ).strip()
+                    break
+
                 active_node: Optional[PeerNode] = None
                 # Schedule specialist peers before coordinator so multi-peer fan-outs
                 # complete all specialist work before coordinator synthesizes the batch.
@@ -341,6 +357,7 @@ class PeerSwarm:
                         self._final_answer = last_output
                         break
                 elif last_output:
+                    peer_outputs.append(f"[{active_node.name}]: {last_output}")
                     if not any_pending and not self.extra_tools:
                         # Single-specialist fast-path for standard swarms
                         self.bus.emit(
@@ -373,22 +390,24 @@ class PeerSwarm:
                             inboxes=self._inbox_snapshot(),
                         )
 
-            final = self._final_answer or last_output or "Swarm completed with no output."
+            final = self._final_answer or ("\n\n".join(peer_outputs) if peer_outputs else last_output) or "Swarm completed with no output."
             self.storage.append_session_turn(tenant_id, "user", user_input)
             self.storage.append_session_turn(tenant_id, "assistant", final)
             return final
 
         except BudgetExceededError as exc:
-            msg = f"[Budget Guardrail Triggered] {exc}"
-            if last_output:
-                msg = f"{last_output}\n\n{msg}"
+            combined = "\n\n".join(peer_outputs) if peer_outputs else last_output
+            msg = (
+                f"{combined}\n\n[Continuation: {exc} Reply 'continue' to resume from these findings.]"
+                if combined
+                else f"[Continuation: {exc} Reply 'continue' to resume.]"
+            )
             self.storage.append_session_turn(tenant_id, "user", user_input)
             self.storage.append_session_turn(tenant_id, "assistant", msg)
             self.bus.emit(
-                "budget_exceeded",
+                "agent_finish",
                 agent_name="coordinator",
                 tenant_id=tenant_id,
-                error=str(exc),
                 answer=msg,
             )
             return msg

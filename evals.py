@@ -63,7 +63,7 @@ class ScriptedMockLLM:
 # ---------------------------------------------------------------------------
 
 def eval_budget_step_guardrail() -> str:
-    """Verify BudgetTracker halts a runaway agent that loops past max_steps_per_agent."""
+    """Verify BudgetTracker enforces both default and per-role max_steps caps."""
     bus = EventBus()
     budget = BudgetTracker(
         config=BudgetConfig(max_swarm_steps=10, max_steps_per_agent=2, max_total_tokens=5000),
@@ -76,7 +76,16 @@ def eval_budget_step_guardrail() -> str:
         raise AssertionError("Expected BudgetExceededError on 3rd step when cap is 2.")
     except BudgetExceededError as exc:
         assert "exceeded its step cap (2/2 steps)" in str(exc)
-        return "Halted runaway agent at 2/2 steps as expected."
+
+    # Verify per-role custom max_steps (e.g., researcher with max_steps=4)
+    for _ in range(4):
+        budget.check_and_increment_step("researcher", max_steps=4)
+    try:
+        budget.check_and_increment_step("researcher", max_steps=4)
+        raise AssertionError("Expected BudgetExceededError on 5th step when role max_steps is 4.")
+    except BudgetExceededError as exc:
+        assert "exceeded its step cap (4/4 steps)" in str(exc)
+        return "Enforced default (2/2) and per-role (4/4) step caps as expected."
 
 
 def eval_budget_token_guardrail() -> str:

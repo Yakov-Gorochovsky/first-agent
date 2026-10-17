@@ -54,6 +54,13 @@ class RoleSpec:
     capabilities: List[str] = field(default_factory=lambda: ["@web", "@code"])
     color: str = "#00ff9d"
     is_builtin: bool = False
+    max_steps: Optional[int] = None
+
+    @property
+    def effective_max_steps(self) -> int:
+        if self.max_steps is not None and self.max_steps > 0:
+            return self.max_steps
+        return CONFIG.max_steps_per_agent
 
     @property
     def tool_names(self) -> List[str]:
@@ -61,6 +68,7 @@ class RoleSpec:
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
+        d["max_steps"] = self.effective_max_steps
         d["resolved_tools"] = self.tool_names
         return d
 
@@ -88,6 +96,7 @@ class RoleRegistry:
             if isinstance(raw_list, list):
                 for item in raw_list:
                     if isinstance(item, dict) and item.get("name"):
+                        raw_max_steps = item.get("max_steps")
                         spec = RoleSpec(
                             name=self._clean_name(str(item["name"])),
                             title=str(item.get("title", item["name"])),
@@ -95,6 +104,7 @@ class RoleRegistry:
                             capabilities=list(item.get("capabilities", ["@web", "@code"])),
                             color=str(item.get("color", "#00f0ff")),
                             is_builtin=bool(item.get("is_builtin", False)),
+                            max_steps=int(raw_max_steps) if raw_max_steps is not None else None,
                         )
                         parsed[spec.name] = spec
         except Exception:
@@ -133,6 +143,7 @@ class RoleRegistry:
         instructions: str,
         capabilities: Optional[List[str]] = None,
         color: str = "#00f0ff",
+        max_steps: Optional[int] = None,
     ) -> RoleSpec:
         """Create or update a specialist role using Capability Bundles or tool names."""
         safe_name = self._clean_name(name)
@@ -140,6 +151,11 @@ class RoleRegistry:
             safe_name = f"{safe_name}_specialist"
 
         caps = capabilities if capabilities else ["@web", "@code"]
+        decided_steps = (
+            int(max_steps)
+            if (max_steps is not None and int(max_steps) > 0)
+            else CONFIG.max_steps_per_agent
+        )
         spec = RoleSpec(
             name=safe_name,
             title=title.strip() or safe_name.title(),
@@ -147,6 +163,7 @@ class RoleRegistry:
             capabilities=caps,
             color=color or "#00f0ff",
             is_builtin=False,
+            max_steps=decided_steps,
         )
         self._roles[safe_name] = spec
         self.save()
@@ -179,6 +196,7 @@ class RoleRegistry:
             title: str,
             instructions: str,
             capabilities: Optional[List[str]] = None,
+            max_steps: Optional[int] = None,
         ) -> str:
             spec = self.register_role(
                 name=name,
@@ -186,12 +204,13 @@ class RoleRegistry:
                 instructions=instructions,
                 capabilities=capabilities or ["@web", "@code"],
                 color="#00f0ff",
+                max_steps=max_steps,
             )
             if on_spawn:
                 on_spawn(spec)
             return (
-                f"Spawned specialist role '{spec.name}' ({spec.title}) with tools: {spec.tool_names}. "
-                f"You can now delegate or send messages to '{spec.name}'."
+                f"Spawned specialist role '{spec.name}' ({spec.title}, max_steps={spec.effective_max_steps}) "
+                f"with tools: {spec.tool_names}. You can now delegate or send messages to '{spec.name}'."
             )
 
         schema = {
@@ -222,6 +241,13 @@ class RoleRegistry:
                             "items": {"type": "string"},
                             "description": (
                                 "List of capability bundles: '@web', '@code', '@files', '@memory', or '@all'."
+                            ),
+                        },
+                        "max_steps": {
+                            "type": "integer",
+                            "description": (
+                                "Maximum LLM steps allowed for this specialist per run "
+                                "(e.g., 10-12 for broad multi-query researchers, 5-6 for focused task/attack specialists)."
                             ),
                         },
                     },
