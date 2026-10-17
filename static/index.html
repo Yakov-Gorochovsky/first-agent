@@ -287,11 +287,37 @@
       background: var(--bg-elevated);
       border: 1px solid var(--border-subtle);
       margin-bottom: 6px;
-      transition: border-color 0.15s ease;
+      transition: all 0.25s ease;
     }
 
     .role-row:hover {
       border-color: var(--border-strong);
+      transform: translateX(2px);
+    }
+
+    @keyframes roleSpawnFlash {
+      0% {
+        border-color: #00f0ff;
+        background: rgba(0, 240, 255, 0.22);
+        box-shadow: 0 0 22px rgba(0, 240, 255, 0.45), inset 0 0 12px rgba(0, 240, 255, 0.2);
+        transform: scale(1.02);
+      }
+      40% {
+        border-color: #10b981;
+        background: rgba(16, 185, 129, 0.16);
+        box-shadow: 0 0 16px rgba(16, 185, 129, 0.35);
+        transform: scale(1);
+      }
+      100% {
+        border-color: var(--border-subtle);
+        background: var(--bg-elevated);
+        box-shadow: none;
+        transform: scale(1);
+      }
+    }
+
+    .role-row.spawn-highlight {
+      animation: roleSpawnFlash 5.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
     }
 
     .role-info {
@@ -398,8 +424,9 @@
     /* Center Stage: Interactive Graph Canvas */
     .stage-card {
       position: relative;
-      background: radial-gradient(circle at 50% 50%, #101420 0%, #080a0f 100%);
-      border: 1px solid var(--border-subtle);
+      background: radial-gradient(circle at 50% 45%, #111827 0%, #07090e 65%, #040508 100%);
+      border: 1px solid rgba(56, 189, 248, 0.16);
+      box-shadow: inset 0 0 60px rgba(0, 0, 0, 0.75);
       border-radius: 8px;
       overflow: hidden;
       display: flex;
@@ -423,10 +450,11 @@
     }
 
     .hud-chip {
-      background: var(--bg-glass);
-      backdrop-filter: blur(12px);
-      border: 1px solid var(--border-subtle);
-      padding: 5px 10px;
+      background: rgba(10, 14, 22, 0.85);
+      backdrop-filter: blur(14px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.45);
+      padding: 5px 11px;
       border-radius: 6px;
       font-family: var(--font-mono);
       font-size: 10.5px;
@@ -1006,9 +1034,52 @@
     let cachedRoles = [];
     const particles = [];
 
+    // Smooth position cache, Spawn Highlights (auto-fading), and Persistent Integrated Links
+    const nodePosCache = {};
+    const knownNodeKeys = new Set();
+    let initialGraphLoaded = false;
+    const spawnHighlights = {};       // nodeKey -> { start, duration, color }
+    const recentSpawnedRoles = {};    // roleName -> expiryTimestamp
+    const integratedLinks = {};       // canonKey -> { from, to, color, count, lastActive, label, isCross }
+
     function nodeId(swarmId, agentName) {
       const a = (agentName === 'orchestrator' || agentName === 'user') ? 'coordinator' : agentName;
       return `${swarmId}:${a}`;
+    }
+
+    function canonEdgeKey(a, b) {
+      return a < b ? `${a}|${b}` : `${b}|${a}`;
+    }
+
+    function lightConnection(fromKey, toKey, color = '#38bdf8', label = '', isCross = false) {
+      if (!fromKey || !toKey || fromKey === toKey) return;
+      const key = canonEdgeKey(fromKey, toKey);
+      const prev = integratedLinks[key];
+      integratedLinks[key] = {
+        from: fromKey,
+        to: toKey,
+        color: color || (prev ? prev.color : '#38bdf8'),
+        count: (prev ? prev.count : 0) + 1,
+        lastActive: performance.now(),
+        label: label || (prev ? prev.label : 'LINKED'),
+        isCross: isCross || (prev ? prev.isCross : false),
+      };
+    }
+
+    function triggerSpawnHighlight(nKey, roleName, color = '#00f0ff', hubKey = null) {
+      const now = performance.now();
+      spawnHighlights[nKey] = {
+        start: now,
+        duration: 6000,
+        color: safeColor(color || '#00f0ff'),
+      };
+      if (roleName) {
+        recentSpawnedRoles[roleName] = now + 5500;
+      }
+      if (hubKey && nodes[hubKey] && nodes[nKey]) {
+        lightConnection(hubKey, nKey, '#00f0ff', 'SPAWNED');
+        spawnPacket(hubKey, nKey, '#00f0ff', 'SPAWN');
+      }
     }
 
     function rebuildGraphFromSwarms(swarms, allRoles) {
@@ -1051,15 +1122,21 @@
         const hubKey = `${s.swarm_id}:coordinator`;
         const hubRx = zStart + pad + zWidth * 0.20;
         const hubRy = 0.52;
+        const cachedHub = nodePosCache[hubKey];
 
         nodes[hubKey] = {
           label: `${s.swarm_id.toUpperCase()} HUB`,
           role: s.topology === 'orchestrator' ? 'Orchestrator' : 'Coordinator',
-          rx: hubRx,
-          ry: hubRy,
+          rx: cachedHub ? cachedHub.rx : hubRx,
+          ry: cachedHub ? cachedHub.ry : hubRy,
+          targetRx: hubRx,
+          targetRy: hubRy,
           color: safeColor(s.color),
           swarm_id: s.swarm_id,
+          isHub: true,
         };
+        nodePosCache[hubKey] = { rx: nodes[hubKey].rx, ry: nodes[hubKey].ry };
+        knownNodeKeys.add(hubKey);
 
         const assignedNames = (s.roles && s.roles.length > 0) ? s.roles : Object.keys(roleMap);
         const validSpecs = assignedNames.map(n => roleMap[n]).filter(Boolean);
@@ -1067,19 +1144,36 @@
 
         validSpecs.forEach((r, rIdx) => {
           const t = rCount === 1 ? 0 : (rIdx / (rCount - 1)) * 2 - 1;
-          const angle = t * (Math.PI * 0.34);
-          const rx = hubRx + Math.cos(angle) * (zWidth * 0.44);
-          const ry = 0.52 + Math.sin(angle) * 0.34;
+          const angle = t * (Math.PI * 0.36);
+          const targetRx = hubRx + Math.cos(angle) * (zWidth * 0.45);
+          const targetRy = 0.52 + Math.sin(angle) * 0.35;
           const nKey = `${s.swarm_id}:${r.name}`;
+          const prevPos = nodePosCache[nKey];
+          const isNewAfterLoad = initialGraphLoaded && !knownNodeKeys.has(nKey);
+
+          // New nodes start near the hub and smoothly glide outward into their orbital slot
+          const startRx = prevPos ? prevPos.rx : (isNewAfterLoad ? hubRx : targetRx);
+          const startRy = prevPos ? prevPos.ry : (isNewAfterLoad ? hubRy : targetRy);
 
           nodes[nKey] = {
             label: r.name.toUpperCase(),
             role: r.title,
-            rx,
-            ry,
+            rx: startRx,
+            ry: startRy,
+            targetRx,
+            targetRy,
             color: safeColor(r.color || s.color),
             swarm_id: s.swarm_id,
+            max_steps: r.max_steps || 6,
+            isHub: false,
           };
+          nodePosCache[nKey] = { rx: startRx, ry: startRy };
+
+          if (isNewAfterLoad) {
+            triggerSpawnHighlight(nKey, r.name, r.color || '#00f0ff', hubKey);
+          }
+          knownNodeKeys.add(nKey);
+
           edges.push([hubKey, nKey]);
           if (rIdx > 0) {
             edges.push([`${s.swarm_id}:${validSpecs[rIdx - 1].name}`, nKey]);
@@ -1097,6 +1191,8 @@
           });
         }
       });
+
+      initialGraphLoaded = true;
     }
 
     function resizeCanvas() {
@@ -1109,21 +1205,23 @@
     window.addEventListener('resize', resizeCanvas);
     resizeCanvas();
 
-    function spawnPacket(fromKey, toKey, color = '#38bdf8', label = '') {
+    function spawnPacket(fromKey, toKey, color = '#38bdf8', label = '', isCross = false) {
       if (!nodes[fromKey] || !nodes[toKey]) return;
+
+      lightConnection(fromKey, toKey, color, label, isCross);
 
       packetCount++;
       document.getElementById('packetMetric').textContent = packetCount;
 
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < 7; i++) {
         particles.push({
           from: fromKey,
           to: toKey,
-          progress: -i * 0.045,
-          speed: 0.017,
+          progress: -i * 0.038,
+          speed: 0.019,
           color,
-          size: i === 0 ? 4.5 : 3 - i * 0.4,
-          alpha: 1 - i * 0.16,
+          size: i === 0 ? 5.2 : Math.max(1.4, 3.6 - i * 0.42),
+          alpha: Math.max(0.15, 1 - i * 0.14),
           label: i === 0 ? label : '',
         });
       }
@@ -1131,39 +1229,69 @@
 
     function getPointOnCurve(ax, ay, bx, by, t) {
       const mx = (ax + bx) / 2;
-      const my = (ay + by) / 2 - (bx - ax) * 0.06;
+      const my = (ay + by) / 2 - (bx - ax) * 0.065;
       const x = (1 - t) * (1 - t) * ax + 2 * (1 - t) * t * mx + t * t * bx;
       const y = (1 - t) * (1 - t) * ay + 2 * (1 - t) * t * my + t * t * by;
       return { x, y, mx, my };
     }
 
     let spinAngle = 0;
+    let flowPhase = 0;
     function renderNetwork() {
       const W = canvas.parentElement.clientWidth;
       const H = canvas.parentElement.clientHeight;
+      const now = performance.now();
       ctx.clearRect(0, 0, W, H);
-      spinAngle += 0.025;
+      spinAngle += 0.022;
+      flowPhase += 0.012;
 
-      // Subtle dot matrix grid on canvas
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.045)';
-      const step = 28;
-      for (let gx = step; gx < W; gx += step) {
-        for (let gy = step; gy < H; gy += step) {
-          ctx.fillRect(gx, gy, 1, 1);
+      // Smoothly interpolate node positions (60fps spring lerp)
+      for (const [key, node] of Object.entries(nodes)) {
+        if (typeof node.targetRx === 'number') {
+          node.rx += (node.targetRx - node.rx) * 0.12;
+          node.ry += (node.targetRy - node.ry) * 0.12;
+          nodePosCache[key] = { rx: node.rx, ry: node.ry };
         }
       }
 
-      // Draw Swarm Zone Dividers & Headers for all deployed swarms
+      // 1. Ambient Swarm Sector Radial Nebulae
+      swarmZones.forEach((z) => {
+        const hubNode = nodes[`${z.swarm_id}:coordinator`];
+        const cx = (hubNode ? hubNode.rx : z.midX) * W;
+        const cy = (hubNode ? hubNode.ry : 0.52) * H;
+        const grad = ctx.createRadialGradient(cx, cy, 10, cx, cy, Math.max(W, H) * 0.36);
+        grad.addColorStop(0, `${z.color}16`);
+        grad.addColorStop(0.55, `${z.color}06`);
+        grad.addColorStop(1, 'transparent');
+        ctx.fillStyle = grad;
+        ctx.fillRect(z.zStart * W, 0, (z.zEnd - z.zStart) * W, H);
+      });
+
+      // 2. High-Tech Tactical Dot & Crosshair Matrix
+      ctx.fillStyle = 'rgba(148, 163, 184, 0.07)';
+      const step = 30;
+      for (let gx = step; gx < W; gx += step) {
+        for (let gy = step; gy < H; gy += step) {
+          ctx.fillRect(gx, gy, 1.2, 1.2);
+        }
+      }
+
+      // 3. Draw Swarm Zone Dividers & Cyber Headers
       swarmZones.forEach((z, idx) => {
         if (idx > 0) {
           const divX = z.zStart * W;
           ctx.save();
+          const lineGrad = ctx.createLinearGradient(divX, 45, divX, H - 18);
+          lineGrad.addColorStop(0, 'transparent');
+          lineGrad.addColorStop(0.2, 'rgba(255, 255, 255, 0.18)');
+          lineGrad.addColorStop(0.8, 'rgba(255, 255, 255, 0.18)');
+          lineGrad.addColorStop(1, 'transparent');
           ctx.setLineDash([5, 6]);
           ctx.beginPath();
           ctx.moveTo(divX, 46);
           ctx.lineTo(divX, H - 18);
-          ctx.strokeStyle = 'rgba(255, 255, 255, 0.14)';
-          ctx.lineWidth = 1.2;
+          ctx.strokeStyle = lineGrad;
+          ctx.lineWidth = 1.3;
           ctx.stroke();
           ctx.setLineDash([]);
           ctx.restore();
@@ -1172,12 +1300,14 @@
         ctx.font = '600 10px "JetBrains Mono", monospace';
         ctx.textAlign = 'center';
         ctx.fillStyle = z.color;
-        const bridgeTag = z.allow_cross_swarm ? ' [CROSS-SWARM BRIDGE]' : ' [ISOLATED VAULT]';
-        ctx.fillText(`SWARM: ${z.swarm_id.toUpperCase()} · ${z.title.toUpperCase()}${bridgeTag}`, z.midX * W, 62);
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = z.color;
+        const bridgeTag = z.allow_cross_swarm ? ' · [CROSS-SWARM BRIDGE]' : ' · [ISOLATED VAULT]';
+        ctx.fillText(`◈ SWARM: ${z.swarm_id.toUpperCase()} — ${z.title.toUpperCase()}${bridgeTag}`, z.midX * W, 62);
         ctx.restore();
       });
 
-      // Draw internal swarm edges
+      // 4. Draw Unlighted Base Topology Edges (Subtle Hairlines)
       for (const [a, b] of edges) {
         const na = nodes[a];
         const nb = nodes[b];
@@ -1189,12 +1319,12 @@
         ctx.beginPath();
         ctx.moveTo(ax, ay);
         ctx.quadraticCurveTo(mx, my, bx, by);
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
-        ctx.lineWidth = 1.2;
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.065)';
+        ctx.lineWidth = 1.15;
         ctx.stroke();
       }
 
-      // Draw Cross-Swarm Bridge edges
+      // 5. Draw Unlighted Cross-Swarm Bridge Standby Lines
       for (const [a, b] of crossEdges) {
         const na = nodes[a];
         const nb = nodes[b];
@@ -1204,17 +1334,105 @@
         const { mx, my } = getPointOnCurve(ax, ay, bx, by, 0.5);
 
         ctx.save();
-        ctx.setLineDash([4, 5]);
+        ctx.setLineDash([4, 6]);
         ctx.beginPath();
         ctx.moveTo(ax, ay);
         ctx.quadraticCurveTo(mx, my, bx, by);
-        ctx.strokeStyle = 'rgba(244, 63, 94, 0.32)';
-        ctx.lineWidth = 1.4;
+        ctx.strokeStyle = 'rgba(244, 63, 94, 0.24)';
+        ctx.lineWidth = 1.3;
         ctx.stroke();
         ctx.restore();
       }
 
-      // Draw animated comet packets along curves
+      // 6. Draw Persistent Lighted Connections (Integrated Agent Conduits)
+      for (const link of Object.values(integratedLinks)) {
+        const na = nodes[link.from];
+        const nb = nodes[link.to];
+        if (!na || !nb) continue;
+        const ax = na.rx * W, ay = na.ry * H;
+        const bx = nb.rx * W, by = nb.ry * H;
+        const { mx, my } = getPointOnCurve(ax, ay, bx, by, 0.5);
+
+        // Freshness boost when a message just traversed this link
+        const ageMs = now - link.lastActive;
+        const recentBoost = Math.max(0, 1 - ageMs / 3500);
+        const pulseWave = 0.5 + 0.5 * Math.sin(now * 0.0045);
+
+        // Layer A: Wide atmospheric neon bloom
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.quadraticCurveTo(mx, my, bx, by);
+        ctx.strokeStyle = link.color;
+        ctx.globalAlpha = 0.14 + recentBoost * 0.22 + pulseWave * 0.05;
+        ctx.lineWidth = 7 + recentBoost * 3;
+        ctx.shadowBlur = 18;
+        ctx.shadowColor = link.color;
+        ctx.stroke();
+        ctx.restore();
+
+        // Layer B: Crisp persistent illuminated core
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.quadraticCurveTo(mx, my, bx, by);
+        ctx.strokeStyle = link.color;
+        ctx.globalAlpha = 0.72 + recentBoost * 0.28;
+        ctx.lineWidth = 2.0 + recentBoost * 0.8;
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = link.color;
+        ctx.stroke();
+        ctx.restore();
+
+        // Layer C: Animated directional energy stream along the lighted link
+        ctx.save();
+        ctx.setLineDash([6, 12]);
+        ctx.lineDashOffset = -flowPhase * 42;
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.quadraticCurveTo(mx, my, bx, by);
+        ctx.strokeStyle = '#ffffff';
+        ctx.globalAlpha = 0.42 + recentBoost * 0.35;
+        ctx.lineWidth = 1.3;
+        ctx.stroke();
+        ctx.restore();
+
+        // Layer D: Continuous ambient micro-photon gliding along the integrated connection
+        const streamT = (flowPhase * 0.9 + (link.count * 0.17)) % 1;
+        const sPt = getPointOnCurve(ax, ay, bx, by, streamT);
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(sPt.x, sPt.y, 2.6 + recentBoost * 1.2, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = link.color;
+        ctx.globalAlpha = 0.85;
+        ctx.fill();
+        ctx.restore();
+
+        // Layer E: Subtle midpoint telemetry badge for integrated links
+        const midPt = getPointOnCurve(ax, ay, bx, by, 0.5);
+        const badgeText = link.count > 1 ? `${link.label || 'LINK'} ×${link.count}` : (link.label || 'LINKED');
+        ctx.save();
+        ctx.font = '600 8.5px "JetBrains Mono", monospace';
+        const tw = ctx.measureText(badgeText).width;
+        const bw = tw + 10;
+        const bh = 14;
+        ctx.fillStyle = 'rgba(8, 11, 18, 0.88)';
+        ctx.strokeStyle = link.color;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.roundRect(midPt.x - bw / 2, midPt.y - bh / 2, bw, bh, 4);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = link.color;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(badgeText, midPt.x, midPt.y + 0.5);
+        ctx.restore();
+      }
+
+      // 7. Draw High-Velocity Comet Packets Along Curves
       for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i];
         p.progress += p.speed;
@@ -1234,76 +1452,200 @@
         ctx.beginPath();
         ctx.arc(pt.x, pt.y, p.size, 0, Math.PI * 2);
         ctx.fillStyle = p.color;
-        ctx.shadowBlur = 12;
+        ctx.shadowBlur = 16;
         ctx.shadowColor = p.color;
         ctx.fill();
         ctx.restore();
 
         if (p.label) {
-          ctx.font = '500 9.5px "JetBrains Mono", monospace';
-          ctx.fillStyle = '#e2e8f0';
-          ctx.fillText(p.label, pt.x + 8, pt.y - 7);
+          ctx.save();
+          ctx.font = '600 9.5px "JetBrains Mono", monospace';
+          ctx.fillStyle = '#f8fafc';
+          ctx.shadowBlur = 8;
+          ctx.shadowColor = '#000';
+          ctx.fillText(p.label, pt.x + 9, pt.y - 8);
+          ctx.restore();
         }
       }
 
-      // Draw nodes
+      // 8. Draw Nodes + Disappearing Spawn Highlights + Active Orbital HUDs
       for (const [key, node] of Object.entries(nodes)) {
         const x = node.rx * W;
         const y = node.ry * H;
         const isActive = (activeNode === key);
+        const radius = node.isHub ? 25 : 22;
 
+        // Check if this node has an active Spawn Highlight that should fade out
+        const spawnHl = spawnHighlights[key];
+        let spawnFade = 0;
+        let spawnProgress = 0;
+        if (spawnHl) {
+          spawnProgress = (now - spawnHl.start) / spawnHl.duration;
+          if (spawnProgress >= 1) {
+            delete spawnHighlights[key];
+          } else {
+            spawnFade = Math.pow(1 - spawnProgress, 1.35);
+          }
+        }
+
+        // 8A. Disappearing Spawn Shockwave & Holographic Beacon
+        if (spawnFade > 0) {
+          const hlColor = spawnHl.color || '#00f0ff';
+          // 3 staggered sonar shockwave rings radiating outward
+          for (let w = 0; w < 3; w++) {
+            const wavePhase = ((spawnProgress * 2.6) + w * 0.33) % 1;
+            const ringR = radius + 4 + wavePhase * 64;
+            const ringAlpha = (1 - wavePhase) * spawnFade * 0.85;
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(x, y, ringR, 0, Math.PI * 2);
+            ctx.strokeStyle = hlColor;
+            ctx.globalAlpha = ringAlpha;
+            ctx.lineWidth = 2.2 - wavePhase * 1.4;
+            ctx.shadowBlur = 18;
+            ctx.shadowColor = hlColor;
+            ctx.stroke();
+            ctx.restore();
+          }
+
+          // Rotating diamond target reticle around newly spawned node
+          ctx.save();
+          ctx.translate(x, y);
+          ctx.rotate(-spinAngle * 1.4);
+          ctx.globalAlpha = spawnFade * 0.95;
+          ctx.strokeStyle = '#00f0ff';
+          ctx.lineWidth = 1.8;
+          ctx.shadowBlur = 16;
+          ctx.shadowColor = '#00f0ff';
+          const box = radius + 11;
+          ctx.strokeRect(-box / 1.3, -box / 1.3, (box * 2) / 1.3, (box * 2) / 1.3);
+          ctx.restore();
+
+          // Floating "✦ NEW AGENT SPAWNED" callout pill that rises and fades out
+          const floatY = y - radius - 22 - spawnProgress * 14;
+          const bannerText = `✦ NEW AGENT: ${node.label}`;
+          ctx.save();
+          ctx.globalAlpha = spawnFade;
+          ctx.font = '700 9.5px "JetBrains Mono", monospace';
+          const btw = ctx.measureText(bannerText).width + 14;
+          ctx.fillStyle = 'rgba(5, 22, 34, 0.92)';
+          ctx.strokeStyle = '#00f0ff';
+          ctx.lineWidth = 1.3;
+          ctx.shadowBlur = 16;
+          ctx.shadowColor = '#00f0ff';
+          ctx.beginPath();
+          ctx.roundRect(x - btw / 2, floatY - 10, btw, 19, 5);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = '#00f0ff';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(bannerText, x, floatY - 0.5);
+          ctx.restore();
+        }
+
+        // 8B. Active Thinking Node Dual Counter-Rotating Orbital HUD
         if (isActive) {
           ctx.save();
           ctx.translate(x, y);
           ctx.rotate(spinAngle);
           ctx.beginPath();
-          ctx.arc(0, 0, 32, 0, Math.PI * 1.4);
+          ctx.arc(0, 0, radius + 11, 0, Math.PI * 1.35);
           ctx.strokeStyle = node.color;
-          ctx.lineWidth = 1.8;
+          ctx.lineWidth = 2.2;
+          ctx.shadowBlur = 14;
+          ctx.shadowColor = node.color;
+          ctx.stroke();
+          ctx.restore();
+
+          ctx.save();
+          ctx.translate(x, y);
+          ctx.rotate(-spinAngle * 0.75);
+          ctx.beginPath();
+          ctx.arc(0, 0, radius + 16, Math.PI * 0.2, Math.PI * 0.95);
+          ctx.strokeStyle = '#ffffff';
+          ctx.globalAlpha = 0.55;
+          ctx.lineWidth = 1.2;
           ctx.stroke();
           ctx.restore();
         }
 
+        // 8C. Node Core & Glassmorphic Ring
+        ctx.save();
         ctx.beginPath();
-        ctx.arc(x, y, 22, 0, Math.PI * 2);
-        ctx.fillStyle = isActive ? '#161f30' : '#0d1017';
-        ctx.strokeStyle = isActive ? node.color : 'rgba(255, 255, 255, 0.18)';
-        ctx.lineWidth = isActive ? 2 : 1.2;
-        ctx.shadowBlur = isActive ? 20 : 0;
-        ctx.shadowColor = node.color;
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        const coreGrad = ctx.createRadialGradient(x - 5, y - 6, 2, x, y, radius);
+        if (spawnFade > 0) {
+          coreGrad.addColorStop(0, '#133b4e');
+          coreGrad.addColorStop(1, '#0b1524');
+        } else if (isActive) {
+          coreGrad.addColorStop(0, '#1e293b');
+          coreGrad.addColorStop(1, '#0f172a');
+        } else {
+          coreGrad.addColorStop(0, '#141923');
+          coreGrad.addColorStop(1, '#0a0d14');
+        }
+        ctx.fillStyle = coreGrad;
+        ctx.strokeStyle = spawnFade > 0 ? '#00f0ff' : (isActive ? node.color : 'rgba(255, 255, 255, 0.22)');
+        ctx.lineWidth = (isActive || spawnFade > 0) ? 2.2 : 1.3;
+        ctx.shadowBlur = spawnFade > 0 ? 28 * spawnFade : (isActive ? 22 : 6);
+        ctx.shadowColor = spawnFade > 0 ? '#00f0ff' : node.color;
         ctx.fill();
         ctx.stroke();
-        ctx.shadowBlur = 0;
+        ctx.restore();
 
+        // Inner subtle status LED
+        ctx.save();
         ctx.beginPath();
-        ctx.arc(x, y - 6, 2.8, 0, Math.PI * 2);
-        ctx.fillStyle = node.color;
+        ctx.arc(x, y - 7, 3, 0, Math.PI * 2);
+        ctx.fillStyle = spawnFade > 0 ? '#00f0ff' : node.color;
+        ctx.shadowBlur = 8;
+        ctx.shadowColor = spawnFade > 0 ? '#00f0ff' : node.color;
         ctx.fill();
+        ctx.restore();
 
+        // Callsign & Role Subtitle
         ctx.textAlign = 'center';
         ctx.font = '600 9px "JetBrains Mono", monospace';
         ctx.fillStyle = '#f8fafc';
-        ctx.fillText(node.label.slice(0, 12), x, y + 6);
+        ctx.fillText(node.label.slice(0, 13), x, y + 6);
 
         ctx.font = '500 10px "Inter", sans-serif';
-        ctx.fillStyle = '#94a3b8';
-        ctx.fillText(node.role.slice(0, 22), x, y + 35);
+        ctx.fillStyle = spawnFade > 0 ? '#67e8f9' : '#94a3b8';
+        ctx.fillText(node.role.slice(0, 24), x, y + radius + 14);
 
+        // Inbox Queue Counter Badge
         const qCount = inboxCounts[key] || 0;
         if (qCount > 0) {
+          ctx.save();
           ctx.beginPath();
-          ctx.arc(x + 17, y - 17, 8, 0, Math.PI * 2);
+          ctx.arc(x + radius - 4, y - radius + 4, 8.5, 0, Math.PI * 2);
           ctx.fillStyle = '#f43f5e';
+          ctx.shadowBlur = 10;
+          ctx.shadowColor = '#f43f5e';
           ctx.fill();
-          ctx.font = '600 9px "JetBrains Mono", monospace';
+          ctx.font = '700 9px "JetBrains Mono", monospace';
           ctx.fillStyle = '#fff';
-          ctx.fillText(String(qCount), x + 17, y - 14);
+          ctx.fillText(String(qCount), x + radius - 4, y - radius + 7);
+          ctx.restore();
         }
 
+        // Active Tool Execution Pill
         if (activeToolBadge[key]) {
-          ctx.font = '500 9px "JetBrains Mono", monospace';
-          ctx.fillStyle = '#f59e0b';
-          ctx.fillText(`⚡ ${activeToolBadge[key]}`, x, y - 29);
+          const toolTxt = `⚡ ${activeToolBadge[key]}`;
+          ctx.save();
+          ctx.font = '600 9px "JetBrains Mono", monospace';
+          const tWidth = ctx.measureText(toolTxt).width + 12;
+          ctx.fillStyle = 'rgba(245, 158, 11, 0.16)';
+          ctx.strokeStyle = '#f59e0b';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.roundRect(x - tWidth / 2, y - radius - 22, tWidth, 16, 4);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = '#fbbf24';
+          ctx.fillText(toolTxt, x, y - radius - 11);
+          ctx.restore();
         }
       }
 
@@ -1398,19 +1740,22 @@
         })
         .join('');
 
-      // Render specialist roster
+      // Render specialist roster (with temporary spawn highlight class when newly created)
+      const nowPerf = performance.now();
       const rolesBox = document.getElementById('rolesList');
       rolesBox.innerHTML = roles
         .map(r => {
           const col = safeColor(r.color);
           const safeName = escapeHtml(r.name);
           const stepCap = r.max_steps || 6;
+          const isNewlySpawned = (recentSpawnedRoles[r.name] && recentSpawnedRoles[r.name] > nowPerf);
+          const newBadge = isNewlySpawned ? '<span class="mini-tag" style="color:#00f0ff; border:1px solid #00f0ff;">✦ NEW</span>' : '';
           return `
-          <div class="role-row">
+          <div class="role-row ${isNewlySpawned ? 'spawn-highlight' : ''}">
             <div class="role-info">
               <span class="role-dot" style="background:${col}; box-shadow: 0 0 8px ${col};"></span>
               <div style="min-width:0;">
-                <div class="role-name">${safeName} <span class="mini-tag" style="color:var(--accent-amber);">${escapeHtml(stepCap)} steps</span></div>
+                <div class="role-name">${safeName} ${newBadge} <span class="mini-tag" style="color:var(--accent-amber);">${escapeHtml(stepCap)} steps</span></div>
                 <div class="role-sub">${escapeHtml(r.title)}</div>
                 <div class="tag-list">
                   ${(r.capabilities || []).map(c => `<span class="mini-tag">${escapeHtml(c)}</span>`).join('')}
@@ -1544,7 +1889,7 @@
     });
 
     const evtSource = new EventSource('/api/events');
-    evtSource.onmessage = (e) => {
+    evtSource.onmessage = async (e) => {
       const ev = JSON.parse(e.data);
       const etype = ev.event_type;
       const sId = ev.tenant_id || document.getElementById('tenantSelect').value || 'default';
@@ -1556,22 +1901,35 @@
         });
       }
 
-      if (etype === 'swarm_deployed' || etype === 'swarm_deleted' || etype === 'role_created' || etype === 'role_deleted') {
+      if (etype === 'role_created') {
+        const rObj = d.role || {};
+        const rName = rObj.name;
+        await refreshState();
+        if (rName) {
+          const targetSwarm = (ev.tenant_id && ev.tenant_id !== 'default') ? ev.tenant_id : (document.getElementById('tenantSelect').value || 'attacker');
+          const spawnedKey = nodeId(targetSwarm, rName);
+          const hubKey = nodeId(targetSwarm, 'coordinator');
+          triggerSpawnHighlight(spawnedKey, rName, rObj.color || '#00f0ff', hubKey);
+          appendLog('skill_learned', `[${targetSwarm.toUpperCase()}] ✦ NEW AGENT SPAWNED`, `${rName} (${rObj.title || rName}) · max_steps=${rObj.max_steps || 6}`);
+        }
+      } else if (etype === 'swarm_deployed' || etype === 'swarm_deleted' || etype === 'role_deleted') {
         refreshState();
       } else if (etype === 'cross_swarm_message') {
         const fromHub = nodeId(d.from_swarm, 'coordinator');
         const toHub = nodeId(d.to_swarm, 'coordinator');
         activeNode = toHub;
-        spawnPacket(fromHub, toHub, '#f43f5e', `${d.from_swarm.toUpperCase()} → ${d.to_swarm.toUpperCase()}`);
+        spawnPacket(fromHub, toHub, '#f43f5e', `${d.from_swarm.toUpperCase()} → ${d.to_swarm.toUpperCase()}`, true);
         appendLog('arena_attack', `CROSS-SWARM [${d.from_swarm.toUpperCase()} → ${d.to_swarm.toUpperCase()}]`, d.message);
       } else if (etype === 'cross_swarm_reply') {
         const fromHub = nodeId(d.from_swarm, 'coordinator');
         const toHub = nodeId(d.to_swarm, 'coordinator');
         activeNode = toHub;
-        spawnPacket(fromHub, toHub, '#10b981', `REPLY → ${d.to_swarm.toUpperCase()}`);
+        spawnPacket(fromHub, toHub, '#10b981', `REPLY → ${d.to_swarm.toUpperCase()}`, true);
         appendLog('arena_defense', `CROSS-SWARM REPLY [${d.from_swarm.toUpperCase()} → ${d.to_swarm.toUpperCase()}]`, d.reply);
         refreshState();
       } else if (etype === 'mission_start') {
+        // Clear previous mission's lighted links so this mission's integrations light up fresh
+        Object.keys(integratedLinks).forEach(k => delete integratedLinks[k]);
         document.getElementById('swarmStatusPill').textContent = `ACTIVE · SWARM '${ev.tenant_id.toUpperCase()}' RUNNING`;
         document.getElementById('answerDrawer').classList.remove('visible');
         appendLog('peer_message', `DISPATCH [${ev.tenant_id.toUpperCase()}]`, d.prompt);
@@ -1579,6 +1937,11 @@
         activeNode = nodeId(sId, ev.agent_name);
         document.getElementById('activeNodePill').textContent = `NODE: ${sId.toUpperCase()}:${ev.agent_name.toUpperCase()} (THINKING...)`;
         if (etype === 'inbox_pickup' && d.messages && d.messages.length) {
+          d.messages.forEach(m => {
+            if (m.from && m.from !== 'user') {
+              lightConnection(nodeId(sId, m.from), nodeId(sId, ev.agent_name), '#38bdf8', 'INTEGRATED');
+            }
+          });
           appendLog('peer_message', `[${sId}] ${ev.agent_name.toUpperCase()} · THINKING`, `Processing ${d.messages.length} inbox message(s) via Ollama...`);
         }
       } else if (etype === 'peer_message') {
