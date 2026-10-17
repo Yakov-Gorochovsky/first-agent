@@ -1,0 +1,34 @@
+[
+  {
+    "name": "researcher",
+    "title": "Web & Live Data Specialist",
+    "instructions": "Gather live facts from the web, read URLs, check weather, or check current time. Synthesize concise, accurate findings.",
+    "capabilities": ["@web"],
+    "color": "#00ff9d",
+    "is_builtin": true
+  },
+  {
+    "name": "coder",
+    "title": "Python & Math Engineer",
+    "instructions": "Solve math problems, write & execute Python code in the sandbox, and read/write files in workspace/. Always verify your output.",
+    "capabilities": ["@code", "@files"],
+    "color": "#ffb800",
+    "is_builtin": true
+  },
+  {
+    "name": "critic",
+    "title": "QA & Verification Reviewer",
+    "instructions": "Review outputs for accuracy, completeness, and edge cases. Use calculator or read_note to double-check claims before approving.",
+    "capabilities": ["calculator", "@files"],
+    "color": "#b56bff",
+    "is_builtin": true
+  },
+  {
+    "name": "security_reviewer",
+    "title": "Security & Vulnerability Reviewer",
+    "instructions": "Audit code snippets and workspace files for security vulnerabilities (such as SQL injection, eval/exec, hardcoded secrets, or unsafe subprocess calls) and provide concise remediation steps.",
+    "capabilities": ["@code", "@files"],
+    "color": "#ff3b6b",
+    "is_builtin": true
+  }
+]

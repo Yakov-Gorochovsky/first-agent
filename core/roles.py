@@ -1,11 +1,11 @@
 """
 core/roles.py - Declarative Role Engine, Capability Bundles & Dynamic Role Registry.
 
-Makes creating new agent roles effortless in 3 ways:
-1. Declarative JSON (`workspace/roles.json`) or 1-line Python `RoleSpec`
-2. High-level Capability Bundles (`@web`, `@code`, `@files`, `@memory`, `@all`)
-   so you don't need to list individual low-level tool names
-3. On-the-fly AI recruiting via the `spawn_specialist` tool or Web UI modal
+100% data-driven:
+- Seed roles live in `config/default_roles.json` (version-controlled, zero roles hardcoded in Python)
+- Runtime customizations are persisted in `workspace/roles.json`
+- High-level Capability Bundles (`@web`, `@code`, `@files`, `@memory`, `@all`)
+- On-the-fly AI recruiting via the `spawn_specialist` tool or Web UI modal
 """
 
 from dataclasses import asdict, dataclass, field
@@ -15,6 +15,7 @@ import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from tools import AVAILABLE_TOOLS, WORKSPACE_DIR
 
+DEFAULT_ROLES_FILE = Path(__file__).parent.parent / "config" / "default_roles.json"
 ROLES_FILE = WORKSPACE_DIR / "roles.json"
 
 # High-level Capability Bundles map human-friendly tags to underlying atomic tools
@@ -66,76 +67,54 @@ class RoleSpec:
         return d
 
 
-DEFAULT_ROLES: List[RoleSpec] = [
-    RoleSpec(
-        name="researcher",
-        title="Web & Live Data Specialist",
-        instructions=(
-            "Gather live facts from the web, read URLs, check weather, or check current time. "
-            "Synthesize concise, accurate findings."
-        ),
-        capabilities=["@web"],
-        color="#00ff9d",
-        is_builtin=True,
-    ),
-    RoleSpec(
-        name="coder",
-        title="Python & Math Engineer",
-        instructions=(
-            "Solve math problems, write & execute Python code in the sandbox, "
-            "and read/write files in workspace/. Always verify your output."
-        ),
-        capabilities=["@code", "@files"],
-        color="#ffb800",
-        is_builtin=True,
-    ),
-    RoleSpec(
-        name="critic",
-        title="QA & Verification Reviewer",
-        instructions=(
-            "Review outputs for accuracy, completeness, and edge cases. "
-            "Use calculator or read_note to double-check claims before approving."
-        ),
-        capabilities=["calculator", "@files"],
-        color="#b56bff",
-        is_builtin=True,
-    ),
-]
-
-
 class RoleRegistry:
-    """Manages persistent and dynamically spawned specialist roles."""
+    """Manages persistent and dynamically spawned specialist roles from JSON config files."""
 
-    def __init__(self, roles_file: Path = ROLES_FILE) -> None:
+    def __init__(
+        self,
+        roles_file: Path = ROLES_FILE,
+        default_roles_file: Path = DEFAULT_ROLES_FILE,
+    ) -> None:
         self.roles_file = roles_file
+        self.default_roles_file = default_roles_file
         self.roles_file.parent.mkdir(parents=True, exist_ok=True)
         self._roles: Dict[str, RoleSpec] = {}
         self.load()
 
+    def _parse_role_list(self, file_path: Path) -> Dict[str, RoleSpec]:
+        parsed: Dict[str, RoleSpec] = {}
+        if not file_path.exists():
+            return parsed
+        try:
+            raw_list = json.loads(file_path.read_text(encoding="utf-8"))
+            if isinstance(raw_list, list):
+                for item in raw_list:
+                    if isinstance(item, dict) and item.get("name"):
+                        spec = RoleSpec(
+                            name=self._clean_name(str(item["name"])),
+                            title=str(item.get("title", item["name"])),
+                            instructions=str(item.get("instructions", "")),
+                            capabilities=list(item.get("capabilities", ["@web", "@code"])),
+                            color=str(item.get("color", "#00f0ff")),
+                            is_builtin=bool(item.get("is_builtin", False)),
+                        )
+                        parsed[spec.name] = spec
+        except Exception:
+            pass
+        return parsed
+
     def load(self) -> None:
-        """Load roles from workspace/roles.json, seeding defaults if missing."""
-        self._roles = {r.name: r for r in DEFAULT_ROLES}
-        if self.roles_file.exists():
-            try:
-                raw_list = json.loads(self.roles_file.read_text(encoding="utf-8"))
-                if isinstance(raw_list, list):
-                    self._roles.clear()
-                    for item in raw_list:
-                        if isinstance(item, dict) and item.get("name"):
-                            spec = RoleSpec(
-                                name=self._clean_name(str(item["name"])),
-                                title=str(item.get("title", item["name"])),
-                                instructions=str(item.get("instructions", "")),
-                                capabilities=list(item.get("capabilities", ["@web", "@code"])),
-                                color=str(item.get("color", "#00f0ff")),
-                                is_builtin=bool(item.get("is_builtin", False)),
-                            )
-                            self._roles[spec.name] = spec
-            except Exception:
-                pass
+        """Load roles from workspace/roles.json, falling back to config/default_roles.json."""
+        self._roles = self._parse_role_list(self.roles_file)
         if not self._roles:
-            self._roles = {r.name: r for r in DEFAULT_ROLES}
+            self._roles = self._parse_role_list(self.default_roles_file)
+            self.save()
+
+    def reset_to_defaults(self) -> List[RoleSpec]:
+        """Restore roles from config/default_roles.json."""
+        self._roles = self._parse_role_list(self.default_roles_file)
         self.save()
+        return self.list_roles()
 
     def save(self) -> None:
         payload = [asdict(r) for r in self._roles.values()]
