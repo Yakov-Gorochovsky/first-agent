@@ -6,6 +6,7 @@ Uses loosely coupled interfaces from `core/`:
 - `core/storage.py`    (StorageBackend: SQLite multi-tenant isolation + PrivacyAirlock global skills)
 - `core/budget.py`     (BudgetTracker: step, token, and wall-time caps)
 - `core/bus.py`        (EventBus: pub/sub telemetry for CLI and SSE UI)
+- `core/roles.py`      (RoleRegistry & Capability Bundles: @web, @code, @files, @memory)
 - `core/swarm.py`      (Step 2: OrchestratorSwarm)
 - `core/peer_swarm.py` (Step 3: PeerSwarm with decentralized inboxes)
 """
@@ -18,6 +19,7 @@ from core.budget import BudgetConfig, BudgetTracker
 from core.bus import EventBus, SwarmEvent
 from core.llm import OpenAICompatibleProvider
 from core.peer_swarm import PeerSwarm
+from core.roles import CAPABILITY_BUNDLES, RoleRegistry
 from core.storage import SQLiteStorage
 from core.swarm import OrchestratorSwarm
 from tools import WORKSPACE_DIR
@@ -47,6 +49,12 @@ def console_event_listener(event: SwarmEvent) -> None:
             f"  [Inbox: {data.get('from_agent')} -> {data.get('to_agent')}] "
             f"{str(data.get('message', ''))[:200]}"
         )
+    elif etype == "role_created":
+        role = data.get("role", {})
+        print(
+            f"  [RoleRegistry | New Role Spawned] '{role.get('name')}' ({role.get('title')}) "
+            f"Tools: {role.get('resolved_tools')}"
+        )
     elif etype == "tool_call":
         print(f"  [{agent} | Tool Call] {data.get('tool')}({data.get('arguments')})")
     elif etype == "tool_result":
@@ -60,11 +68,12 @@ def console_event_listener(event: SwarmEvent) -> None:
         )
 
 
-def build_swarms() -> tuple[OrchestratorSwarm, PeerSwarm, SQLiteStorage, BudgetTracker, EventBus]:
+def build_swarms() -> tuple[OrchestratorSwarm, PeerSwarm, RoleRegistry, SQLiteStorage, BudgetTracker, EventBus]:
     bus = EventBus()
     bus.subscribe(console_event_listener)
 
     storage = SQLiteStorage(db_path=DB_PATH, max_trace_rows=500)
+    role_registry = RoleRegistry()
     budget = BudgetTracker(
         config=BudgetConfig(
             max_swarm_steps=MAX_STEPS * 2,
@@ -79,9 +88,13 @@ def build_swarms() -> tuple[OrchestratorSwarm, PeerSwarm, SQLiteStorage, BudgetT
         api_key=API_KEY,
         model=MODEL_NAME,
     )
-    orch = OrchestratorSwarm(llm=llm, storage=storage, budget=budget, bus=bus)
-    peer = PeerSwarm(llm=llm, storage=storage, budget=budget, bus=bus)
-    return orch, peer, storage, budget, bus
+    orch = OrchestratorSwarm(
+        llm=llm, storage=storage, budget=budget, bus=bus, role_registry=role_registry
+    )
+    peer = PeerSwarm(
+        llm=llm, storage=storage, budget=budget, bus=bus, role_registry=role_registry
+    )
+    return orch, peer, role_registry, storage, budget, bus
 
 
 def main() -> None:
@@ -105,18 +118,19 @@ def main() -> None:
     parser.add_argument("--new-session", action="store_true", help="Clear tenant session history.")
     args = parser.parse_args()
 
-    orch_swarm, peer_swarm, storage, budget, _ = build_swarms()
+    orch_swarm, peer_swarm, role_registry, storage, budget, _ = build_swarms()
     tenant_id = args.tenant
     mode = args.mode
 
     if args.new_session:
         storage.clear_session(tenant_id)
 
-    print("=" * 76)
+    role_names = ", ".join(r.name for r in role_registry.list_roles())
+    print("=" * 78)
     print(f" Modular AI Swarm | Model: {MODEL_NAME} | Tenant: '{tenant_id}' | Mode: {mode.upper()}")
-    print(" Topologies: 'peer' (Coordinator/Researcher/Coder/Critic Inboxes) | 'orchestrator'")
-    print(" Web UI:     Run `python server.py` and open http://localhost:8000")
-    print("=" * 76)
+    print(f" Active Roles: [{role_names}] (Managed via core/roles.py & workspace/roles.json)")
+    print(" Web UI:       Run `python server.py` and open http://localhost:8000")
+    print("=" * 78)
 
     def run_active(prompt_text: str) -> str:
         if mode == "orchestrator":
@@ -131,8 +145,8 @@ def main() -> None:
         return
 
     print(
-        "Commands: '/mode peer|orchestrator' | '/tenant <id>' | '/memory' | "
-        "'/skills' | '/budget' | '/clear' | 'exit'\n"
+        "Commands: '/roles' | '/add-role <name> | <title> | <@bundles> | <instructions>' | "
+        "'/del-role <name>' | '/mode peer|orchestrator' | '/tenant <id>' | '/memory' | '/skills' | 'exit'\n"
     )
     while True:
         try:
@@ -146,6 +160,37 @@ def main() -> None:
         if user_input.lower() in {"exit", "quit", "q"}:
             print("Goodbye!")
             break
+        if user_input.lower() == "/roles":
+            print("\nRegistered Specialist Roles:")
+            for r in role_registry.list_roles():
+                print(f"  - {r.name} ({r.title}) | Bundles: {r.capabilities} -> Tools: {r.tool_names}")
+                print(f"    Instructions: {r.instructions}")
+            print(f"\nAvailable Capability Bundles: {list(CAPABILITY_BUNDLES.keys())}\n")
+            continue
+        if user_input.lower().startswith("/add-role "):
+            raw = user_input[len("/add-role ") :].strip()
+            parts = [p.strip() for p in raw.split("|")]
+            if len(parts) < 3:
+                print(
+                    "  [Usage] /add-role <name> | <title> | <@web,@code,@files> | <instructions>\n"
+                )
+                continue
+            r_name = parts[0]
+            r_title = parts[1]
+            r_caps = [c.strip() for c in parts[2].split(",") if c.strip()]
+            r_inst = parts[3] if len(parts) > 3 else f"Act as {r_title}."
+            spec = role_registry.register_role(r_name, r_title, r_inst, r_caps)
+            print(
+                f"  [Created Role] '{spec.name}' ({spec.title}) with tools: {spec.tool_names}\n"
+            )
+            continue
+        if user_input.lower().startswith("/del-role "):
+            r_name = user_input.split(maxsplit=1)[1].strip()
+            if role_registry.delete_role(r_name):
+                print(f"  [Deleted Role] '{r_name}'\n")
+            else:
+                print(f"  [Role '{r_name}' not found.]\n")
+            continue
         if user_input.lower().startswith("/mode "):
             new_mode = user_input.split(maxsplit=1)[1].strip().lower()
             if new_mode in {"peer", "orchestrator"}:

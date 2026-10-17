@@ -90,6 +90,16 @@ flowchart TB
   - `server.py` streams those events over standard HTTP **Server-Sent Events (`/api/events`)** using Python's built-in `ThreadingHTTPServer` (zero extra dependencies).
   - `static/index.html` renders a real-time **HTML5 Canvas neural network graph** with glowing nodes, radar halos on the active agent, inbox queue badges, and animated particle packets flying between peers whenever messages are sent.
 
+### Decision 9: Data-Driven `RoleRegistry` & Capability Bundles (`@web`, `@code`, `@files`)
+* **Problem**: Hardcoding `researcher`, `coder`, and `critic` inside Python files makes adding new roles tedious and forces you to list individual tool names every time.
+* **Solution** ([`core/roles.py`](core/roles.py)):
+  - **Capability Bundles (`CAPABILITY_BUNDLES`)**: Groups atomic tools into reusable tags (`@web`, `@code`, `@files`, `@memory`, `@all`).
+  - **Declarative `RoleRegistry` (`workspace/roles.json`)**: Both `OrchestratorSwarm` and `PeerSwarm` build their agents dynamically from `RoleRegistry`.
+  - **3 Ways to Create Roles**:
+    1. **Web UI (`➕ New Agent Role` modal)** or CLI (`/add-role`)
+    2. **JSON Config (`workspace/roles.json`)**
+    3. **On-the-Fly AI Recruiting (`spawn_specialist` tool)**: The Coordinator/Orchestrator can spin up a brand-new specialist role mid-run when a task requires new expertise, and the Canvas UI automatically spaces `N` nodes in a dynamic orbital arc.
+
 ---
 
 ## 3. Complete Module-by-Module Reference
@@ -101,11 +111,12 @@ flowchart TB
 | [`core/budget.py`](core/budget.py) | Step, token, and wall-clock guardrails | `BudgetConfig`, `BudgetTracker`, `BudgetExceededError` |
 | [`core/storage.py`](core/storage.py) | Multi-tenant SQLite DB & PII scrubber | `StorageBackend`, `PrivacyAirlock.sanitize()`, `SQLiteStorage` |
 | [`core/llm.py`](core/llm.py) | Model adapter + ReAct fallback + Qwen fast mode | `LLMProvider`, `OpenAICompatibleProvider`, `LLMResponse` |
+| [`core/roles.py`](core/roles.py) | Declarative Role Registry & Capability Bundles | `CAPABILITY_BUNDLES`, `RoleSpec`, `RoleRegistry`, `make_spawn_specialist_tool()` |
 | [`core/swarm.py`](core/swarm.py) | Worker loop + Step 2 Hub-and-Spoke Swarm | `WorkerAgent.execute_task()`, `OrchestratorSwarm.run()` |
 | [`core/peer_swarm.py`](core/peer_swarm.py) | Step 3 Decentralized Inbox Network | `PeerMessage`, `PeerNode`, `PeerSwarm.run()` |
-| [`agent.py`](agent.py) | Interactive Terminal CLI for both topologies | `main()`, `/mode`, `/tenant`, `/memory`, `/skills`, `/budget` |
-| [`server.py`](server.py) | Zero-dependency HTTP + Live SSE streaming server | `SwarmRequestHandler`, `/api/events`, `/api/run`, `/api/state` |
-| [`static/index.html`](static/index.html) | Sci-Fi Mission Control Web Dashboard | HTML5 Canvas particle graph, Live SSE feed, Tenant & Mode switchers |
+| [`agent.py`](agent.py) | Interactive Terminal CLI for both topologies | `main()`, `/roles`, `/add-role`, `/mode`, `/tenant`, `/memory`, `/skills` |
+| [`server.py`](server.py) | Zero-dependency HTTP + Live SSE streaming server | `SwarmRequestHandler`, `/api/events`, `/api/roles`, `/api/run`, `/api/state` |
+| [`static/index.html`](static/index.html) | Sci-Fi Mission Control Web Dashboard | Dynamic orbital Canvas graph, `+ New Agent Role` modal, Live SSE feed |
 
 ---
 

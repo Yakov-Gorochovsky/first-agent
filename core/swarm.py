@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, List, Optional
 from core.budget import BudgetExceededError, BudgetTracker
 from core.bus import EventBus
 from core.llm import LLMProvider
+from core.roles import RoleRegistry, RoleSpec
 from core.storage import StorageBackend
 from tools import AVAILABLE_TOOLS, TOOL_SCHEMAS
 
@@ -272,7 +273,7 @@ class WorkerAgent:
 
 
 class OrchestratorSwarm:
-    """Step 2 Architecture: Central Orchestrator delegating tasks to specialized Workers."""
+    """Step 2 Architecture: Central Orchestrator delegating tasks to specialized Workers from RoleRegistry."""
 
     def __init__(
         self,
@@ -280,48 +281,44 @@ class OrchestratorSwarm:
         storage: StorageBackend,
         budget: BudgetTracker,
         bus: EventBus,
+        role_registry: Optional[RoleRegistry] = None,
     ) -> None:
         self.llm = llm
         self.storage = storage
         self.budget = budget
         self.bus = bus
+        self.role_registry = role_registry or RoleRegistry()
+        self.workers: Dict[str, WorkerAgent] = {}
+        self.refresh_workers()
 
-        self.workers: Dict[str, WorkerAgent] = {
-            "researcher": WorkerAgent(
-                name="researcher",
-                role="Web & Live Data Specialist",
-                instructions=(
-                    "You gather live facts from the web, check weather, or check current time. "
-                    "Return concise, factual findings to the orchestrator."
-                ),
-                llm=llm,
-                storage=storage,
-                budget=budget,
-                bus=bus,
-                tool_names=["web_search", "fetch_url", "get_weather", "get_current_time"],
-            ),
-            "coder": WorkerAgent(
-                name="coder",
-                role="Python & Math Execution Engineer",
-                instructions=(
-                    "You solve math problems, write & execute Python code in the sandbox, "
-                    "and read/write files in workspace/. Always verify your results."
-                ),
-                llm=llm,
-                storage=storage,
-                budget=budget,
-                bus=bus,
-                tool_names=["run_python", "calculator", "save_note", "read_note", "list_notes"],
-            ),
+    def _build_worker(self, spec: RoleSpec) -> WorkerAgent:
+        return WorkerAgent(
+            name=spec.name,
+            role=spec.title,
+            instructions=spec.instructions,
+            llm=self.llm,
+            storage=self.storage,
+            budget=self.budget,
+            bus=self.bus,
+            tool_names=spec.tool_names,
+        )
+
+    def refresh_workers(self) -> None:
+        """Rebuild worker instances from the declarative RoleRegistry."""
+        self.workers = {
+            spec.name: self._build_worker(spec)
+            for spec in self.role_registry.list_roles()
         }
 
     def run(self, user_input: str, tenant_id: str = "default") -> str:
         """Run the Orchestrator -> Workers flow for a given tenant."""
         self.budget.reset()
         self.budget.tenant_id = tenant_id
+        self.refresh_workers()
 
         def delegate_to_worker(worker_name: str, task: str) -> str:
-            worker = self.workers.get(worker_name.lower().strip())
+            target = worker_name.lower().strip()
+            worker = self.workers.get(target)
             if not worker:
                 return f"Error: Unknown worker '{worker_name}'. Available workers: {list(self.workers)}"
             self.bus.emit(
@@ -333,22 +330,37 @@ class OrchestratorSwarm:
             )
             return worker.execute_task(task, tenant_id=tenant_id)
 
+        def _on_spawn(spec: RoleSpec) -> None:
+            self.workers[spec.name] = self._build_worker(spec)
+            self.bus.emit(
+                "role_created",
+                agent_name="orchestrator",
+                tenant_id=tenant_id,
+                role=spec.to_dict(),
+            )
+
+        spawn_fn, spawn_schema = self.role_registry.make_spawn_specialist_tool(on_spawn=_on_spawn)
+
+        roster_lines = [
+            f"- '{s.name}' ({s.title}): {s.instructions} [Tools: {', '.join(s.tool_names)}]"
+            for s in self.role_registry.list_roles()
+        ]
+        roster_text = "\n".join(roster_lines)
+
         delegate_schema = {
             "type": "function",
             "function": {
                 "name": "delegate_to_worker",
                 "description": (
-                    "Delegate a subtask to a specialized worker agent: "
-                    "'researcher' (web search, URLs, weather, time) or "
-                    "'coder' (run Python code, math calculator, read/write workspace notes)."
+                    f"Delegate a subtask to a specialized worker agent. "
+                    f"Available workers: {list(self.workers.keys())}."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "worker_name": {
                             "type": "string",
-                            "enum": list(self.workers.keys()),
-                            "description": "Which specialized worker to invoke ('researcher' or 'coder').",
+                            "description": f"Worker name (e.g. {', '.join(self.workers.keys())}).",
                         },
                         "task": {
                             "type": "string",
@@ -364,10 +376,11 @@ class OrchestratorSwarm:
             name="orchestrator",
             role="Lead Swarm Coordinator",
             instructions=(
-                "You coordinate a team of specialized workers ('researcher' and 'coder') and manage tenant memory.\n"
-                "- Use `remember_fact` / `recall_memories` for private client preferences/facts.\n"
-                "- Use `share_global_skill` when you or a worker discover a reusable technical rule (no client PII).\n"
-                "- Use `delegate_to_worker` to assign web research/weather/time to 'researcher' or Python/math/files to 'coder'.\n"
+                "You coordinate a team of specialized workers and manage tenant memory.\n"
+                f"ACTIVE WORKER ROSTER:\n{roster_text}\n\n"
+                "- Use `delegate_to_worker` to assign subtasks to the best specialist.\n"
+                "- Use `spawn_specialist` if the user asks to create a new role or if a task requires a specialist not in the roster.\n"
+                "- Use `remember_fact` / `recall_memories` for private client facts.\n"
                 "Synthesize worker results into a clear, helpful response."
             ),
             llm=self.llm,
@@ -375,8 +388,11 @@ class OrchestratorSwarm:
             budget=self.budget,
             bus=self.bus,
             tool_names=["remember_fact", "recall_memories"],
-            extra_tools={"delegate_to_worker": delegate_to_worker},
-            extra_schemas=[delegate_schema],
+            extra_tools={
+                "delegate_to_worker": delegate_to_worker,
+                "spawn_specialist": spawn_fn,
+            },
+            extra_schemas=[delegate_schema, spawn_schema],
         )
 
         past_turns = self.storage.get_session_turns(tenant_id, limit=10)

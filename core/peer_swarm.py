@@ -1,16 +1,13 @@
 """
-core/peer_swarm.py - Step 3: Decentralized Peer Network with Inboxes.
+core/peer_swarm.py - Step 3: Decentralized Peer Network with Inboxes (Data-Driven via RoleRegistry).
 
 Unlike `OrchestratorSwarm` (strictly hierarchical Parent -> Child call/return),
 `PeerSwarm` equips every agent with an asynchronous FIFO `inbox` queue:
-- `coordinator`: Entry point & mission router
-- `researcher`: Live web search, URL fetching, weather, time
-- `coder`: Python 3 execution sandbox, math calculator, workspace files
-- `critic`: QA verifier & security/accuracy reviewer
+- `coordinator`: Entry point, dynamic specialist recruiter (`spawn_specialist`), & synthesizer
+- All specialist roles registered in `RoleRegistry` (e.g., `researcher`, `coder`, `critic`, or custom roles)
 
 Peers communicate directly with one another via `send_peer_message(to_agent, message)`
-(e.g., `researcher -> coder -> critic -> coordinator`) without needing the coordinator
-to relay every intermediate hop.
+without needing the coordinator to relay every intermediate hop.
 """
 
 from collections import deque
@@ -20,6 +17,7 @@ from typing import Callable, Deque, Dict, List, Optional
 from core.budget import BudgetExceededError, BudgetTracker
 from core.bus import EventBus
 from core.llm import LLMProvider
+from core.roles import RoleRegistry, RoleSpec
 from core.storage import StorageBackend
 from core.swarm import WorkerAgent
 
@@ -49,7 +47,7 @@ class PeerNode:
 
 
 class PeerSwarm:
-    """Decentralized multi-agent network where agents message each other's inboxes directly."""
+    """Decentralized multi-agent network built dynamically from RoleRegistry."""
 
     def __init__(
         self,
@@ -57,85 +55,104 @@ class PeerSwarm:
         storage: StorageBackend,
         budget: BudgetTracker,
         bus: EventBus,
+        role_registry: Optional[RoleRegistry] = None,
     ) -> None:
         self.llm = llm
         self.storage = storage
         self.budget = budget
         self.bus = bus
+        self.role_registry = role_registry or RoleRegistry()
         self.nodes: Dict[str, PeerNode] = {}
         self._final_answer: Optional[str] = None
-        self._setup_peers()
+        self.refresh_peers()
 
     def _inbox_snapshot(self) -> Dict[str, int]:
         return {name: len(node.inbox) for name, node in self.nodes.items()}
 
-    def _setup_peers(self) -> None:
-        peer_specs = [
-            (
-                "coordinator",
-                "Mission Router & Synthesizer",
-                (
-                    "You are 'coordinator' in a peer-to-peer agent network ('coordinator', 'researcher', 'coder', 'critic').\n"
-                    "- For simple memory/greeting tasks, handle them directly and call `finish_swarm`.\n"
-                    "- For web/weather/time tasks, use `send_peer_message` to 'researcher'.\n"
-                    "- For Python coding/math/file tasks, use `send_peer_message` to 'coder'.\n"
-                    "- When a peer sends you verified results in your inbox, call `finish_swarm(final_answer=...)`."
-                ),
-                ["remember_fact", "recall_memories"],
-            ),
-            (
-                "researcher",
-                "Web & Live Data Peer",
-                (
-                    "You are 'researcher' in a peer agent network.\n"
-                    "Use your tools (`web_search`, `fetch_url`, `get_weather`, `get_current_time`) to gather data.\n"
-                    "- If calculation or Python processing is needed next, call `send_peer_message(to_agent='coder', message=...)` directly!\n"
-                    "- Otherwise, send your findings to 'critic' or 'coordinator' via `send_peer_message`."
-                ),
-                ["web_search", "fetch_url", "get_weather", "get_current_time"],
-            ),
-            (
-                "coder",
-                "Python Sandbox & Math Peer",
-                (
-                    "You are 'coder' in a peer agent network.\n"
-                    "Use `run_python`, `calculator`, or `save_note`/`read_note`/`list_notes` to execute tasks.\n"
-                    "Once your code or math is executed, send the output via `send_peer_message` to 'critic' for review "
-                    "(or to 'coordinator' if ready)."
-                ),
-                ["run_python", "calculator", "save_note", "read_note", "list_notes"],
-            ),
-            (
-                "critic",
-                "QA & Verification Peer",
-                (
-                    "You are 'critic' in a peer agent network.\n"
-                    "Review results sent to your inbox for accuracy and completeness.\n"
-                    "- If there is an error or missing requirement, call `send_peer_message` back to 'coder' or 'researcher' to fix it.\n"
-                    "- If the result is accurate and complete, call `finish_swarm(final_answer=...)` directly to complete the mission!"
-                ),
-                ["calculator", "read_note", "list_notes"],
-            ),
-        ]
+    def refresh_peers(self) -> None:
+        """Rebuild the peer network dynamically from RoleRegistry while preserving existing inbox queues."""
+        old_inboxes = {k: v.inbox for k, v in self.nodes.items()}
+        self.nodes.clear()
 
-        peer_names = [s[0] for s in peer_specs]
+        specs = self.role_registry.list_roles()
+        all_peer_names = ["coordinator"] + [s.name for s in specs]
 
-        for name, role, instructions, tools in peer_specs:
-            extra_tools, extra_schemas = self._make_peer_comm_tools(name, peer_names)
-            worker = WorkerAgent(
-                name=name,
-                role=role,
-                instructions=instructions,
-                llm=self.llm,
-                storage=self.storage,
-                budget=self.budget,
-                bus=self.bus,
-                tool_names=tools,
-                extra_tools=extra_tools,
-                extra_schemas=extra_schemas,
-                yield_on_tools=["send_peer_message", "finish_swarm"],
+        roster_summary = "\n".join(
+            f"  - '{s.name}' ({s.title}): {s.instructions} [Tools: {', '.join(s.tool_names)}]"
+            for s in specs
+        )
+
+        def _on_spawn(new_spec: RoleSpec) -> None:
+            self._register_single_specialist(new_spec)
+            self.bus.emit(
+                "role_created",
+                agent_name="coordinator",
+                tenant_id=self.budget.tenant_id,
+                role=new_spec.to_dict(),
             )
-            self.nodes[name] = PeerNode(worker)
+
+        spawn_fn, spawn_schema = self.role_registry.make_spawn_specialist_tool(on_spawn=_on_spawn)
+        coord_tools, coord_schemas = self._make_peer_comm_tools("coordinator", all_peer_names)
+        coord_tools["spawn_specialist"] = spawn_fn
+        coord_schemas.append(spawn_schema)
+
+        coord_worker = WorkerAgent(
+            name="coordinator",
+            role="Mission Router & Synthesizer",
+            instructions=(
+                "You are 'coordinator' in a peer-to-peer agent network.\n"
+                f"ACTIVE PEER SPECIALISTS:\n{roster_summary}\n\n"
+                "- Route tasks to the best specialist peer using `send_peer_message(to_agent=..., message=...)`.\n"
+                "- Use `spawn_specialist` if the user asks to create a new role or if a task needs a new persona.\n"
+                "- When a peer sends verified findings back to your inbox, call `finish_swarm(final_answer=...)`."
+            ),
+            llm=self.llm,
+            storage=self.storage,
+            budget=self.budget,
+            bus=self.bus,
+            tool_names=["remember_fact", "recall_memories"],
+            extra_tools=coord_tools,
+            extra_schemas=coord_schemas,
+            yield_on_tools=["send_peer_message", "finish_swarm"],
+        )
+        coord_node = PeerNode(coord_worker)
+        if "coordinator" in old_inboxes:
+            coord_node.inbox = old_inboxes["coordinator"]
+        self.nodes["coordinator"] = coord_node
+
+        for spec in specs:
+            self._register_single_specialist(spec, old_inboxes.get(spec.name))
+
+    def _register_single_specialist(
+        self, spec: RoleSpec, existing_inbox: Optional[Deque[PeerMessage]] = None
+    ) -> None:
+        all_peer_names = ["coordinator"] + [s.name for s in self.role_registry.list_roles()]
+        comm_tools, comm_schemas = self._make_peer_comm_tools(spec.name, all_peer_names)
+        peer_list_str = ", ".join(p for p in all_peer_names if p != spec.name)
+
+        worker = WorkerAgent(
+            name=spec.name,
+            role=spec.title,
+            instructions=(
+                f"{spec.instructions}\n"
+                f"You are in a peer network with: [{peer_list_str}].\n"
+                "- Use your tools to complete your part of the mission.\n"
+                "- Then either forward your output to another specialist or 'coordinator' via `send_peer_message`, "
+                "or call `finish_swarm(final_answer=...)` if the entire user request is verified and complete."
+            ),
+            llm=self.llm,
+            storage=self.storage,
+            budget=self.budget,
+            bus=self.bus,
+            tool_names=spec.tool_names,
+            extra_tools=comm_tools,
+            extra_schemas=comm_schemas,
+            yield_on_tools=["send_peer_message", "finish_swarm"],
+        )
+        node = PeerNode(worker)
+        if existing_inbox:
+            node.inbox = existing_inbox
+        self.nodes[spec.name] = node
 
     def _make_peer_comm_tools(
         self, sender_name: str, all_peers: List[str]
@@ -145,7 +162,7 @@ class PeerSwarm:
         def send_peer_message(to_agent: str, message: str) -> str:
             target = to_agent.lower().strip()
             if target not in self.nodes:
-                return f"Error: Unknown peer '{to_agent}'. Valid peers: {valid_targets}"
+                return f"Error: Unknown peer '{to_agent}'. Available peers: {list(self.nodes.keys())}"
             self.nodes[target].inbox.append(
                 PeerMessage(sender=sender_name, recipient=target, content=message)
             )
@@ -184,8 +201,7 @@ class PeerSwarm:
                         "properties": {
                             "to_agent": {
                                 "type": "string",
-                                "enum": valid_targets,
-                                "description": "Recipient peer agent name.",
+                                "description": f"Recipient peer name (e.g. {', '.join(valid_targets)}).",
                             },
                             "message": {
                                 "type": "string",
@@ -221,10 +237,10 @@ class PeerSwarm:
         self.budget.reset()
         self.budget.tenant_id = tenant_id
         self._final_answer = None
+        self.refresh_peers()
         for node in self.nodes.values():
             node.inbox.clear()
 
-        # Seed initial message from User -> Coordinator's inbox
         self.nodes["coordinator"].inbox.append(
             PeerMessage(sender="user", recipient="coordinator", content=user_input)
         )
@@ -243,7 +259,6 @@ class PeerSwarm:
 
         try:
             while self._final_answer is None:
-                # Find the next peer node with pending inbox messages
                 active_node: Optional[PeerNode] = None
                 for node in self.nodes.values():
                     if node.inbox:
@@ -253,7 +268,6 @@ class PeerSwarm:
                 if active_node is None:
                     break
 
-                # Drain all queued messages currently in this peer's inbox
                 batch: List[PeerMessage] = []
                 while active_node.inbox:
                     batch.append(active_node.inbox.popleft())
@@ -279,15 +293,12 @@ class PeerSwarm:
                 if self._final_answer is not None:
                     break
 
-                # If the active peer finished its turn without sending any peer message
-                # or calling finish_swarm, route its plain-text output:
                 any_pending = any(len(n.inbox) > 0 for n in self.nodes.values())
                 if not any_pending and last_output:
                     if active_node.name == "coordinator":
                         self._final_answer = last_output
                         break
                     else:
-                        # Auto-deliver worker reply to coordinator's inbox
                         self.nodes["coordinator"].inbox.append(
                             PeerMessage(
                                 sender=active_node.name,

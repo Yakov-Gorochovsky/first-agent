@@ -34,7 +34,6 @@
       grid-template-rows: 62px 1fr 78px;
     }
 
-    /* Subtle cyber grid overlay */
     body::before {
       content: "";
       position: fixed;
@@ -47,7 +46,6 @@
       z-index: 0;
     }
 
-    /* Top Header HUD */
     header {
       z-index: 2;
       display: flex;
@@ -98,7 +96,7 @@
     .controls-bar {
       display: flex;
       align-items: center;
-      gap: 14px;
+      gap: 10px;
     }
 
     .hud-select, .hud-btn {
@@ -106,7 +104,7 @@
       color: var(--text-main);
       border: 1px solid var(--border-glow);
       border-radius: 6px;
-      padding: 7px 12px;
+      padding: 7px 11px;
       font-size: 12px;
       font-family: Consolas, monospace;
       cursor: pointer;
@@ -124,16 +122,17 @@
       background: rgba(0, 255, 157, 0.08);
     }
 
-    .hud-btn.sim-btn:hover {
-      background: rgba(0, 255, 157, 0.18);
-      box-shadow: 0 0 15px rgba(0, 255, 157, 0.35);
+    .hud-btn.role-btn {
+      border-color: var(--cyan);
+      color: var(--cyan);
+      background: rgba(0, 240, 255, 0.1);
+      font-weight: 700;
     }
 
-    /* Main 3-Column Mission Control Grid */
     main {
       z-index: 1;
       display: grid;
-      grid-template-columns: 330px 1fr 390px;
+      grid-template-columns: 340px 1fr 390px;
       gap: 14px;
       padding: 14px;
       overflow: hidden;
@@ -151,11 +150,11 @@
     }
 
     .panel-header {
-      padding: 10px 14px;
+      padding: 9px 13px;
       border-bottom: 1px solid rgba(0, 240, 255, 0.16);
       font-size: 11px;
       font-weight: 700;
-      letter-spacing: 1.8px;
+      letter-spacing: 1.6px;
       text-transform: uppercase;
       color: var(--cyan);
       display: flex;
@@ -165,17 +164,16 @@
     }
 
     .panel-body {
-      padding: 12px;
+      padding: 10px 12px;
       overflow-y: auto;
       flex: 1;
-      font-size: 12.5px;
+      font-size: 12px;
     }
 
-    /* Left Column: Multi-Tenant Vault & Privacy Airlock */
     .left-col {
       display: flex;
       flex-direction: column;
-      gap: 14px;
+      gap: 12px;
       overflow: hidden;
     }
 
@@ -183,14 +181,34 @@
       flex: 1;
     }
 
+    .role-chip {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(255, 255, 255, 0.03);
+      border-left: 3px solid var(--cyan);
+      padding: 6px 9px;
+      border-radius: 4px;
+      margin-bottom: 6px;
+      font-size: 11.5px;
+    }
+
+    .role-del-btn {
+      color: var(--rose);
+      cursor: pointer;
+      font-family: Consolas, monospace;
+      font-weight: bold;
+      padding: 0 5px;
+    }
+
     .kv-item {
       background: rgba(255, 255, 255, 0.03);
       border-left: 3px solid var(--cyan);
-      padding: 8px 10px;
+      padding: 7px 9px;
       border-radius: 4px;
-      margin-bottom: 8px;
+      margin-bottom: 6px;
       font-family: Consolas, monospace;
-      font-size: 11.5px;
+      font-size: 11px;
     }
 
     .kv-key {
@@ -201,10 +219,10 @@
     .skill-card {
       background: rgba(181, 107, 255, 0.07);
       border-left: 3px solid var(--violet);
-      padding: 8px 10px;
+      padding: 7px 9px;
       border-radius: 4px;
-      margin-bottom: 8px;
-      font-size: 11.5px;
+      margin-bottom: 7px;
+      font-size: 11px;
     }
 
     .skill-tag {
@@ -215,10 +233,9 @@
       font-size: 10px;
       padding: 1px 6px;
       border-radius: 3px;
-      margin-bottom: 4px;
+      margin-bottom: 3px;
     }
 
-    /* Center Column: Interactive Network Canvas + Final Output Overlay */
     .center-stage {
       position: relative;
       background: radial-gradient(circle at center, rgba(0, 240, 255, 0.06) 0%, rgba(5, 8, 17, 0.9) 85%);
@@ -292,7 +309,6 @@
       color: var(--text-main);
     }
 
-    /* Right Column: Budget Gauges & Live Telemetry Stream */
     .right-col {
       display: flex;
       flex-direction: column;
@@ -304,7 +320,6 @@
       display: grid;
       grid-template-columns: 1fr 1fr 1fr;
       gap: 8px;
-      margin-bottom: 10px;
     }
 
     .metric-box {
@@ -380,7 +395,6 @@
       font-size: 10px;
     }
 
-    /* Bottom Command Deck */
     footer {
       z-index: 2;
       padding: 0 22px;
@@ -402,11 +416,6 @@
       outline: none;
     }
 
-    .prompt-input:focus {
-      border-color: var(--cyan);
-      box-shadow: 0 0 15px rgba(0, 240, 255, 0.25);
-    }
-
     .launch-btn {
       background: linear-gradient(135deg, #00c6ff, #0072ff);
       color: #fff;
@@ -419,17 +428,74 @@
       font-size: 12.5px;
       cursor: pointer;
       box-shadow: 0 0 18px rgba(0, 198, 255, 0.4);
-      transition: transform 0.15s ease, box-shadow 0.15s ease;
     }
 
-    .launch-btn:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 0 24px rgba(0, 240, 255, 0.65);
+    /* + New Role Modal */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(3, 6, 14, 0.8);
+      backdrop-filter: blur(8px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+    }
+
+    .modal-backdrop.open {
+      display: flex;
+    }
+
+    .modal-card {
+      width: 440px;
+      background: #0a1428;
+      border: 1px solid var(--cyan);
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 0 35px rgba(0, 240, 255, 0.25);
+    }
+
+    .modal-card h3 {
+      color: var(--cyan);
+      font-size: 14px;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      margin-bottom: 14px;
+    }
+
+    .form-group {
+      margin-bottom: 12px;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 11px;
+      font-family: Consolas, monospace;
+      color: var(--text-dim);
+      margin-bottom: 4px;
+    }
+
+    .form-input {
+      width: 100%;
+      background: rgba(5, 10, 20, 0.9);
+      border: 1px solid var(--border-glow);
+      border-radius: 6px;
+      padding: 8px 10px;
+      color: var(--text-main);
+      font-size: 12.5px;
+    }
+
+    .bundle-checks {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      font-family: Consolas, monospace;
+      font-size: 12px;
+      margin-top: 4px;
     }
   </style>
 </head>
 <body>
-  <!-- TOP HUD HEADER -->
   <header>
     <div class="brand">
       <div class="brand-pulse"></div>
@@ -440,40 +506,41 @@
     </div>
 
     <div class="controls-bar">
-      <label class="brand-sub">TENANT:</label>
+      <button class="hud-btn role-btn" onclick="openRoleModal()">➕ New Agent Role</button>
+
       <select id="tenantSelect" class="hud-select">
-        <option value="client_a">Client A (Fintech Vault)</option>
-        <option value="client_b">Client B (Healthcare Vault)</option>
-        <option value="client_c">Client C (Retail Vault)</option>
+        <option value="client_a">Tenant: Client A (Fintech)</option>
+        <option value="client_b">Tenant: Client B (Healthcare)</option>
+        <option value="client_c">Tenant: Client C (Retail)</option>
       </select>
 
-      <label class="brand-sub">TOPOLOGY:</label>
       <select id="modeSelect" class="hud-select">
         <option value="peer">Step 3: Peer Inbox Network</option>
         <option value="orchestrator">Step 2: Orchestrator -> Workers</option>
       </select>
 
-      <button class="hud-btn sim-btn" onclick="triggerSimulation()" title="Instant 8-second visual showcase of peer inboxes, Python execution, and Privacy Airlock">
-        ⚡ Instant Cinema Demo
-      </button>
-      <button class="hud-btn" onclick="testPrivacyAirlock()" title="Test scrubbing client PII into a Shared Global Skill">
-        🛡️ Test Privacy Airlock
-      </button>
+      <button class="hud-btn sim-btn" onclick="triggerSimulation()">⚡ Instant Cinema Demo</button>
+      <button class="hud-btn" onclick="testPrivacyAirlock()">🛡️ Test Privacy Airlock</button>
     </div>
   </header>
 
-  <!-- MAIN 3-COLUMN HUD -->
   <main>
-    <!-- LEFT: MULTI-TENANT VAULT & GLOBAL SKILLS -->
+    <!-- LEFT: SPECIALIST ROLES, TENANT VAULT & GLOBAL SKILLS -->
     <div class="left-col">
+      <div class="panel">
+        <div class="panel-header">
+          <span>🤖 Specialist Role Roster</span>
+          <span style="cursor:pointer; color:var(--emerald);" onclick="openRoleModal()">[+ Add]</span>
+        </div>
+        <div class="panel-body" id="rolesList"></div>
+      </div>
+
       <div class="panel">
         <div class="panel-header">
           <span>🔒 Tenant Private Memory</span>
           <span id="tenantTag" style="color: var(--emerald);">client_a</span>
         </div>
-        <div class="panel-body" id="memoryList">
-          <div style="color: var(--text-dim);">Loading tenant vault...</div>
-        </div>
+        <div class="panel-body" id="memoryList"></div>
       </div>
 
       <div class="panel">
@@ -481,13 +548,11 @@
           <span>🌐 Shared Global Skills (Airlocked)</span>
           <span style="color: var(--violet);">ALL SWARMS</span>
         </div>
-        <div class="panel-body" id="skillsList">
-          <div style="color: var(--text-dim);">Loading shared playbooks...</div>
-        </div>
+        <div class="panel-body" id="skillsList"></div>
       </div>
     </div>
 
-    <!-- CENTER: INTERACTIVE NEURAL GRAPH -->
+    <!-- CENTER: DYNAMIC ORBITAL NEURAL GRAPH -->
     <div class="center-stage">
       <div class="stage-overlay-top">
         <div class="status-pill" id="swarmStatusPill">STATUS: STANDBY // SSE STREAM ONLINE</div>
@@ -542,16 +607,51 @@
     </div>
   </main>
 
-  <!-- BOTTOM COMMAND INPUT -->
   <footer>
     <input
       id="promptInput"
       class="prompt-input"
       type="text"
-      placeholder="Enter mission prompt for the swarm (e.g., 'Use Python to compute the first 10 primes, verify with critic, and save to memory')..."
+      placeholder="Enter mission prompt (or ask Coordinator to spawn a new specialist role on the fly)..."
     />
     <button class="launch-btn" onclick="launchMission(false)">🚀 Execute Live Swarm</button>
   </footer>
+
+  <!-- + NEW ROLE MODAL -->
+  <div class="modal-backdrop" id="roleModal">
+    <div class="modal-card">
+      <h3>➕ Create Specialist Agent Role</h3>
+      <div class="form-group">
+        <label>Role ID (snake_case, e.g. security_auditor)</label>
+        <input id="roleNameInput" class="form-input" placeholder="security_auditor" />
+      </div>
+      <div class="form-group">
+        <label>Role Title</label>
+        <input id="roleTitleInput" class="form-input" placeholder="Security & Code Auditor" />
+      </div>
+      <div class="form-group">
+        <label>Capability Bundles (Select tool groups)</label>
+        <div class="bundle-checks">
+          <label><input type="checkbox" class="cap-check" value="@web" checked /> @web</label>
+          <label><input type="checkbox" class="cap-check" value="@code" checked /> @code</label>
+          <label><input type="checkbox" class="cap-check" value="@files" /> @files</label>
+          <label><input type="checkbox" class="cap-check" value="@memory" /> @memory</label>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Node Glow Color</label>
+        <input id="roleColorInput" class="form-input" value="#00ff9d" />
+      </div>
+      <div class="form-group">
+        <label>System Instructions / Persona</label>
+        <textarea id="roleInstInput" class="form-input" rows="3" placeholder="Inspect scripts and data for vulnerabilities or accuracy..."></textarea>
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:14px;">
+        <button class="hud-btn" onclick="closeRoleModal()">Cancel</button>
+        <button class="hud-btn role-btn" onclick="submitNewRole()">Save & Spawn Node</button>
+      </div>
+    </div>
+  </div>
 
   <script>
     const canvas = document.getElementById('networkCanvas');
@@ -560,32 +660,44 @@
     let packetCount = 0;
     let activeNode = null;
     let activeToolBadge = {};
-    let inboxCounts = { coordinator: 0, researcher: 0, coder: 0, critic: 0 };
+    let inboxCounts = {};
 
-    // Graph nodes positioned in orbital diamond layout
-    const nodes = {
-      user:        { label: 'USER',        role: 'Mission Client',     rx: 0.14, ry: 0.50, color: '#00f0ff' },
-      coordinator: { label: 'COORDINATOR', role: 'Orchestrator / Hub', rx: 0.42, ry: 0.50, color: '#00f0ff' },
-      researcher:  { label: 'RESEARCHER',  role: 'Web & Live Data',    rx: 0.68, ry: 0.22, color: '#00ff9d' },
-      coder:       { label: 'CODER',       role: 'Python Sandbox',     rx: 0.68, ry: 0.78, color: '#ffb800' },
-      critic:      { label: 'CRITIC',      role: 'QA & Verifier',      rx: 0.88, ry: 0.50, color: '#b56bff' },
-      airlock:     { label: 'AIRLOCK DB',  role: 'SQLite + Scrubbing', rx: 0.42, ry: 0.85, color: '#ff3b6b' },
-    };
-
-    const edges = [
-      ['user', 'coordinator'],
-      ['coordinator', 'researcher'],
-      ['coordinator', 'coder'],
-      ['coordinator', 'critic'],
-      ['researcher', 'coder'],
-      ['coder', 'critic'],
-      ['researcher', 'critic'],
-      ['coordinator', 'airlock'],
-      ['coder', 'airlock'],
-    ];
-
-    // Animated particle packets traveling between nodes
+    let nodes = {};
+    let edges = [];
     const particles = [];
+
+    function rebuildGraphFromRoles(roleList) {
+      nodes = {
+        user:        { label: 'USER',        role: 'Mission Client',     rx: 0.13, ry: 0.50, color: '#00f0ff' },
+        coordinator: { label: 'COORDINATOR', role: 'Orchestrator / Hub', rx: 0.40, ry: 0.50, color: '#00f0ff' },
+        airlock:     { label: 'AIRLOCK DB',  role: 'SQLite + Scrubbing', rx: 0.40, ry: 0.86, color: '#ff3b6b' },
+      };
+      edges = [
+        ['user', 'coordinator'],
+        ['coordinator', 'airlock'],
+      ];
+
+      const count = roleList.length;
+      roleList.forEach((r, idx) => {
+        // Arrange N specialist roles smoothly along a right-hand orbital arc
+        const t = count === 1 ? 0 : (idx / (count - 1)) * 2 - 1; // -1 to +1
+        const angle = t * (Math.PI * 0.36); // -65 deg to +65 deg
+        const rx = 0.40 + Math.cos(angle) * 0.40;
+        const ry = 0.50 + Math.sin(angle) * 0.36;
+
+        nodes[r.name] = {
+          label: r.name.toUpperCase(),
+          role: r.title,
+          rx,
+          ry,
+          color: r.color || '#00ff9d',
+        };
+        edges.push(['coordinator', r.name]);
+        if (idx > 0) {
+          edges.push([roleList[idx - 1].name, r.name]);
+        }
+      });
+    }
 
     function resizeCanvas() {
       canvas.width = canvas.parentElement.clientWidth;
@@ -622,10 +734,10 @@
       const W = canvas.width;
       const H = canvas.height;
 
-      // Draw static edges
       for (const [a, b] of edges) {
         const na = nodes[a];
         const nb = nodes[b];
+        if (!na || !nb) continue;
         ctx.beginPath();
         ctx.moveTo(na.rx * W, na.ry * H);
         ctx.lineTo(nb.rx * W, nb.ry * H);
@@ -634,7 +746,6 @@
         ctx.stroke();
       }
 
-      // Update & draw animated packets
       for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i];
         p.progress += p.speed;
@@ -646,6 +757,7 @@
 
         const na = nodes[p.from];
         const nb = nodes[p.to];
+        if (!na || !nb) continue;
         const x = (na.rx + (nb.rx - na.rx) * p.progress) * W;
         const y = (na.ry + (nb.ry - na.ry) * p.progress) * H;
 
@@ -664,13 +776,11 @@
         }
       }
 
-      // Draw nodes
       for (const [key, node] of Object.entries(nodes)) {
         const x = node.rx * W;
         const y = node.ry * H;
         const isActive = (activeNode === key) || (activeNode === 'orchestrator' && key === 'coordinator');
 
-        // Rotating radar halo for active agent
         if (isActive) {
           ctx.save();
           ctx.translate(x, y);
@@ -683,9 +793,8 @@
           ctx.restore();
         }
 
-        // Outer glow circle
         ctx.beginPath();
-        ctx.arc(x, y, 30, 0, Math.PI * 2);
+        ctx.arc(x, y, 29, 0, Math.PI * 2);
         ctx.fillStyle = isActive ? 'rgba(0, 240, 255, 0.18)' : 'rgba(10, 20, 40, 0.92)';
         ctx.strokeStyle = node.color;
         ctx.lineWidth = isActive ? 3 : 1.8;
@@ -695,33 +804,30 @@
         ctx.stroke();
         ctx.shadowBlur = 0;
 
-        // Node Title & Role
         ctx.textAlign = 'center';
-        ctx.font = 'bold 11px Consolas, monospace';
+        ctx.font = 'bold 10.5px Consolas, monospace';
         ctx.fillStyle = '#ffffff';
         ctx.fillText(node.label, x, y + 4);
 
         ctx.font = '10px Segoe UI, sans-serif';
         ctx.fillStyle = '#8ba3c7';
-        ctx.fillText(node.role, x, y + 46);
+        ctx.fillText(node.role, x, y + 44);
 
-        // Inbox badge counter
         const qCount = inboxCounts[key] || 0;
         if (qCount > 0) {
           ctx.beginPath();
-          ctx.arc(x + 24, y - 24, 10, 0, Math.PI * 2);
+          ctx.arc(x + 23, y - 23, 10, 0, Math.PI * 2);
           ctx.fillStyle = '#ff3b6b';
           ctx.fill();
           ctx.font = 'bold 10px Consolas, monospace';
           ctx.fillStyle = '#fff';
-          ctx.fillText(String(qCount), x + 24, y - 20);
+          ctx.fillText(String(qCount), x + 23, y - 19);
         }
 
-        // Active tool call badge
         if (activeToolBadge[key]) {
           ctx.font = '10px Consolas, monospace';
           ctx.fillStyle = '#ffb800';
-          ctx.fillText(`⚙ ${activeToolBadge[key]}`, x, y - 38);
+          ctx.fillText(`⚙ ${activeToolBadge[key]}`, x, y - 36);
         }
       }
 
@@ -744,7 +850,25 @@
       const res = await fetch(`/api/state?tenant=${encodeURIComponent(tenant)}`);
       const data = await res.json();
 
-      document.getElementById('modelBadge').textContent = `Model: ${data.model} // Endpoint: ${data.endpoint}`;
+      document.getElementById('modelBadge').textContent = `Model: ${data.model} // Active Roles: ${(data.roles || []).length}`;
+
+      rebuildGraphFromRoles(data.roles || []);
+
+      // Render roles list
+      const rolesBox = document.getElementById('rolesList');
+      rolesBox.innerHTML = (data.roles || [])
+        .map(r => `
+          <div class="role-chip" style="border-left-color: ${r.color || '#00ff9d'}">
+            <div>
+              <strong style="color:${r.color || '#00ff9d'}">${r.name}</strong> — ${r.title}
+              <div style="font-size:10px; color:var(--text-dim); font-family:Consolas,monospace;">
+                Bundles: ${(r.capabilities || []).join(', ')}
+              </div>
+            </div>
+            <span class="role-del-btn" title="Delete role" onclick="deleteRole('${r.name}')">×</span>
+          </div>
+        `)
+        .join('');
 
       // Render tenant memories
       const memBox = document.getElementById('memoryList');
@@ -767,7 +891,7 @@
           .map(s => `
             <div class="skill-card">
               <span class="skill-tag">${s.category} (x${s.learned_count})</span>
-              <div style="color:#b8cbe8; margin-bottom:3px;"><b>Pattern:</b> ${s.problem_pattern}</div>
+              <div style="color:#b8cbe8; margin-bottom:2px;"><b>Pattern:</b> ${s.problem_pattern}</div>
               <div style="color:var(--emerald);"><b>Playbook:</b> ${s.solution_rule}</div>
             </div>
           `)
@@ -775,12 +899,49 @@
       }
     }
 
+    function openRoleModal() {
+      document.getElementById('roleModal').classList.add('open');
+    }
+
+    function closeRoleModal() {
+      document.getElementById('roleModal').classList.remove('open');
+    }
+
+    async function submitNewRole() {
+      const name = document.getElementById('roleNameInput').value.trim();
+      const title = document.getElementById('roleTitleInput').value.trim();
+      const color = document.getElementById('roleColorInput').value.trim() || '#00f0ff';
+      const instructions = document.getElementById('roleInstInput').value.trim();
+      const capabilities = Array.from(document.querySelectorAll('.cap-check:checked')).map(c => c.value);
+
+      if (!name || !title) {
+        alert('Please enter both a Role ID and Role Title.');
+        return;
+      }
+
+      await fetch('/api/roles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, title, instructions, capabilities, color }),
+      });
+      closeRoleModal();
+      await refreshState();
+    }
+
+    async function deleteRole(name) {
+      await fetch('/api/roles/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      await refreshState();
+    }
+
     document.getElementById('tenantSelect').addEventListener('change', () => {
       refreshState();
       appendLog('system', 'TENANT VAULT SWITCHED', `Isolated memory context switched to '${document.getElementById('tenantSelect').value}'.`);
     });
 
-    // Connect to Live SSE Stream
     const evtSource = new EventSource('/api/events');
     evtSource.onmessage = (e) => {
       const ev = JSON.parse(e.data);
@@ -788,11 +949,15 @@
       const agent = ev.agent_name === 'orchestrator' ? 'coordinator' : ev.agent_name;
       const d = ev.data || {};
 
-      if (d.inboxes) {
-        inboxCounts = d.inboxes;
-      }
+      if (d.inboxes) inboxCounts = d.inboxes;
 
-      if (etype === 'mission_start') {
+      if (etype === 'role_created') {
+        refreshState();
+        const r = d.role || {};
+        appendLog('skill_learned', `➕ NEW SPECIALIST SPAWNED`, `'${r.name}' (${r.title}) added with tools: ${(r.resolved_tools || []).join(', ')}`);
+      } else if (etype === 'role_deleted') {
+        refreshState();
+      } else if (etype === 'mission_start') {
         document.getElementById('swarmStatusPill').textContent = `STATUS: RUNNING (${d.mode.toUpperCase()})`;
         document.getElementById('answerDrawer').classList.remove('visible');
         appendLog('peer_message', `MISSION STARTED [${ev.tenant_id}]`, d.prompt);
@@ -815,7 +980,7 @@
         appendLog('tool_result', `${agent.toUpperCase()} // OBSERVATION`, preview);
         refreshState();
       } else if (etype === 'skill_learned') {
-        spawnPacket(agent in nodes ? agent : 'coder', 'airlock', '#b56bff', 'AIRLOCK');
+        spawnPacket(agent in nodes ? agent : 'coordinator', 'airlock', '#b56bff', 'AIRLOCK');
         appendLog('skill_learned', `🛡️ PRIVACY AIRLOCK // SKILL DISTILLED`, `[${d.category}] ${d.problem_pattern} ➔ ${d.solution_rule}`);
         refreshState();
       } else if (etype === 'budget') {
@@ -826,7 +991,7 @@
         document.getElementById('tokenBar').style.width = `${Math.min(100, (d.total_tokens / d.max_total_tokens) * 100)}%`;
       } else if (etype === 'swarm_complete' || etype === 'mission_end') {
         activeNode = null;
-        inboxCounts = { coordinator: 0, researcher: 0, coder: 0, critic: 0 };
+        inboxCounts = {};
         document.getElementById('activeNodePill').textContent = 'ACTIVE NODE: IDLE';
         document.getElementById('swarmStatusPill').textContent = 'STATUS: MISSION COMPLETE';
         if (d.answer || d.reply) {

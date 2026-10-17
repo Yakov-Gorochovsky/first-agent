@@ -3,7 +3,8 @@ server.py - Step 4: Live SSE (Server-Sent Events) Backend for the Neural Swarm U
 
 Built using Python's standard-library `ThreadingHTTPServer` (zero extra dependencies!).
 Subscribes to `core/bus.py` (EventBus) and streams every agent thought, peer inbox
-message, tool call, PrivacyAirlock skill, and budget update in real time to the browser.
+message, tool call, dynamic role creation, PrivacyAirlock skill, and budget update
+in real time to the browser.
 
 Usage:
     python server.py
@@ -26,7 +27,8 @@ from core.budget import BudgetConfig, BudgetTracker
 from core.bus import EventBus, SwarmEvent
 from core.llm import OpenAICompatibleProvider
 from core.peer_swarm import PeerSwarm
-from core.storage import PrivacyAirlock, SQLiteStorage
+from core.roles import CAPABILITY_BUNDLES, RoleRegistry
+from core.storage import SQLiteStorage
 from core.swarm import OrchestratorSwarm
 from tools import WORKSPACE_DIR
 
@@ -44,6 +46,7 @@ DB_PATH = WORKSPACE_DIR / "swarm.db"
 # Shared application state
 bus = EventBus()
 storage = SQLiteStorage(db_path=DB_PATH, max_trace_rows=500)
+role_registry = RoleRegistry()
 budget = BudgetTracker(
     config=BudgetConfig(
         max_swarm_steps=MAX_STEPS * 2,
@@ -54,8 +57,12 @@ budget = BudgetTracker(
     bus=bus,
 )
 llm = OpenAICompatibleProvider(base_url=API_BASE_URL, api_key=API_KEY, model=MODEL_NAME)
-orchestrator_swarm = OrchestratorSwarm(llm=llm, storage=storage, budget=budget, bus=bus)
-peer_swarm = PeerSwarm(llm=llm, storage=storage, budget=budget, bus=bus)
+orchestrator_swarm = OrchestratorSwarm(
+    llm=llm, storage=storage, budget=budget, bus=bus, role_registry=role_registry
+)
+peer_swarm = PeerSwarm(
+    llm=llm, storage=storage, budget=budget, bus=bus, role_registry=role_registry
+)
 
 # Connected SSE client queues
 _sse_clients_lock = threading.Lock()
@@ -77,9 +84,13 @@ bus.subscribe(_broadcast_event)
 
 
 def _run_cinematic_simulation(tenant_id: str, prompt: str) -> None:
-    """Emit a realistic multi-agent peer-network flow for instant portfolio/client demos."""
+    """Emit a realistic multi-agent peer-network flow using active roles from RoleRegistry."""
     budget.reset()
     budget.tenant_id = tenant_id
+    roles = role_registry.list_roles()
+    r1 = roles[0].name if len(roles) > 0 else "researcher"
+    r2 = roles[1].name if len(roles) > 1 else r1
+    r3 = roles[-1].name if len(roles) > 2 else r2
 
     def step_sleep(sec: float = 0.85) -> None:
         time.sleep(sec)
@@ -91,7 +102,7 @@ def _run_cinematic_simulation(tenant_id: str, prompt: str) -> None:
         from_agent="user",
         to_agent="coordinator",
         message=prompt,
-        inboxes={"coordinator": 1, "researcher": 0, "coder": 0, "critic": 0},
+        inboxes={"coordinator": 1},
     )
     step_sleep(0.7)
 
@@ -105,17 +116,17 @@ def _run_cinematic_simulation(tenant_id: str, prompt: str) -> None:
         agent_name="coordinator",
         tenant_id=tenant_id,
         from_agent="coordinator",
-        to_agent="researcher",
-        message="Fetch live telemetry & weather benchmarks, then forward raw metrics directly to 'coder' inbox.",
-        inboxes={"coordinator": 0, "researcher": 1, "coder": 0, "critic": 0},
+        to_agent=r1,
+        message=f"Fetch live telemetry & benchmarks, then forward raw metrics directly to '{r2}' inbox.",
+        inboxes={"coordinator": 0, r1: 1},
     )
     step_sleep(0.9)
 
-    bus.emit("agent_start", agent_name="researcher", tenant_id=tenant_id, task="Fetch live telemetry")
-    budget.check_and_increment_step("researcher")
+    bus.emit("agent_start", agent_name=r1, tenant_id=tenant_id, task="Fetch live telemetry")
+    budget.check_and_increment_step(r1)
     bus.emit(
         "tool_call",
-        agent_name="researcher",
+        agent_name=r1,
         tenant_id=tenant_id,
         tool="web_search",
         arguments={"query": prompt[:60]},
@@ -123,30 +134,30 @@ def _run_cinematic_simulation(tenant_id: str, prompt: str) -> None:
     step_sleep(0.9)
     bus.emit(
         "tool_result",
-        agent_name="researcher",
+        agent_name=r1,
         tenant_id=tenant_id,
         tool="web_search",
         result="Found live benchmark data: latency_p95=42ms, throughput=14,200 req/s, temp=23C.",
     )
-    budget.record_tokens("researcher", 480, 140)
+    budget.record_tokens(r1, 480, 140)
     step_sleep(0.7)
 
     bus.emit(
         "peer_message",
-        agent_name="researcher",
+        agent_name=r1,
         tenant_id=tenant_id,
-        from_agent="researcher",
-        to_agent="coder",
-        message="Raw telemetry ready (p95=42ms, 14200 rps). Compute efficiency score in Python and forward to 'critic'.",
-        inboxes={"coordinator": 0, "researcher": 0, "coder": 1, "critic": 0},
+        from_agent=r1,
+        to_agent=r2,
+        message=f"Raw telemetry ready (p95=42ms, 14200 rps). Compute efficiency score and forward to '{r3}'.",
+        inboxes={r1: 0, r2: 1},
     )
     step_sleep(0.9)
 
-    bus.emit("agent_start", agent_name="coder", tenant_id=tenant_id, task="Run Python analysis")
-    budget.check_and_increment_step("coder")
+    bus.emit("agent_start", agent_name=r2, tenant_id=tenant_id, task="Run Python analysis")
+    budget.check_and_increment_step(r2)
     bus.emit(
         "tool_call",
-        agent_name="coder",
+        agent_name=r2,
         tenant_id=tenant_id,
         tool="run_python",
         arguments={"code": "rps, p95 = 14200, 42\nscore = round((rps / p95) * 1.15, 2)\nprint(f'Efficiency Index: {score}')"},
@@ -154,38 +165,37 @@ def _run_cinematic_simulation(tenant_id: str, prompt: str) -> None:
     step_sleep(0.9)
     bus.emit(
         "tool_result",
-        agent_name="coder",
+        agent_name=r2,
         tenant_id=tenant_id,
         tool="run_python",
         result="STDOUT:\nEfficiency Index: 388.81",
     )
-    budget.record_tokens("coder", 520, 165)
+    budget.record_tokens(r2, 520, 165)
 
-    # Distill a PrivacyAirlock global skill
     skill = storage.add_global_skill(
         category="telemetry_analysis",
         problem=f"Client {tenant_id} endpoint https://api.{tenant_id}.internal:8443 reported raw p95 metrics",
         solution="Normalize throughput-to-latency ratio (RPS / p95_ms) in Python sandbox before QA handoff.",
     )
-    bus.emit("skill_learned", agent_name="coder", tenant_id=tenant_id, **skill)
+    bus.emit("skill_learned", agent_name=r2, tenant_id=tenant_id, **skill)
     step_sleep(0.8)
 
     bus.emit(
         "peer_message",
-        agent_name="coder",
+        agent_name=r2,
         tenant_id=tenant_id,
-        from_agent="coder",
-        to_agent="critic",
+        from_agent=r2,
+        to_agent=r3,
         message="Computed Efficiency Index = 388.81 via Python sandbox. Please verify accuracy.",
-        inboxes={"coordinator": 0, "researcher": 0, "coder": 0, "critic": 1},
+        inboxes={r2: 0, r3: 1},
     )
     step_sleep(0.9)
 
-    bus.emit("agent_start", agent_name="critic", tenant_id=tenant_id, task="Verify calculation")
-    budget.check_and_increment_step("critic")
+    bus.emit("agent_start", agent_name=r3, tenant_id=tenant_id, task="Verify calculation")
+    budget.check_and_increment_step(r3)
     bus.emit(
         "tool_call",
-        agent_name="critic",
+        agent_name=r3,
         tenant_id=tenant_id,
         tool="calculator",
         arguments={"expression": "(14200 / 42) * 1.15"},
@@ -193,42 +203,31 @@ def _run_cinematic_simulation(tenant_id: str, prompt: str) -> None:
     step_sleep(0.7)
     bus.emit(
         "tool_result",
-        agent_name="critic",
+        agent_name=r3,
         tenant_id=tenant_id,
         tool="calculator",
         result="(14200 / 42) * 1.15 = 388.8095238095238",
     )
-    budget.record_tokens("critic", 410, 110)
+    budget.record_tokens(r3, 410, 110)
     step_sleep(0.6)
 
     final_text = (
         f"[Peer Swarm Verified Report for '{tenant_id}']\n"
-        "1. Researcher gathered live benchmark metrics (14,200 req/s @ 42ms p95).\n"
-        "2. Coder executed Python sandbox analysis -> Efficiency Index: 388.81.\n"
-        "3. Critic independently verified the math (388.8095) and approved the output.\n"
-        "4. PrivacyAirlock distilled the reusable normalization rule into Shared Global Skills (all client URLs & ports scrubbed)."
+        f"1. '{r1}' gathered live benchmark metrics (14,200 req/s @ 42ms p95).\n"
+        f"2. '{r2}' executed Python sandbox analysis -> Efficiency Index: 388.81.\n"
+        f"3. '{r3}' independently verified the math (388.8095) and approved the output.\n"
+        "4. PrivacyAirlock distilled the reusable normalization rule into Shared Global Skills."
     )
     storage.save_tenant_memory(tenant_id, "last_efficiency_index", "388.81 (Verified)")
     storage.append_session_turn(tenant_id, "user", prompt)
     storage.append_session_turn(tenant_id, "assistant", final_text)
 
-    bus.emit(
-        "swarm_complete",
-        agent_name="critic",
-        tenant_id=tenant_id,
-        answer=final_text,
-    )
-    bus.emit(
-        "agent_finish",
-        agent_name="critic",
-        tenant_id=tenant_id,
-        answer=final_text,
-    )
+    bus.emit("swarm_complete", agent_name=r3, tenant_id=tenant_id, answer=final_text)
+    bus.emit("agent_finish", agent_name=r3, tenant_id=tenant_id, answer=final_text)
 
 
 class SwarmRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
-        # Keep console clean
         pass
 
     def _send_json(self, data: Dict[str, Any], status: int = 200) -> None:
@@ -265,6 +264,8 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
                     "tenant_id": tenant_id,
                     "model": MODEL_NAME,
                     "endpoint": API_BASE_URL,
+                    "roles": role_registry.list_dicts(),
+                    "capability_bundles": CAPABILITY_BUNDLES,
                     "tenant_memories": storage.get_tenant_memories(tenant_id),
                     "global_skills": storage.get_global_skills(limit=12),
                     "session_turns": storage.get_session_turns(tenant_id, limit=10),
@@ -292,7 +293,6 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
                 _sse_clients.append(client_q)
 
             try:
-                # Send initial connected ping
                 self.wfile.write(b"data: {\"event_type\": \"connected\"}\n\n")
                 self.wfile.flush()
                 while True:
@@ -301,7 +301,6 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
                         self.wfile.write(f"data: {msg}\n\n".encode("utf-8"))
                         self.wfile.flush()
                     except queue.Empty:
-                        # Heartbeat comment to keep connection alive
                         self.wfile.write(b": heartbeat\n\n")
                         self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError, OSError):
@@ -322,6 +321,35 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
             body = json.loads(raw_body)
         except json.JSONDecodeError:
             body = {}
+
+        if parsed.path == "/api/roles":
+            name = str(body.get("name", "")).strip()
+            title = str(body.get("title", "")).strip()
+            instructions = str(body.get("instructions", "")).strip()
+            capabilities = body.get("capabilities", ["@web", "@code"])
+            color = str(body.get("color", "#00f0ff")).strip()
+
+            if not name or not title:
+                self._send_json({"error": "Role name and title are required."}, 400)
+                return
+
+            spec = role_registry.register_role(
+                name=name,
+                title=title,
+                instructions=instructions,
+                capabilities=capabilities if isinstance(capabilities, list) else ["@web", "@code"],
+                color=color,
+            )
+            bus.emit("role_created", agent_name="system", tenant_id="default", role=spec.to_dict())
+            self._send_json({"role": spec.to_dict(), "roles": role_registry.list_dicts()})
+            return
+
+        if parsed.path == "/api/roles/delete":
+            name = str(body.get("name", "")).strip()
+            deleted = role_registry.delete_role(name)
+            bus.emit("role_deleted", agent_name="system", tenant_id="default", name=name)
+            self._send_json({"deleted": deleted, "roles": role_registry.list_dicts()})
+            return
 
         if parsed.path == "/api/run":
             prompt = str(body.get("prompt", "")).strip()
@@ -404,6 +432,7 @@ def main() -> None:
     print(f" NEURAL SWARM // COMMAND CENTER UI")
     print(f" URL:      http://localhost:{PORT}")
     print(f" Model:    {MODEL_NAME} ({API_BASE_URL})")
+    print(f" Roles:    {', '.join(r.name for r in role_registry.list_roles())}")
     print(f" Database: {DB_PATH}")
     print("=" * 72)
     print("Press Ctrl+C to stop the server.\n")
