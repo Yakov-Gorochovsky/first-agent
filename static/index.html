@@ -1,21 +1,31 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>NEURAL SWARM // Tactical Command Center</title>
+  <title>NEURAL SWARM — Tactical Operations</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/lucide@latest"></script>
   <style>
     :root {
-      --bg-deep: #050811;
-      --bg-panel: rgba(11, 18, 34, 0.78);
-      --border-glow: rgba(0, 240, 255, 0.25);
-      --cyan: #00f0ff;
-      --emerald: #00ff9d;
-      --violet: #b56bff;
-      --amber: #ffb800;
-      --rose: #ff3b6b;
-      --text-main: #e2f1ff;
-      --text-dim: #7b93b2;
+      --bg-base: #07080c;
+      --bg-surface: #0c0e14;
+      --bg-elevated: #12151e;
+      --bg-glass: rgba(14, 17, 24, 0.82);
+      --border-subtle: rgba(255, 255, 255, 0.07);
+      --border-strong: rgba(255, 255, 255, 0.14);
+      --accent-cyan: #38bdf8;
+      --accent-emerald: #10b981;
+      --accent-violet: #a855f7;
+      --accent-amber: #f59e0b;
+      --accent-rose: #f43f5e;
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'JetBrains Mono', Consolas, monospace;
     }
 
     * {
@@ -24,223 +34,363 @@
       padding: 0;
     }
 
+    ::-webkit-scrollbar {
+      width: 5px;
+      height: 5px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.12);
+      border-radius: 999px;
+    }
+
     body {
-      background: radial-gradient(circle at 50% 25%, #0d1b36 0%, #050811 70%);
-      color: var(--text-main);
-      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background-color: var(--bg-base);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
       height: 100vh;
       overflow: hidden;
       display: grid;
-      grid-template-rows: 62px 1fr 78px;
+      grid-template-rows: 48px 1fr 58px;
+      -webkit-font-smoothing: antialiased;
     }
 
-    body::before {
-      content: "";
-      position: fixed;
-      inset: 0;
-      background-image:
-        linear-gradient(rgba(0, 240, 255, 0.03) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(0, 240, 255, 0.03) 1px, transparent 1px);
-      background-size: 36px 36px;
-      pointer-events: none;
-      z-index: 0;
-    }
-
+    /* Top Command Bar (Tight 48px Linear/Palantir header) */
     header {
-      z-index: 2;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 0 22px;
-      background: rgba(6, 11, 22, 0.88);
-      border-bottom: 1px solid var(--border-glow);
-      backdrop-filter: blur(12px);
-      box-shadow: 0 4px 25px rgba(0, 240, 255, 0.08);
+      padding: 0 16px;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-subtle);
+      z-index: 10;
     }
 
     .brand {
       display: flex;
       align-items: center;
-      gap: 12px;
-    }
-
-    .brand-pulse {
-      width: 12px;
-      height: 12px;
-      border-radius: 50%;
-      background: var(--cyan);
-      box-shadow: 0 0 12px var(--cyan);
-      animation: pulse 2s infinite;
-    }
-
-    @keyframes pulse {
-      0%, 100% { transform: scale(1); opacity: 1; }
-      50% { transform: scale(1.35); opacity: 0.55; }
-    }
-
-    .brand-title {
-      font-size: 15px;
-      font-weight: 700;
-      letter-spacing: 2.5px;
-      text-transform: uppercase;
-      color: var(--cyan);
-      text-shadow: 0 0 10px rgba(0, 240, 255, 0.4);
-    }
-
-    .brand-sub {
-      font-size: 11px;
-      color: var(--text-dim);
-      font-family: Consolas, monospace;
-    }
-
-    .controls-bar {
-      display: flex;
-      align-items: center;
       gap: 10px;
     }
 
-    .hud-select, .hud-btn {
-      background: rgba(14, 26, 48, 0.9);
-      color: var(--text-main);
-      border: 1px solid var(--border-glow);
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent-emerald);
+      box-shadow: 0 0 10px var(--accent-emerald);
+      position: relative;
+    }
+
+    .status-dot::after {
+      content: "";
+      position: absolute;
+      inset: -3px;
+      border-radius: 50%;
+      border: 1px solid var(--accent-emerald);
+      animation: ping 2s cubic-bezier(0, 0, 0.2, 1) infinite;
+    }
+
+    @keyframes ping {
+      75%, 100% { transform: scale(2); opacity: 0; }
+    }
+
+    .brand-name {
+      font-size: 12.5px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .badge-mono {
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border-subtle);
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .control-group {
+      display: flex;
+      align-items: center;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
       border-radius: 6px;
-      padding: 7px 11px;
-      font-size: 12px;
-      font-family: Consolas, monospace;
+      padding: 2px 8px;
+      gap: 6px;
+    }
+
+    .control-label {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+    }
+
+    .select-clean {
+      background: transparent;
+      color: var(--text-primary);
+      border: none;
+      font-family: var(--font-sans);
+      font-size: 11.5px;
+      font-weight: 500;
+      padding: 4px 2px;
+      outline: none;
       cursor: pointer;
-      transition: all 0.2s ease;
     }
 
-    .hud-select:hover, .hud-btn:hover {
-      border-color: var(--cyan);
-      box-shadow: 0 0 12px rgba(0, 240, 255, 0.25);
+    .select-clean option {
+      background: var(--bg-elevated);
+      color: var(--text-primary);
     }
 
-    .hud-btn.sim-btn {
-      border-color: var(--emerald);
-      color: var(--emerald);
-      background: rgba(0, 255, 157, 0.08);
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 30px;
+      padding: 0 11px;
+      border-radius: 6px;
+      font-family: var(--font-sans);
+      font-size: 11.5px;
+      font-weight: 500;
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      border: 1px solid var(--border-subtle);
+      cursor: pointer;
+      transition: all 0.15s ease;
     }
 
-    .hud-btn.role-btn {
-      border-color: var(--cyan);
-      color: var(--cyan);
-      background: rgba(0, 240, 255, 0.1);
-      font-weight: 700;
+    .btn:hover {
+      border-color: var(--border-strong);
+      background: rgba(255, 255, 255, 0.06);
     }
 
+    .btn svg {
+      width: 13px;
+      height: 13px;
+    }
+
+    .btn-cyan {
+      color: var(--accent-cyan);
+      border-color: rgba(56, 189, 248, 0.25);
+      background: rgba(56, 189, 248, 0.08);
+    }
+    .btn-cyan:hover {
+      background: rgba(56, 189, 248, 0.15);
+      border-color: rgba(56, 189, 248, 0.45);
+    }
+
+    .btn-emerald {
+      color: var(--accent-emerald);
+      border-color: rgba(16, 185, 129, 0.28);
+      background: rgba(16, 185, 129, 0.08);
+    }
+    .btn-emerald:hover {
+      background: rgba(16, 185, 129, 0.16);
+      border-color: rgba(16, 185, 129, 0.5);
+    }
+
+    /* Main Workspace Grid (Tight 8px gaps, sleek hairline cards) */
     main {
-      z-index: 1;
       display: grid;
-      grid-template-columns: 340px 1fr 390px;
-      gap: 14px;
-      padding: 14px;
+      grid-template-columns: 300px 1fr 360px;
+      gap: 8px;
+      padding: 8px;
+      overflow: hidden;
+      background: var(--bg-base);
+    }
+
+    .col-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
       overflow: hidden;
     }
 
-    .panel {
-      background: var(--bg-panel);
-      border: 1px solid var(--border-glow);
-      border-radius: 10px;
-      backdrop-filter: blur(14px);
+    .card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
       display: flex;
       flex-direction: column;
       overflow: hidden;
-      box-shadow: inset 0 0 25px rgba(0, 240, 255, 0.03);
+      flex: 1;
     }
 
-    .panel-header {
-      padding: 9px 13px;
-      border-bottom: 1px solid rgba(0, 240, 255, 0.16);
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 1.6px;
-      text-transform: uppercase;
-      color: var(--cyan);
+    .card-header {
+      height: 34px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--border-subtle);
       display: flex;
-      justify-content: space-between;
       align-items: center;
-      background: rgba(0, 240, 255, 0.04);
+      justify-content: space-between;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+      background: rgba(255, 255, 255, 0.015);
+      flex-shrink: 0;
     }
 
-    .panel-body {
-      padding: 10px 12px;
+    .card-header-title {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .card-header-title svg {
+      width: 13px;
+      height: 13px;
+      color: var(--text-muted);
+    }
+
+    .card-body {
+      padding: 8px;
       overflow-y: auto;
       flex: 1;
-      font-size: 12px;
     }
 
-    .left-col {
+    /* Specialist Roster Items */
+    .role-row {
       display: flex;
-      flex-direction: column;
-      gap: 12px;
-      overflow: hidden;
-    }
-
-    .left-col .panel {
-      flex: 1;
-    }
-
-    .role-chip {
-      display: flex;
-      justify-content: space-between;
       align-items: center;
-      background: rgba(255, 255, 255, 0.03);
-      border-left: 3px solid var(--cyan);
-      padding: 6px 9px;
+      justify-content: space-between;
+      padding: 7px 9px;
+      border-radius: 6px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      margin-bottom: 6px;
+      transition: border-color 0.15s ease;
+    }
+
+    .role-row:hover {
+      border-color: var(--border-strong);
+    }
+
+    .role-info {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .role-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .role-name {
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .role-sub {
+      font-size: 11px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .tag-list {
+      display: flex;
+      gap: 4px;
+      margin-top: 3px;
+    }
+
+    .mini-tag {
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text-secondary);
+    }
+
+    .icon-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 4px;
       border-radius: 4px;
+      display: flex;
+      align-items: center;
+    }
+    .icon-btn:hover {
+      color: var(--accent-rose);
+      background: rgba(244, 63, 94, 0.1);
+    }
+
+    /* Memory & Skill Items */
+    .vault-item {
+      padding: 7px 9px;
+      border-radius: 6px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
       margin-bottom: 6px;
       font-size: 11.5px;
     }
 
-    .role-del-btn {
-      color: var(--rose);
-      cursor: pointer;
-      font-family: Consolas, monospace;
-      font-weight: bold;
-      padding: 0 5px;
+    .vault-key {
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      color: var(--accent-cyan);
+      margin-bottom: 2px;
     }
 
-    .kv-item {
-      background: rgba(255, 255, 255, 0.03);
-      border-left: 3px solid var(--cyan);
-      padding: 7px 9px;
-      border-radius: 4px;
+    .skill-item {
+      padding: 8px 10px;
+      border-radius: 6px;
+      background: rgba(168, 85, 247, 0.05);
+      border: 1px solid rgba(168, 85, 247, 0.18);
       margin-bottom: 6px;
-      font-family: Consolas, monospace;
       font-size: 11px;
     }
 
-    .kv-key {
-      color: var(--cyan);
-      font-weight: 700;
+    .skill-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 4px;
     }
 
-    .skill-card {
-      background: rgba(181, 107, 255, 0.07);
-      border-left: 3px solid var(--violet);
-      padding: 7px 9px;
-      border-radius: 4px;
-      margin-bottom: 7px;
-      font-size: 11px;
-    }
-
-    .skill-tag {
-      display: inline-block;
-      background: rgba(181, 107, 255, 0.22);
-      color: #dfb9ff;
-      font-family: Consolas, monospace;
-      font-size: 10px;
+    .skill-badge {
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      color: #d8b4fe;
+      background: rgba(168, 85, 247, 0.18);
       padding: 1px 6px;
       border-radius: 3px;
-      margin-bottom: 3px;
     }
 
-    .center-stage {
+    /* Center Stage: Interactive Graph Canvas */
+    .stage-card {
       position: relative;
-      background: radial-gradient(circle at center, rgba(0, 240, 255, 0.06) 0%, rgba(5, 8, 17, 0.9) 85%);
-      border: 1px solid var(--border-glow);
-      border-radius: 10px;
+      background: radial-gradient(circle at 50% 50%, #101420 0%, #080a0f 100%);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
       overflow: hidden;
       display: flex;
       flex-direction: column;
@@ -252,408 +402,506 @@
       display: block;
     }
 
-    .stage-overlay-top {
+    .hud-Floating-Bar {
       position: absolute;
       top: 12px;
-      left: 14px;
-      right: 14px;
+      left: 12px;
+      right: 12px;
       display: flex;
       justify-content: space-between;
       pointer-events: none;
     }
 
-    .status-pill {
-      background: rgba(7, 14, 28, 0.85);
-      border: 1px solid var(--border-glow);
-      padding: 6px 12px;
-      border-radius: 20px;
-      font-family: Consolas, monospace;
-      font-size: 11px;
-      color: var(--emerald);
+    .hud-chip {
+      background: var(--bg-glass);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border-subtle);
+      padding: 5px 10px;
+      border-radius: 6px;
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      color: var(--text-secondary);
+      display: flex;
+      align-items: center;
+      gap: 7px;
     }
 
-    .answer-drawer {
+    /* Answer Drawer Overlay */
+    .synthesis-drawer {
       position: absolute;
       bottom: 12px;
-      left: 14px;
-      right: 14px;
-      max-height: 36%;
-      background: rgba(6, 13, 26, 0.92);
-      border: 1px solid var(--emerald);
+      left: 12px;
+      right: 12px;
+      max-height: 42%;
+      background: rgba(12, 15, 23, 0.95);
+      backdrop-filter: blur(16px);
+      border: 1px solid rgba(16, 185, 129, 0.4);
       border-radius: 8px;
-      padding: 12px 15px;
+      padding: 12px 14px;
       overflow-y: auto;
-      box-shadow: 0 0 25px rgba(0, 255, 157, 0.15);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
       display: none;
     }
 
-    .answer-drawer.visible {
+    .synthesis-drawer.visible {
       display: block;
     }
 
-    .answer-title {
-      font-size: 11px;
-      font-family: Consolas, monospace;
-      color: var(--emerald);
-      text-transform: uppercase;
-      letter-spacing: 1.5px;
-      margin-bottom: 6px;
+    .synthesis-header {
       display: flex;
       justify-content: space-between;
-    }
-
-    .answer-text {
-      font-size: 13px;
-      line-height: 1.5;
-      white-space: pre-wrap;
-      color: var(--text-main);
-    }
-
-    .right-col {
-      display: flex;
-      flex-direction: column;
-      gap: 14px;
-      overflow: hidden;
-    }
-
-    .budget-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
-      gap: 8px;
-    }
-
-    .metric-box {
-      background: rgba(0, 240, 255, 0.04);
-      border: 1px solid rgba(0, 240, 255, 0.15);
-      border-radius: 6px;
-      padding: 8px;
-      text-align: center;
-    }
-
-    .metric-val {
-      font-family: Consolas, monospace;
-      font-size: 15px;
-      font-weight: 700;
-      color: var(--cyan);
-    }
-
-    .metric-label {
-      font-size: 10px;
-      color: var(--text-dim);
+      align-items: center;
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      font-weight: 600;
+      color: var(--accent-emerald);
       text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 8px;
+    }
+
+    .synthesis-body {
+      font-size: 12.5px;
+      line-height: 1.55;
+      color: var(--text-primary);
+      white-space: pre-wrap;
+    }
+
+    /* Right Column: Telemetry & Budgets */
+    .metrics-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+    }
+
+    .stat-tile {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 8px 10px;
+    }
+
+    .stat-label {
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .stat-value {
+      font-family: var(--font-mono);
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-primary);
       margin-top: 2px;
     }
 
-    .progress-bar {
-      height: 5px;
-      background: rgba(255, 255, 255, 0.08);
-      border-radius: 3px;
+    .mini-bar {
+      height: 3px;
+      background: rgba(255, 255, 255, 0.07);
+      border-radius: 99px;
+      margin-top: 6px;
       overflow: hidden;
-      margin-top: 5px;
     }
 
-    .progress-fill {
+    .mini-bar-fill {
       height: 100%;
-      background: linear-gradient(90deg, var(--cyan), var(--emerald));
+      background: var(--accent-cyan);
       width: 0%;
-      transition: width 0.3s ease;
+      transition: width 0.25s ease;
     }
 
-    .log-entry {
-      font-family: Consolas, monospace;
-      font-size: 11.5px;
+    /* Telemetry Stream */
+    .trace-item {
       padding: 7px 9px;
-      border-radius: 5px;
-      margin-bottom: 7px;
-      background: rgba(255, 255, 255, 0.025);
-      border-left: 3px solid var(--text-dim);
-      line-height: 1.4;
+      border-radius: 6px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-left: 2px solid var(--text-muted);
+      margin-bottom: 6px;
+      font-size: 11px;
+      line-height: 1.45;
       word-break: break-word;
     }
 
-    .log-entry.peer_message, .log-entry.delegation {
-      border-left-color: var(--cyan);
-      background: rgba(0, 240, 255, 0.06);
+    .trace-item.peer_message, .trace-item.delegation {
+      border-left-color: var(--accent-cyan);
+    }
+    .trace-item.tool_call {
+      border-left-color: var(--accent-amber);
+    }
+    .trace-item.tool_result {
+      border-left-color: var(--accent-emerald);
+    }
+    .trace-item.skill_learned {
+      border-left-color: var(--accent-violet);
     }
 
-    .log-entry.tool_call {
-      border-left-color: var(--amber);
-      background: rgba(255, 184, 0, 0.06);
-    }
-
-    .log-entry.tool_result {
-      border-left-color: var(--emerald);
-    }
-
-    .log-entry.skill_learned {
-      border-left-color: var(--violet);
-      background: rgba(181, 107, 255, 0.09);
-    }
-
-    .log-time {
-      color: var(--text-dim);
+    .trace-meta {
+      display: flex;
+      justify-content: space-between;
+      font-family: var(--font-mono);
       font-size: 10px;
+      color: var(--text-muted);
+      margin-bottom: 3px;
     }
 
+    .trace-meta strong {
+      color: var(--text-secondary);
+    }
+
+    .trace-content {
+      font-family: var(--font-mono);
+      color: var(--text-primary);
+      font-size: 11px;
+    }
+
+    /* Bottom Command Deck */
     footer {
-      z-index: 2;
-      padding: 0 22px;
-      background: rgba(6, 11, 22, 0.92);
-      border-top: 1px solid var(--border-glow);
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
+      padding: 0 16px;
+      background: var(--bg-surface);
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .command-box {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: 7px;
+      padding: 0 12px;
+      height: 38px;
+      transition: border-color 0.15s ease;
+    }
+
+    .command-box:focus-within {
+      border-color: var(--accent-cyan);
+    }
+
+    .command-box svg {
+      width: 15px;
+      height: 15px;
+      color: var(--text-muted);
+      margin-right: 10px;
     }
 
     .prompt-input {
       flex: 1;
-      background: rgba(13, 24, 46, 0.9);
-      border: 1px solid var(--border-glow);
-      border-radius: 8px;
-      padding: 12px 16px;
-      color: var(--text-main);
-      font-size: 13.5px;
+      background: transparent;
+      border: none;
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      font-size: 12.5px;
       outline: none;
     }
 
-    .launch-btn {
-      background: linear-gradient(135deg, #00c6ff, #0072ff);
-      color: #fff;
-      font-weight: 700;
-      letter-spacing: 1px;
-      text-transform: uppercase;
-      border: none;
-      border-radius: 8px;
-      padding: 12px 22px;
-      font-size: 12.5px;
-      cursor: pointer;
-      box-shadow: 0 0 18px rgba(0, 198, 255, 0.4);
+    .prompt-input::placeholder {
+      color: var(--text-muted);
     }
 
-    /* + New Role Modal */
+    .btn-primary {
+      height: 38px;
+      padding: 0 16px;
+      background: var(--text-primary);
+      color: var(--bg-base);
+      font-weight: 600;
+      font-size: 12px;
+      border: none;
+      border-radius: 7px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      transition: opacity 0.15s ease;
+    }
+
+    .btn-primary:hover {
+      opacity: 0.9;
+    }
+
+    .btn-primary svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    /* Modal */
     .modal-backdrop {
       position: fixed;
       inset: 0;
-      background: rgba(3, 6, 14, 0.8);
-      backdrop-filter: blur(8px);
+      background: rgba(4, 6, 10, 0.75);
+      backdrop-filter: blur(6px);
       display: none;
       align-items: center;
       justify-content: center;
-      z-index: 50;
+      z-index: 100;
     }
-
     .modal-backdrop.open {
       display: flex;
     }
 
-    .modal-card {
-      width: 440px;
-      background: #0a1428;
-      border: 1px solid var(--cyan);
-      border-radius: 12px;
-      padding: 20px;
-      box-shadow: 0 0 35px rgba(0, 240, 255, 0.25);
+    .modal-dialog {
+      width: 420px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-strong);
+      border-radius: 10px;
+      padding: 18px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7);
     }
 
-    .modal-card h3 {
-      color: var(--cyan);
-      font-size: 14px;
-      letter-spacing: 1.5px;
-      text-transform: uppercase;
+    .modal-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary);
       margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
     }
 
-    .form-group {
-      margin-bottom: 12px;
+    .field {
+      margin-bottom: 11px;
     }
 
-    .form-group label {
+    .field label {
       display: block;
       font-size: 11px;
-      font-family: Consolas, monospace;
-      color: var(--text-dim);
+      font-weight: 500;
+      color: var(--text-secondary);
       margin-bottom: 4px;
     }
 
-    .form-input {
+    .field-input {
       width: 100%;
-      background: rgba(5, 10, 20, 0.9);
-      border: 1px solid var(--border-glow);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
       border-radius: 6px;
-      padding: 8px 10px;
-      color: var(--text-main);
-      font-size: 12.5px;
+      padding: 7px 10px;
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      font-size: 12px;
+      outline: none;
     }
 
-    .bundle-checks {
+    .field-input:focus {
+      border-color: var(--accent-cyan);
+    }
+
+    .checkbox-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 6px;
+    }
+
+    .check-pill {
       display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-      font-family: Consolas, monospace;
-      font-size: 12px;
-      margin-top: 4px;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 8px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      cursor: pointer;
     }
   </style>
 </head>
 <body>
+  <!-- TOP HEADER -->
   <header>
     <div class="brand">
-      <div class="brand-pulse"></div>
-      <div>
-        <div class="brand-title">Neural Swarm // Command Center</div>
-        <div class="brand-sub" id="modelBadge">Model: Connecting...</div>
+      <div class="status-dot"></div>
+      <div class="brand-name">
+        NEURAL SWARM
+        <span class="badge-mono" id="modelBadge">Connecting...</span>
       </div>
     </div>
 
-    <div class="controls-bar">
-      <button class="hud-btn role-btn" onclick="openRoleModal()">➕ New Agent Role</button>
+    <div class="toolbar">
+      <button class="btn btn-cyan" onclick="openRoleModal()">
+        <i data-lucide="user-plus"></i> New Role
+      </button>
 
-      <select id="tenantSelect" class="hud-select">
-        <option value="client_a">Tenant: Client A (Fintech)</option>
-        <option value="client_b">Tenant: Client B (Healthcare)</option>
-        <option value="client_c">Tenant: Client C (Retail)</option>
-      </select>
+      <div class="control-group">
+        <span class="control-label">Tenant</span>
+        <select id="tenantSelect" class="select-clean">
+          <option value="client_a">client_a (Fintech)</option>
+          <option value="client_b">client_b (Healthcare)</option>
+          <option value="client_c">client_c (Retail)</option>
+        </select>
+      </div>
 
-      <select id="modeSelect" class="hud-select">
-        <option value="peer">Step 3: Peer Inbox Network</option>
-        <option value="orchestrator">Step 2: Orchestrator -> Workers</option>
-      </select>
+      <div class="control-group">
+        <span class="control-label">Topology</span>
+        <select id="modeSelect" class="select-clean">
+          <option value="peer">Peer Network (Inboxes)</option>
+          <option value="orchestrator">Orchestrator -> Workers</option>
+        </select>
+      </div>
 
-      <button class="hud-btn sim-btn" onclick="triggerSimulation()">⚡ Instant Cinema Demo</button>
-      <button class="hud-btn" onclick="testPrivacyAirlock()">🛡️ Test Privacy Airlock</button>
+      <button class="btn btn-emerald" onclick="triggerSimulation()">
+        <i data-lucide="zap"></i> Simulate Flow
+      </button>
+
+      <button class="btn" onclick="testPrivacyAirlock()">
+        <i data-lucide="shield-check"></i> Test Airlock
+      </button>
     </div>
   </header>
 
+  <!-- MAIN WORKSPACE -->
   <main>
-    <!-- LEFT: SPECIALIST ROLES, TENANT VAULT & GLOBAL SKILLS -->
-    <div class="left-col">
-      <div class="panel">
-        <div class="panel-header">
-          <span>🤖 Specialist Role Roster</span>
-          <span style="cursor:pointer; color:var(--emerald);" onclick="openRoleModal()">[+ Add]</span>
+    <!-- LEFT COLUMN -->
+    <div class="col-stack">
+      <div class="card" style="flex: 1.15;">
+        <div class="card-header">
+          <span class="card-header-title"><i data-lucide="cpu"></i> Specialist Roster</span>
+          <span class="badge-mono" id="roleCountBadge">0</span>
         </div>
-        <div class="panel-body" id="rolesList"></div>
+        <div class="card-body" id="rolesList"></div>
       </div>
 
-      <div class="panel">
-        <div class="panel-header">
-          <span>🔒 Tenant Private Memory</span>
-          <span id="tenantTag" style="color: var(--emerald);">client_a</span>
+      <div class="card" style="flex: 0.85;">
+        <div class="card-header">
+          <span class="card-header-title"><i data-lucide="lock"></i> Tenant Vault</span>
+          <span class="badge-mono" id="tenantTag" style="color: var(--accent-cyan);">client_a</span>
         </div>
-        <div class="panel-body" id="memoryList"></div>
+        <div class="card-body" id="memoryList"></div>
       </div>
 
-      <div class="panel">
-        <div class="panel-header">
-          <span>🌐 Shared Global Skills (Airlocked)</span>
-          <span style="color: var(--violet);">ALL SWARMS</span>
+      <div class="card" style="flex: 1;">
+        <div class="card-header">
+          <span class="card-header-title"><i data-lucide="globe"></i> Global Playbooks</span>
+          <span class="badge-mono" style="color: #d8b4fe;">AIRLOCKED</span>
         </div>
-        <div class="panel-body" id="skillsList"></div>
+        <div class="card-body" id="skillsList"></div>
       </div>
     </div>
 
-    <!-- CENTER: DYNAMIC ORBITAL NEURAL GRAPH -->
-    <div class="center-stage">
-      <div class="stage-overlay-top">
-        <div class="status-pill" id="swarmStatusPill">STATUS: STANDBY // SSE STREAM ONLINE</div>
-        <div class="status-pill" style="color: var(--cyan);" id="activeNodePill">ACTIVE NODE: IDLE</div>
+    <!-- CENTER STAGE: GRAPH CANVAS -->
+    <div class="stage-card">
+      <div class="hud-Floating-Bar">
+        <div class="hud-chip">
+          <span style="width:6px;height:6px;border-radius:50%;background:var(--accent-cyan);"></span>
+          <span id="swarmStatusPill">STANDBY · SSE STREAM ACTIVE</span>
+        </div>
+        <div class="hud-chip" id="activeNodePill">NODE: IDLE</div>
       </div>
 
       <canvas id="networkCanvas"></canvas>
 
-      <div class="answer-drawer" id="answerDrawer">
-        <div class="answer-title">
-          <span>✓ VERIFIED SWARM SYNTHESIS</span>
-          <span style="cursor:pointer; color:var(--text-dim);" onclick="document.getElementById('answerDrawer').classList.remove('visible')">[✕ Close]</span>
+      <div class="synthesis-drawer" id="answerDrawer">
+        <div class="synthesis-header">
+          <span>✓ Swarm Synthesis Output</span>
+          <span style="cursor:pointer; color:var(--text-muted);" onclick="document.getElementById('answerDrawer').classList.remove('visible')">ESC / CLOSE ✕</span>
         </div>
-        <div class="answer-text" id="answerText"></div>
+        <div class="synthesis-body" id="answerText"></div>
       </div>
     </div>
 
-    <!-- RIGHT: BUDGET METERS & TELEMETRY MATRIX -->
-    <div class="right-col">
-      <div class="panel" style="flex: 0 0 auto;">
-        <div class="panel-header">
-          <span>⚡ Live Budget Guardrails</span>
-          <span id="elapsedLabel">0.0s</span>
+    <!-- RIGHT COLUMN -->
+    <div class="col-stack">
+      <div class="card" style="flex: 0 0 auto;">
+        <div class="card-header">
+          <span class="card-header-title"><i data-lucide="gauge"></i> Resource Guardrails</span>
+          <span class="badge-mono" id="elapsedLabel">0.0s</span>
         </div>
-        <div class="panel-body">
-          <div class="budget-grid">
-            <div class="metric-box">
-              <div class="metric-val" id="stepMetric">0/16</div>
-              <div class="metric-label">Swarm Steps</div>
-              <div class="progress-bar"><div class="progress-fill" id="stepBar"></div></div>
+        <div class="card-body">
+          <div class="metrics-row">
+            <div class="stat-tile">
+              <div class="stat-label">Steps</div>
+              <div class="stat-value" id="stepMetric">0/16</div>
+              <div class="mini-bar"><div class="mini-bar-fill" id="stepBar"></div></div>
             </div>
-            <div class="metric-box">
-              <div class="metric-val" id="tokenMetric">0</div>
-              <div class="metric-label">Total Tokens</div>
-              <div class="progress-bar"><div class="progress-fill" id="tokenBar"></div></div>
+            <div class="stat-tile">
+              <div class="stat-label">Tokens</div>
+              <div class="stat-value" id="tokenMetric">0</div>
+              <div class="mini-bar"><div class="mini-bar-fill" id="tokenBar"></div></div>
             </div>
-            <div class="metric-box">
-              <div class="metric-val" id="packetMetric">0</div>
-              <div class="metric-label">Inbox Packets</div>
+            <div class="stat-tile">
+              <div class="stat-label">Packets</div>
+              <div class="stat-value" id="packetMetric">0</div>
+              <div class="mini-bar"><div class="mini-bar-fill" style="width:100%; background:var(--accent-emerald);"></div></div>
             </div>
           </div>
         </div>
       </div>
 
-      <div class="panel" style="flex: 1;">
-        <div class="panel-header">
-          <span>📡 Live SSE Telemetry Stream</span>
-          <span style="cursor:pointer; color:var(--text-dim);" onclick="document.getElementById('telemetryFeed').innerHTML=''">[Clear]</span>
+      <div class="card" style="flex: 1;">
+        <div class="card-header">
+          <span class="card-header-title"><i data-lucide="terminal"></i> Telemetry Stream</span>
+          <button class="icon-btn" onclick="document.getElementById('telemetryFeed').innerHTML=''" title="Clear stream">
+            <i data-lucide="trash-2" style="width:12px;height:12px;"></i>
+          </button>
         </div>
-        <div class="panel-body" id="telemetryFeed"></div>
+        <div class="card-body" id="telemetryFeed"></div>
       </div>
     </div>
   </main>
 
+  <!-- FOOTER COMMAND INPUT -->
   <footer>
-    <input
-      id="promptInput"
-      class="prompt-input"
-      type="text"
-      placeholder="Enter mission prompt (or ask Coordinator to spawn a new specialist role on the fly)..."
-    />
-    <button class="launch-btn" onclick="launchMission(false)">🚀 Execute Live Swarm</button>
+    <div class="command-box">
+      <i data-lucide="sparkles"></i>
+      <input
+        id="promptInput"
+        class="prompt-input"
+        type="text"
+        placeholder="Dispatch mission to the swarm (e.g. 'Audit snippet with security_reviewer' or 'Compute 15th prime with coder')..."
+      />
+    </div>
+    <button class="btn-primary" onclick="launchMission(false)">
+      <i data-lucide="play"></i> Dispatch
+    </button>
   </footer>
 
-  <!-- + NEW ROLE MODAL -->
+  <!-- NEW ROLE MODAL -->
   <div class="modal-backdrop" id="roleModal">
-    <div class="modal-card">
-      <h3>➕ Create Specialist Agent Role</h3>
-      <div class="form-group">
-        <label>Role ID (snake_case, e.g. security_auditor)</label>
-        <input id="roleNameInput" class="form-input" placeholder="security_auditor" />
+    <div class="modal-dialog">
+      <div class="modal-title">
+        <span>Create Specialist Role</span>
+        <button class="icon-btn" onclick="closeRoleModal()"><i data-lucide="x"></i></button>
       </div>
-      <div class="form-group">
+      <div class="field">
+        <label>Role Identifier (snake_case)</label>
+        <input id="roleNameInput" class="field-input" placeholder="e.g. data_analyst" />
+      </div>
+      <div class="field">
         <label>Role Title</label>
-        <input id="roleTitleInput" class="form-input" placeholder="Security & Code Auditor" />
+        <input id="roleTitleInput" class="field-input" placeholder="e.g. Quantitative Data Analyst" />
       </div>
-      <div class="form-group">
-        <label>Capability Bundles (Select tool groups)</label>
-        <div class="bundle-checks">
-          <label><input type="checkbox" class="cap-check" value="@web" checked /> @web</label>
-          <label><input type="checkbox" class="cap-check" value="@code" checked /> @code</label>
-          <label><input type="checkbox" class="cap-check" value="@files" /> @files</label>
-          <label><input type="checkbox" class="cap-check" value="@memory" /> @memory</label>
+      <div class="field">
+        <label>Capability Bundles</label>
+        <div class="checkbox-grid">
+          <label class="check-pill"><input type="checkbox" class="cap-check" value="@web" checked /> @web</label>
+          <label class="check-pill"><input type="checkbox" class="cap-check" value="@code" checked /> @code</label>
+          <label class="check-pill"><input type="checkbox" class="cap-check" value="@files" /> @files</label>
+          <label class="check-pill"><input type="checkbox" class="cap-check" value="@memory" /> @memory</label>
         </div>
       </div>
-      <div class="form-group">
-        <label>Node Glow Color</label>
-        <input id="roleColorInput" class="form-input" value="#00ff9d" />
+      <div class="field">
+        <label>Node Accent Color</label>
+        <input id="roleColorInput" class="field-input" value="#38bdf8" />
       </div>
-      <div class="form-group">
-        <label>System Instructions / Persona</label>
-        <textarea id="roleInstInput" class="form-input" rows="3" placeholder="Inspect scripts and data for vulnerabilities or accuracy..."></textarea>
+      <div class="field">
+        <label>System Prompt Instructions</label>
+        <textarea id="roleInstInput" class="field-input" rows="3" placeholder="Define how this specialist operates and verifies its work..."></textarea>
       </div>
-      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:14px;">
-        <button class="hud-btn" onclick="closeRoleModal()">Cancel</button>
-        <button class="hud-btn role-btn" onclick="submitNewRole()">Save & Spawn Node</button>
+      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;">
+        <button class="btn" onclick="closeRoleModal()">Cancel</button>
+        <button class="btn btn-cyan" onclick="submitNewRole()">Create Role</button>
       </div>
     </div>
   </div>
 
   <script>
+    lucide.createIcons();
+
     const canvas = document.getElementById('networkCanvas');
     const ctx = canvas.getContext('2d');
 
@@ -661,16 +909,15 @@
     let activeNode = null;
     let activeToolBadge = {};
     let inboxCounts = {};
-
     let nodes = {};
     let edges = [];
     const particles = [];
 
     function rebuildGraphFromRoles(roleList) {
       nodes = {
-        user:        { label: 'USER',        role: 'Mission Client',     rx: 0.13, ry: 0.50, color: '#00f0ff' },
-        coordinator: { label: 'COORDINATOR', role: 'Orchestrator / Hub', rx: 0.40, ry: 0.50, color: '#00f0ff' },
-        airlock:     { label: 'AIRLOCK DB',  role: 'SQLite + Scrubbing', rx: 0.40, ry: 0.86, color: '#ff3b6b' },
+        user:        { label: 'USER',        role: 'Client Ingress',     rx: 0.13, ry: 0.50, color: '#94a3b8' },
+        coordinator: { label: 'COORDINATOR', role: 'Router & Hub',       rx: 0.39, ry: 0.50, color: '#38bdf8' },
+        airlock:     { label: 'AIRLOCK DB',  role: 'SQLite · Scrubbing', rx: 0.39, ry: 0.85, color: '#a855f7' },
       };
       edges = [
         ['user', 'coordinator'],
@@ -679,10 +926,9 @@
 
       const count = roleList.length;
       roleList.forEach((r, idx) => {
-        // Arrange N specialist roles smoothly along a right-hand orbital arc
-        const t = count === 1 ? 0 : (idx / (count - 1)) * 2 - 1; // -1 to +1
-        const angle = t * (Math.PI * 0.36); // -65 deg to +65 deg
-        const rx = 0.40 + Math.cos(angle) * 0.40;
+        const t = count === 1 ? 0 : (idx / (count - 1)) * 2 - 1;
+        const angle = t * (Math.PI * 0.37);
+        const rx = 0.39 + Math.cos(angle) * 0.42;
         const ry = 0.50 + Math.sin(angle) * 0.36;
 
         nodes[r.name] = {
@@ -690,7 +936,7 @@
           role: r.title,
           rx,
           ry,
-          color: r.color || '#00ff9d',
+          color: r.color || '#10b981',
         };
         edges.push(['coordinator', r.name]);
         if (idx > 0) {
@@ -700,13 +946,16 @@
     }
 
     function resizeCanvas() {
-      canvas.width = canvas.parentElement.clientWidth;
-      canvas.height = canvas.parentElement.clientHeight;
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.parentElement.getBoundingClientRect();
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     }
     window.addEventListener('resize', resizeCanvas);
     resizeCanvas();
 
-    function spawnPacket(fromKey, toKey, color = '#00f0ff', label = '') {
+    function spawnPacket(fromKey, toKey, color = '#38bdf8', label = '') {
       if (fromKey === 'orchestrator') fromKey = 'coordinator';
       if (toKey === 'orchestrator') toKey = 'coordinator';
       if (!nodes[fromKey] || !nodes[toKey]) return;
@@ -714,38 +963,63 @@
       packetCount++;
       document.getElementById('packetMetric').textContent = packetCount;
 
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < 5; i++) {
         particles.push({
           from: fromKey,
           to: toKey,
-          progress: -i * 0.06,
-          speed: 0.018,
+          progress: -i * 0.045,
+          speed: 0.017,
           color,
+          size: i === 0 ? 4.5 : 3 - i * 0.4,
+          alpha: 1 - i * 0.16,
           label: i === 0 ? label : '',
         });
       }
     }
 
-    let radarAngle = 0;
+    // Subtle curved control point for Bezier edges
+    function getPointOnCurve(ax, ay, bx, by, t) {
+      const mx = (ax + bx) / 2;
+      const my = (ay + by) / 2 - (bx - ax) * 0.06;
+      const x = (1 - t) * (1 - t) * ax + 2 * (1 - t) * t * mx + t * t * bx;
+      const y = (1 - t) * (1 - t) * ay + 2 * (1 - t) * t * my + t * t * by;
+      return { x, y, mx, my };
+    }
+
+    let spinAngle = 0;
     function renderNetwork() {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      radarAngle += 0.03;
+      const W = canvas.parentElement.clientWidth;
+      const H = canvas.parentElement.clientHeight;
+      ctx.clearRect(0, 0, W, H);
+      spinAngle += 0.025;
 
-      const W = canvas.width;
-      const H = canvas.height;
+      // Subtle dot matrix grid on canvas
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.045)';
+      const step = 28;
+      for (let gx = step; gx < W; gx += step) {
+        for (let gy = step; gy < H; gy += step) {
+          ctx.fillRect(gx, gy, 1, 1);
+        }
+      }
 
+      // Draw smooth curved edges
       for (const [a, b] of edges) {
         const na = nodes[a];
         const nb = nodes[b];
         if (!na || !nb) continue;
+        const ax = na.rx * W, ay = na.ry * H;
+        const bx = nb.rx * W, by = nb.ry * H;
+        const { mx, my } = getPointOnCurve(ax, ay, bx, by, 0.5);
+
         ctx.beginPath();
-        ctx.moveTo(na.rx * W, na.ry * H);
-        ctx.lineTo(nb.rx * W, nb.ry * H);
-        ctx.strokeStyle = 'rgba(0, 240, 255, 0.13)';
-        ctx.lineWidth = 1.5;
+        ctx.moveTo(ax, ay);
+        ctx.quadraticCurveTo(mx, my, bx, by);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.075)';
+        ctx.lineWidth = 1.2;
         ctx.stroke();
       }
 
+      // Draw animated comet packets along curves
       for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i];
         p.progress += p.speed;
@@ -758,76 +1032,90 @@
         const na = nodes[p.from];
         const nb = nodes[p.to];
         if (!na || !nb) continue;
-        const x = (na.rx + (nb.rx - na.rx) * p.progress) * W;
-        const y = (na.ry + (nb.ry - na.ry) * p.progress) * H;
+        const pt = getPointOnCurve(na.rx * W, na.ry * H, nb.rx * W, nb.ry * H, p.progress);
 
+        ctx.save();
+        ctx.globalAlpha = p.alpha;
         ctx.beginPath();
-        ctx.arc(x, y, 5, 0, Math.PI * 2);
+        ctx.arc(pt.x, pt.y, p.size, 0, Math.PI * 2);
         ctx.fillStyle = p.color;
-        ctx.shadowBlur = 16;
+        ctx.shadowBlur = 12;
         ctx.shadowColor = p.color;
         ctx.fill();
-        ctx.shadowBlur = 0;
+        ctx.restore();
 
         if (p.label) {
-          ctx.font = '10px Consolas, monospace';
-          ctx.fillStyle = '#ffffff';
-          ctx.fillText(p.label, x + 8, y - 8);
+          ctx.font = '500 9.5px "JetBrains Mono", monospace';
+          ctx.fillStyle = '#e2e8f0';
+          ctx.fillText(p.label, pt.x + 8, pt.y - 7);
         }
       }
 
+      // Draw nodes
       for (const [key, node] of Object.entries(nodes)) {
         const x = node.rx * W;
         const y = node.ry * H;
         const isActive = (activeNode === key) || (activeNode === 'orchestrator' && key === 'coordinator');
 
+        // Active precision ring
         if (isActive) {
           ctx.save();
           ctx.translate(x, y);
-          ctx.rotate(radarAngle);
+          ctx.rotate(spinAngle);
           ctx.beginPath();
-          ctx.arc(0, 0, 44, 0, Math.PI * 1.3);
+          ctx.arc(0, 0, 34, 0, Math.PI * 1.4);
           ctx.strokeStyle = node.color;
-          ctx.lineWidth = 2.5;
+          ctx.lineWidth = 1.8;
           ctx.stroke();
           ctx.restore();
         }
 
+        // Node body
         ctx.beginPath();
-        ctx.arc(x, y, 29, 0, Math.PI * 2);
-        ctx.fillStyle = isActive ? 'rgba(0, 240, 255, 0.18)' : 'rgba(10, 20, 40, 0.92)';
-        ctx.strokeStyle = node.color;
-        ctx.lineWidth = isActive ? 3 : 1.8;
-        ctx.shadowBlur = isActive ? 24 : 10;
+        ctx.arc(x, y, 24, 0, Math.PI * 2);
+        ctx.fillStyle = isActive ? '#161f30' : '#0d1017';
+        ctx.strokeStyle = isActive ? node.color : 'rgba(255, 255, 255, 0.18)';
+        ctx.lineWidth = isActive ? 2 : 1.2;
+        ctx.shadowBlur = isActive ? 20 : 0;
         ctx.shadowColor = node.color;
         ctx.fill();
         ctx.stroke();
         ctx.shadowBlur = 0;
 
+        // Inner accent dot
+        ctx.beginPath();
+        ctx.arc(x, y - 7, 3, 0, Math.PI * 2);
+        ctx.fillStyle = node.color;
+        ctx.fill();
+
+        // Node label
         ctx.textAlign = 'center';
-        ctx.font = 'bold 10.5px Consolas, monospace';
-        ctx.fillStyle = '#ffffff';
-        ctx.fillText(node.label, x, y + 4);
+        ctx.font = '600 9.5px "JetBrains Mono", monospace';
+        ctx.fillStyle = '#f8fafc';
+        ctx.fillText(node.label.slice(0, 12), x, y + 6);
 
-        ctx.font = '10px Segoe UI, sans-serif';
-        ctx.fillStyle = '#8ba3c7';
-        ctx.fillText(node.role, x, y + 44);
+        // Role subtitle pill below node
+        ctx.font = '500 10.5px "Inter", sans-serif';
+        ctx.fillStyle = '#94a3b8';
+        ctx.fillText(node.role, x, y + 38);
 
+        // Inbox badge
         const qCount = inboxCounts[key] || 0;
         if (qCount > 0) {
           ctx.beginPath();
-          ctx.arc(x + 23, y - 23, 10, 0, Math.PI * 2);
-          ctx.fillStyle = '#ff3b6b';
+          ctx.arc(x + 19, y - 19, 8.5, 0, Math.PI * 2);
+          ctx.fillStyle = '#f43f5e';
           ctx.fill();
-          ctx.font = 'bold 10px Consolas, monospace';
+          ctx.font = '600 9.5px "JetBrains Mono", monospace';
           ctx.fillStyle = '#fff';
-          ctx.fillText(String(qCount), x + 23, y - 19);
+          ctx.fillText(String(qCount), x + 19, y - 15.5);
         }
 
+        // Active tool pill
         if (activeToolBadge[key]) {
-          ctx.font = '10px Consolas, monospace';
-          ctx.fillStyle = '#ffb800';
-          ctx.fillText(`⚙ ${activeToolBadge[key]}`, x, y - 36);
+          ctx.font = '500 9.5px "JetBrains Mono", monospace';
+          ctx.fillStyle = '#f59e0b';
+          ctx.fillText(`⚡ ${activeToolBadge[key]}`, x, y - 32);
         }
       }
 
@@ -838,9 +1126,12 @@
     function appendLog(type, title, body) {
       const feed = document.getElementById('telemetryFeed');
       const div = document.createElement('div');
-      div.className = `log-entry ${type}`;
-      const now = new Date().toLocaleTimeString();
-      div.innerHTML = `<div class="log-time">[${now}] <strong>${title}</strong></div><div>${body}</div>`;
+      div.className = `trace-item ${type}`;
+      const now = new Date().toLocaleTimeString([], { hour12: false });
+      div.innerHTML = `
+        <div class="trace-meta"><strong>${title}</strong><span>${now}</span></div>
+        <div class="trace-content">${body}</div>
+      `;
       feed.prepend(div);
     }
 
@@ -850,22 +1141,28 @@
       const res = await fetch(`/api/state?tenant=${encodeURIComponent(tenant)}`);
       const data = await res.json();
 
-      document.getElementById('modelBadge').textContent = `Model: ${data.model} // Active Roles: ${(data.roles || []).length}`;
+      const roles = data.roles || [];
+      document.getElementById('modelBadge').textContent = `${data.model}`;
+      document.getElementById('roleCountBadge').textContent = `${roles.length}`;
 
-      rebuildGraphFromRoles(data.roles || []);
+      rebuildGraphFromRoles(roles);
 
-      // Render roles list
+      // Render specialist roster
       const rolesBox = document.getElementById('rolesList');
-      rolesBox.innerHTML = (data.roles || [])
+      rolesBox.innerHTML = roles
         .map(r => `
-          <div class="role-chip" style="border-left-color: ${r.color || '#00ff9d'}">
-            <div>
-              <strong style="color:${r.color || '#00ff9d'}">${r.name}</strong> — ${r.title}
-              <div style="font-size:10px; color:var(--text-dim); font-family:Consolas,monospace;">
-                Bundles: ${(r.capabilities || []).join(', ')}
+          <div class="role-row">
+            <div class="role-info">
+              <span class="role-dot" style="background:${r.color || '#10b981'}; box-shadow: 0 0 8px ${r.color || '#10b981'};"></span>
+              <div style="min-width:0;">
+                <div class="role-name">${r.name}</div>
+                <div class="role-sub">${r.title}</div>
+                <div class="tag-list">
+                  ${(r.capabilities || []).map(c => `<span class="mini-tag">${c}</span>`).join('')}
+                </div>
               </div>
             </div>
-            <span class="role-del-btn" title="Delete role" onclick="deleteRole('${r.name}')">×</span>
+            <button class="icon-btn" title="Remove role" onclick="deleteRole('${r.name}')">✕</button>
           </div>
         `)
         .join('');
@@ -874,10 +1171,10 @@
       const memBox = document.getElementById('memoryList');
       const memEntries = Object.entries(data.tenant_memories || {});
       if (memEntries.length === 0) {
-        memBox.innerHTML = `<div style="color:var(--text-dim);">No isolated memories stored for <b>${tenant}</b> yet.</div>`;
+        memBox.innerHTML = `<div style="color:var(--text-muted); font-size:11px; padding:4px;">Vault empty for <b>${tenant}</b>.</div>`;
       } else {
         memBox.innerHTML = memEntries
-          .map(([k, v]) => `<div class="kv-item"><div class="kv-key">${k}</div><div>${v}</div></div>`)
+          .map(([k, v]) => `<div class="vault-item"><div class="vault-key">${k}</div><div>${v}</div></div>`)
           .join('');
       }
 
@@ -885,14 +1182,17 @@
       const skillBox = document.getElementById('skillsList');
       const skills = data.global_skills || [];
       if (skills.length === 0) {
-        skillBox.innerHTML = `<div style="color:var(--text-dim);">No global skills distilled yet.</div>`;
+        skillBox.innerHTML = `<div style="color:var(--text-muted); font-size:11px; padding:4px;">No global playbooks distilled yet.</div>`;
       } else {
         skillBox.innerHTML = skills
           .map(s => `
-            <div class="skill-card">
-              <span class="skill-tag">${s.category} (x${s.learned_count})</span>
-              <div style="color:#b8cbe8; margin-bottom:2px;"><b>Pattern:</b> ${s.problem_pattern}</div>
-              <div style="color:var(--emerald);"><b>Playbook:</b> ${s.solution_rule}</div>
+            <div class="skill-item">
+              <div class="skill-head">
+                <span class="skill-badge">${s.category}</span>
+                <span style="font-family:var(--font-mono); font-size:9.5px; color:var(--text-muted);">x${s.learned_count}</span>
+              </div>
+              <div style="color:var(--text-secondary); margin-bottom:3px;">${s.problem_pattern}</div>
+              <div style="color:var(--accent-emerald); font-weight:500;">→ ${s.solution_rule}</div>
             </div>
           `)
           .join('');
@@ -902,7 +1202,6 @@
     function openRoleModal() {
       document.getElementById('roleModal').classList.add('open');
     }
-
     function closeRoleModal() {
       document.getElementById('roleModal').classList.remove('open');
     }
@@ -910,12 +1209,12 @@
     async function submitNewRole() {
       const name = document.getElementById('roleNameInput').value.trim();
       const title = document.getElementById('roleTitleInput').value.trim();
-      const color = document.getElementById('roleColorInput').value.trim() || '#00f0ff';
+      const color = document.getElementById('roleColorInput').value.trim() || '#38bdf8';
       const instructions = document.getElementById('roleInstInput').value.trim();
       const capabilities = Array.from(document.querySelectorAll('.cap-check:checked')).map(c => c.value);
 
       if (!name || !title) {
-        alert('Please enter both a Role ID and Role Title.');
+        alert('Enter both Role Identifier and Role Title.');
         return;
       }
 
@@ -939,7 +1238,7 @@
 
     document.getElementById('tenantSelect').addEventListener('change', () => {
       refreshState();
-      appendLog('system', 'TENANT VAULT SWITCHED', `Isolated memory context switched to '${document.getElementById('tenantSelect').value}'.`);
+      appendLog('peer_message', 'TENANT VAULT SWITCHED', `Active partition: ${document.getElementById('tenantSelect').value}`);
     });
 
     const evtSource = new EventSource('/api/events');
@@ -954,34 +1253,33 @@
       if (etype === 'role_created') {
         refreshState();
         const r = d.role || {};
-        appendLog('skill_learned', `➕ NEW SPECIALIST SPAWNED`, `'${r.name}' (${r.title}) added with tools: ${(r.resolved_tools || []).join(', ')}`);
+        appendLog('skill_learned', `ROLE SPAWNED · ${r.name}`, `${r.title} [${(r.resolved_tools || []).join(', ')}]`);
       } else if (etype === 'role_deleted') {
         refreshState();
       } else if (etype === 'mission_start') {
-        document.getElementById('swarmStatusPill').textContent = `STATUS: RUNNING (${d.mode.toUpperCase()})`;
+        document.getElementById('swarmStatusPill').textContent = `ACTIVE · ${d.mode.toUpperCase()} TOPOLOGY`;
         document.getElementById('answerDrawer').classList.remove('visible');
-        appendLog('peer_message', `MISSION STARTED [${ev.tenant_id}]`, d.prompt);
+        appendLog('peer_message', `DISPATCH [${ev.tenant_id}]`, d.prompt);
       } else if (etype === 'agent_start') {
         activeNode = agent;
-        document.getElementById('activeNodePill').textContent = `ACTIVE NODE: ${agent.toUpperCase()}`;
+        document.getElementById('activeNodePill').textContent = `NODE: ${agent.toUpperCase()}`;
       } else if (etype === 'peer_message') {
-        spawnPacket(d.from_agent, d.to_agent, '#00f0ff', 'MSG');
-        appendLog('peer_message', `INBOX: ${d.from_agent.toUpperCase()} ➔ ${d.to_agent.toUpperCase()}`, d.message);
+        spawnPacket(d.from_agent, d.to_agent, '#38bdf8', 'MSG');
+        appendLog('peer_message', `${d.from_agent.toUpperCase()} → ${d.to_agent.toUpperCase()}`, d.message);
       } else if (etype === 'delegation') {
-        spawnPacket('coordinator', d.to_worker, '#00ff9d', 'TASK');
-        appendLog('delegation', `DELEGATE: COORDINATOR ➔ ${d.to_worker.toUpperCase()}`, d.task);
+        spawnPacket('coordinator', d.to_worker, '#10b981', 'TASK');
+        appendLog('delegation', `COORDINATOR → ${d.to_worker.toUpperCase()}`, d.task);
       } else if (etype === 'tool_call') {
         activeNode = agent;
         activeToolBadge[agent] = d.tool;
-        appendLog('tool_call', `${agent.toUpperCase()} // TOOL CALL`, `${d.tool}(${JSON.stringify(d.arguments)})`);
+        appendLog('tool_call', `${agent.toUpperCase()} · ${d.tool}`, JSON.stringify(d.arguments));
       } else if (etype === 'tool_result') {
         delete activeToolBadge[agent];
-        const preview = String(d.result || '').slice(0, 220);
-        appendLog('tool_result', `${agent.toUpperCase()} // OBSERVATION`, preview);
+        appendLog('tool_result', `${agent.toUpperCase()} · OUTPUT`, String(d.result || '').slice(0, 220));
         refreshState();
       } else if (etype === 'skill_learned') {
-        spawnPacket(agent in nodes ? agent : 'coordinator', 'airlock', '#b56bff', 'AIRLOCK');
-        appendLog('skill_learned', `🛡️ PRIVACY AIRLOCK // SKILL DISTILLED`, `[${d.category}] ${d.problem_pattern} ➔ ${d.solution_rule}`);
+        spawnPacket(agent in nodes ? agent : 'coordinator', 'airlock', '#a855f7', 'AIRLOCK');
+        appendLog('skill_learned', `AIRLOCK · ${d.category}`, `${d.problem_pattern} → ${d.solution_rule}`);
         refreshState();
       } else if (etype === 'budget') {
         document.getElementById('stepMetric').textContent = `${d.total_steps}/${d.max_swarm_steps}`;
@@ -992,8 +1290,8 @@
       } else if (etype === 'swarm_complete' || etype === 'mission_end') {
         activeNode = null;
         inboxCounts = {};
-        document.getElementById('activeNodePill').textContent = 'ACTIVE NODE: IDLE';
-        document.getElementById('swarmStatusPill').textContent = 'STATUS: MISSION COMPLETE';
+        document.getElementById('activeNodePill').textContent = 'NODE: IDLE';
+        document.getElementById('swarmStatusPill').textContent = 'STANDBY · MISSION COMPLETE';
         if (d.answer || d.reply) {
           const text = d.answer || d.reply;
           if (text !== 'Simulation complete.') {
@@ -1007,7 +1305,7 @@
 
     async function launchMission(simulate = false) {
       const input = document.getElementById('promptInput');
-      const prompt = input.value.trim() || "Analyze live system throughput, run Python efficiency benchmark, verify with critic, and store findings.";
+      const prompt = input.value.trim() || "Analyze live system throughput, run Python efficiency benchmark, verify accuracy, and store findings.";
       const tenant_id = document.getElementById('tenantSelect').value;
       const mode = document.getElementById('modeSelect').value;
 
@@ -1021,7 +1319,7 @@
     function triggerSimulation() {
       const promptInput = document.getElementById('promptInput');
       if (!promptInput.value.trim()) {
-        promptInput.value = "Fetch live telemetry benchmarks, compute Python efficiency score, and verify accuracy with Critic.";
+        promptInput.value = "Fetch live telemetry benchmarks, compute Python efficiency score, and verify accuracy.";
       }
       launchMission(true);
     }
