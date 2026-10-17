@@ -21,6 +21,8 @@ class BudgetConfig:
     max_steps_per_agent: int = field(default_factory=lambda: CONFIG.max_steps_per_agent)
     max_total_tokens: int = field(default_factory=lambda: CONFIG.max_total_tokens)
     max_wall_seconds: float = field(default_factory=lambda: CONFIG.max_wall_seconds)
+    auto_continue: bool = True
+    max_auto_continuations: int = 5
 
 
 @dataclass
@@ -45,6 +47,11 @@ class BudgetTracker:
         self.agent_steps.clear()
         self.agent_limits.clear()
         self.start_time = time.time()
+
+    def reset_turn(self) -> None:
+        """Reset per-turn step counts for auto-continuation while preserving cumulative token totals."""
+        self.total_steps = 0
+        self.agent_steps.clear()
 
     @property
     def elapsed_seconds(self) -> float:

@@ -301,13 +301,41 @@ class PeerSwarm:
         last_output = ""
         peer_outputs: List[str] = []
 
+        continuation_count = 0
         try:
             while self._final_answer is None:
                 if self.budget.total_steps >= self.budget.config.max_swarm_steps:
+                    if self.budget.config.auto_continue and continuation_count < self.budget.config.max_auto_continuations:
+                        continuation_count += 1
+                        self.bus.emit(
+                            "auto_continue",
+                            agent_name="coordinator",
+                            tenant_id=tenant_id,
+                            cycle=continuation_count,
+                            max_cycles=self.budget.config.max_auto_continuations,
+                            message=f"Auto-continuation cycle {continuation_count}/{self.budget.config.max_auto_continuations} initiated.",
+                        )
+                        self.budget.reset_turn()
+                        if not any(len(n.inbox) > 0 for n in self.nodes.values()):
+                            self.nodes["coordinator"].inbox.append(
+                                PeerMessage(
+                                    sender="system",
+                                    recipient="coordinator",
+                                    content=(
+                                        f"[SYSTEM AUTO-CONTINUATION Cycle {continuation_count}]: Step batch completed. "
+                                        "Inspect workspace/ files (SPEC.md, TASKS.json, test execution results). "
+                                        "Continue dispatching tasks to pending specialists (coder, test_runner, critic) "
+                                        "until all software requirements and tests are 100% complete and verified, "
+                                        "then call finish_swarm with the final summary."
+                                    ),
+                                )
+                            )
+                        continue
+
                     combined = "\n\n".join(peer_outputs) if peer_outputs else last_output
                     self._final_answer = (
                         f"{combined}\n\n"
-                        f"[Continuation: Swarm step limit ({self.budget.config.max_swarm_steps} steps) reached for this turn. "
+                        f"[Continuation: Swarm step limit reached after {continuation_count} auto-continuation cycles. "
                         f"Reply 'continue' to resume from these findings.]"
                     ).strip()
                     break

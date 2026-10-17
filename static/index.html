@@ -1991,6 +1991,10 @@
         document.getElementById('elapsedLabel').textContent = `${d.elapsed_seconds}s`;
         document.getElementById('stepBar').style.width = `${Math.min(100, (d.total_steps / d.max_swarm_steps) * 100)}%`;
         document.getElementById('tokenBar').style.width = `${Math.min(100, (d.total_tokens / d.max_total_tokens) * 100)}%`;
+      } else if (etype === 'auto_continue') {
+        appendLog('peer_message', `[${sId}] AUTO-CONTINUATION · CYCLE ${d.cycle}/${d.max_cycles}`, d.message || 'Continuing mission execution...');
+        document.getElementById('swarmStatusPill').textContent = `AUTONOMOUS CONTINUATION · CYCLE ${d.cycle}/${d.max_cycles}`;
+        refreshState();
       } else if (etype === 'budget_exceeded') {
         appendLog('arena_attack', `[${sId}] BUDGET GUARDRAIL`, d.error || 'Budget exceeded');
         if (d.answer) {
