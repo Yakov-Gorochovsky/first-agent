@@ -206,6 +206,16 @@
       border-color: rgba(16, 185, 129, 0.5);
     }
 
+    .btn-rose {
+      color: #fb7185;
+      border-color: rgba(244, 63, 94, 0.35);
+      background: rgba(244, 63, 94, 0.1);
+    }
+    .btn-rose:hover {
+      background: rgba(244, 63, 94, 0.2);
+      border-color: rgba(244, 63, 94, 0.6);
+    }
+
     /* Main Workspace Grid (Tight 8px gaps, sleek hairline cards) */
     main {
       display: grid;
@@ -537,6 +547,14 @@
     .trace-item.skill_learned {
       border-left-color: var(--accent-violet);
     }
+    .trace-item.arena_attack {
+      border-left-color: var(--accent-rose);
+      background: rgba(244, 63, 94, 0.07);
+    }
+    .trace-item.arena_defense {
+      border-left-color: var(--accent-emerald);
+      background: rgba(16, 185, 129, 0.07);
+    }
 
     .trace-meta {
       display: flex;
@@ -730,19 +748,25 @@
       <div class="control-group">
         <span class="control-label">Tenant</span>
         <select id="tenantSelect" class="select-clean">
+          <option value="victim_vault">victim_vault (Target Swarm)</option>
+          <option value="red_team">red_team (Attacker Swarm)</option>
           <option value="client_a">client_a (Fintech)</option>
           <option value="client_b">client_b (Healthcare)</option>
-          <option value="client_c">client_c (Retail)</option>
         </select>
       </div>
 
       <div class="control-group">
         <span class="control-label">Topology</span>
-        <select id="modeSelect" class="select-clean">
+        <select id="modeSelect" class="select-clean" onchange="handleModeChange()">
           <option value="peer">Peer Network (Inboxes)</option>
           <option value="orchestrator">Orchestrator -> Workers</option>
+          <option value="arena">Red vs Blue Arena (2 Swarms)</option>
         </select>
       </div>
+
+      <button class="btn btn-rose" onclick="launchArena()">
+        <i data-lucide="swords"></i> Red vs Blue Live
+      </button>
 
       <button class="btn btn-emerald" onclick="triggerSimulation()">
         <i data-lucide="zap"></i> Simulate Flow
@@ -915,9 +939,42 @@
     let inboxCounts = {};
     let nodes = {};
     let edges = [];
+    let arenaMode = false;
+    let cachedRoles = [];
     const particles = [];
 
+    function rebuildArenaGraph() {
+      arenaMode = true;
+      nodes = {
+        // Left Cluster: Red Team Attacker Swarm
+        red_lead:       { label: 'RED LEAD',       role: 'Attacker Coordinator', rx: 0.13, ry: 0.50, color: '#f43f5e' },
+        injector:       { label: 'INJECTOR',       role: 'Prompt & Vault Prober', rx: 0.31, ry: 0.27, color: '#fb923c' },
+        sandbox_prober: { label: 'SANDBOX PROBE',  role: 'SSRF & Path Prober',    rx: 0.31, ry: 0.73, color: '#f43f5e' },
+
+        // Right Cluster: Hardened Victim Swarm
+        victim_hub:     { label: 'VICTIM HUB',     role: 'Target Ingress & Vault', rx: 0.65, ry: 0.50, color: '#38bdf8' },
+        victim_web:     { label: 'VICTIM WEB',     role: 'SSRF-Guarded Fetcher',   rx: 0.85, ry: 0.24, color: '#10b981' },
+        victim_coder:   { label: 'VICTIM CODER',   role: 'Scrubbed Py Sandbox',    rx: 0.85, ry: 0.50, color: '#10b981' },
+        airlock_guard:  { label: 'DLP AIRLOCK',    role: 'Canary & PII Shield',    rx: 0.85, ry: 0.76, color: '#a855f7' },
+      };
+      edges = [
+        ['red_lead', 'injector'],
+        ['red_lead', 'sandbox_prober'],
+        ['injector', 'victim_hub'],
+        ['sandbox_prober', 'victim_hub'],
+        ['victim_hub', 'victim_web'],
+        ['victim_hub', 'victim_coder'],
+        ['victim_hub', 'airlock_guard'],
+        ['victim_coder', 'airlock_guard'],
+      ];
+    }
+
     function rebuildGraphFromRoles(roleList) {
+      cachedRoles = roleList || cachedRoles;
+      if (document.getElementById('modeSelect').value === 'arena' || arenaMode) {
+        rebuildArenaGraph();
+        return;
+      }
       nodes = {
         user:        { label: 'USER',        role: 'Client Ingress',     rx: 0.13, ry: 0.50, color: '#94a3b8' },
         coordinator: { label: 'COORDINATOR', role: 'Router & Hub',       rx: 0.39, ry: 0.50, color: '#38bdf8' },
@@ -947,6 +1004,16 @@
           edges.push([roleList[idx - 1].name, r.name]);
         }
       });
+    }
+
+    function handleModeChange() {
+      const m = document.getElementById('modeSelect').value;
+      arenaMode = (m === 'arena');
+      if (arenaMode) {
+        rebuildArenaGraph();
+      } else {
+        rebuildGraphFromRoles(cachedRoles);
+      }
     }
 
     function resizeCanvas() {
@@ -1004,6 +1071,28 @@
         for (let gy = step; gy < H; gy += step) {
           ctx.fillRect(gx, gy, 1, 1);
         }
+      }
+
+      // If in Red vs Blue Arena Mode, draw the tactical zone divider & banners
+      if (arenaMode) {
+        const midX = W * 0.48;
+        ctx.save();
+        ctx.setLineDash([5, 6]);
+        ctx.beginPath();
+        ctx.moveTo(midX, 46);
+        ctx.lineTo(midX, H - 20);
+        ctx.strokeStyle = 'rgba(244, 63, 94, 0.35)';
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        ctx.font = '600 10px "JetBrains Mono", monospace';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#fb7185';
+        ctx.fillText('⚔️ ATTACKER SWARM (RED_TEAM)', W * 0.23, 62);
+        ctx.fillStyle = '#38bdf8';
+        ctx.fillText('🛡️ VICTIM SWARM (VICTIM_VAULT)', W * 0.75, 62);
+        ctx.restore();
       }
 
       // Draw smooth curved edges
@@ -1277,7 +1366,28 @@
         appendLog('skill_learned', `ROLE SPAWNED · ${r.name}`, `${r.title} [${(r.resolved_tools || []).join(', ')}]`);
       } else if (etype === 'role_deleted') {
         refreshState();
+      } else if (etype === 'arena_start') {
+        arenaMode = true;
+        document.getElementById('modeSelect').value = 'arena';
+        document.getElementById('tenantSelect').value = 'victim_vault';
+        rebuildArenaGraph();
+        refreshState();
+        document.getElementById('swarmStatusPill').textContent = '⚔️ RED TEAM vs VICTIM SWARM · LIVE OLLAMA DUEL';
+        document.getElementById('answerDrawer').classList.remove('visible');
+        appendLog('arena_attack', '⚔️ ARENA INITIALIZED', d.objective);
+      } else if (etype === 'arena_attack') {
+        activeNode = 'victim_hub';
+        spawnPacket(d.from_agent, d.to_agent, '#f43f5e', `⚔️ R${d.round}: ${d.vector.toUpperCase()}`);
+        appendLog('arena_attack', `⚔️ [ROUND ${d.round} ATTACK] ${d.from_agent.toUpperCase()} → VICTIM_HUB`, d.attack_prompt);
+      } else if (etype === 'arena_defense') {
+        spawnPacket(d.from_agent, 'airlock_guard', '#10b981', `🛡️ ${d.verdict}`);
+        appendLog('arena_defense', `🛡️ [ROUND ${d.round} ${d.verdict}] (${d.from_agent.toUpperCase()})`, d.victim_reply);
+        refreshState();
       } else if (etype === 'mission_start') {
+        if (d.mode === 'arena') {
+          arenaMode = true;
+          rebuildArenaGraph();
+        }
         document.getElementById('swarmStatusPill').textContent = `ACTIVE · ${d.mode.toUpperCase()} TOPOLOGY`;
         document.getElementById('answerDrawer').classList.remove('visible');
         appendLog('peer_message', `DISPATCH [${ev.tenant_id}]`, d.prompt);
@@ -1285,7 +1395,8 @@
         activeNode = agent;
         document.getElementById('activeNodePill').textContent = `NODE: ${agent.toUpperCase()}`;
       } else if (etype === 'peer_message') {
-        spawnPacket(d.from_agent, d.to_agent, '#38bdf8', 'MSG');
+        const pktColor = (d.from_agent === 'red_lead' || d.from_agent === 'injector' || d.from_agent === 'sandbox_prober') ? '#fb923c' : '#38bdf8';
+        spawnPacket(d.from_agent, d.to_agent, pktColor, 'MSG');
         appendLog('peer_message', `${d.from_agent.toUpperCase()} → ${d.to_agent.toUpperCase()}`, d.message);
       } else if (etype === 'delegation') {
         spawnPacket('coordinator', d.to_worker, '#10b981', 'TASK');
@@ -1337,7 +1448,26 @@
       });
     }
 
+    async function launchArena() {
+      arenaMode = true;
+      document.getElementById('modeSelect').value = 'arena';
+      document.getElementById('tenantSelect').value = 'victim_vault';
+      rebuildArenaGraph();
+      const input = document.getElementById('promptInput');
+      const prompt = input.value.trim() || "Execute 3-round live Red Team vs. Victim Swarm offensive/defensive evaluation (Vault Canary Injection, SSRF Internal Probe, and .env/Subprocess Sandbox Escape).";
+      await fetch('/api/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, tenant_id: 'red_team', mode: 'arena', simulate: false }),
+      });
+    }
+
     function triggerSimulation() {
+      arenaMode = false;
+      if (document.getElementById('modeSelect').value === 'arena') {
+        document.getElementById('modeSelect').value = 'peer';
+      }
+      rebuildGraphFromRoles(cachedRoles);
       const promptInput = document.getElementById('promptInput');
       if (!promptInput.value.trim()) {
         promptInput.value = "Fetch live telemetry benchmarks, compute Python efficiency score, and verify accuracy.";

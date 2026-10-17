@@ -61,9 +61,21 @@ def console_event_listener(event: SwarmEvent) -> None:
             f"  [PrivacyAirlock -> Global Skill] [{data.get('category')}] "
             f"{data.get('problem_pattern')} => {data.get('solution_rule')}"
         )
+    elif etype == "arena_attack":
+        print(
+            f"  [⚔️ Round {data.get('round')} Attack: {data.get('from_agent')} -> {data.get('to_agent')}] "
+            f"{data.get('attack_prompt')}"
+        )
+    elif etype == "arena_defense":
+        print(
+            f"  [🛡️ Round {data.get('round')} {data.get('verdict')}] "
+            f"{data.get('victim_reply')}"
+        )
 
 
-def build_swarms() -> tuple[OrchestratorSwarm, PeerSwarm, RoleRegistry, SQLiteStorage, BudgetTracker, EventBus]:
+def build_swarms():
+    from core.arena import RedVsBlueArena
+
     bus = EventBus()
     bus.subscribe(console_event_listener)
 
@@ -77,7 +89,8 @@ def build_swarms() -> tuple[OrchestratorSwarm, PeerSwarm, RoleRegistry, SQLiteSt
     peer = PeerSwarm(
         llm=llm, storage=storage, budget=budget, bus=bus, role_registry=role_registry
     )
-    return orch, peer, role_registry, storage, budget, bus
+    arena = RedVsBlueArena(llm=llm, storage=storage, bus=bus, role_registry=role_registry)
+    return orch, peer, arena, role_registry, storage, budget, bus
 
 
 def main() -> None:
@@ -94,14 +107,14 @@ def main() -> None:
         "-m",
         "--mode",
         type=str,
-        choices=["peer", "orchestrator"],
+        choices=["peer", "orchestrator", "arena"],
         default="peer",
-        help="Swarm topology: 'peer' (Step 3 Inbox Network) or 'orchestrator' (Step 2).",
+        help="Swarm topology: 'peer', 'orchestrator', or 'arena' (Red Team vs Victim Swarm).",
     )
     parser.add_argument("--new-session", action="store_true", help="Clear tenant session history.")
     args = parser.parse_args()
 
-    orch_swarm, peer_swarm, role_registry, storage, budget, _ = build_swarms()
+    orch_swarm, peer_swarm, arena_swarm, role_registry, storage, budget, _ = build_swarms()
     tenant_id = args.tenant
     mode = args.mode
 
@@ -116,6 +129,8 @@ def main() -> None:
     print("=" * 78)
 
     def run_active(prompt_text: str) -> str:
+        if mode == "arena":
+            return arena_swarm.run_duel(prompt_text)
         if mode == "orchestrator":
             return orch_swarm.run(prompt_text, tenant_id=tenant_id)
         return peer_swarm.run(prompt_text, tenant_id=tenant_id)
@@ -129,7 +144,7 @@ def main() -> None:
 
     print(
         "Commands: '/roles' | '/add-role <name> | <title> | <@bundles> | <instructions>' | "
-        "'/del-role <name>' | '/mode peer|orchestrator' | '/tenant <id>' | '/memory' | '/skills' | 'exit'\n"
+        "'/del-role <name>' | '/mode peer|orchestrator|arena' | '/tenant <id>' | '/memory' | '/skills' | 'exit'\n"
     )
     while True:
         try:
@@ -176,11 +191,11 @@ def main() -> None:
             continue
         if user_input.lower().startswith("/mode "):
             new_mode = user_input.split(maxsplit=1)[1].strip().lower()
-            if new_mode in {"peer", "orchestrator"}:
+            if new_mode in {"peer", "orchestrator", "arena"}:
                 mode = new_mode
                 print(f"  [Switched swarm topology to '{mode}'.]\n")
             else:
-                print("  [Choose '/mode peer' or '/mode orchestrator'.]\n")
+                print("  [Choose '/mode peer', '/mode orchestrator', or '/mode arena'.]\n")
             continue
         if user_input.lower().startswith("/tenant "):
             tenant_id = user_input.split(maxsplit=1)[1].strip()

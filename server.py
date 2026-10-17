@@ -21,6 +21,7 @@ import time
 from typing import Any, Dict, List
 from urllib.parse import parse_qs, urlparse
 
+from core.arena import RedVsBlueArena
 from core.budget import BudgetConfig, BudgetTracker
 from core.bus import EventBus, SwarmEvent
 from core.config import CONFIG
@@ -44,6 +45,7 @@ orchestrator_swarm = OrchestratorSwarm(
 peer_swarm = PeerSwarm(
     llm=llm, storage=storage, budget=budget, bus=bus, role_registry=role_registry
 )
+arena = RedVsBlueArena(llm=llm, storage=storage, bus=bus, role_registry=role_registry)
 
 # Connected SSE client queues
 _sse_clients_lock = threading.Lock()
@@ -400,6 +402,8 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
                     if simulate:
                         _run_cinematic_simulation(tenant_id, prompt)
                         reply = "Simulation complete."
+                    elif mode == "arena":
+                        reply = arena.run_duel(prompt)
                     elif mode == "orchestrator":
                         reply = orchestrator_swarm.run(prompt, tenant_id=tenant_id)
                     else:
