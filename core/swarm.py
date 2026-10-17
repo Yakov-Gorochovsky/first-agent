@@ -283,14 +283,30 @@ class OrchestratorSwarm:
         budget: BudgetTracker,
         bus: EventBus,
         role_registry: Optional[RoleRegistry] = None,
+        allowed_roles: Optional[List[str]] = None,
+        directive: str = "",
+        extra_tools: Optional[Dict[str, Callable[..., str]]] = None,
+        extra_schemas: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         self.llm = llm
         self.storage = storage
         self.budget = budget
         self.bus = bus
         self.role_registry = role_registry or RoleRegistry()
+        self.allowed_roles = allowed_roles
+        self.directive = directive.strip()
+        self.extra_tools = extra_tools or {}
+        self.extra_schemas = extra_schemas or []
         self.workers: Dict[str, WorkerAgent] = {}
         self.refresh_workers()
+
+    def _active_role_specs(self) -> List[RoleSpec]:
+        all_specs = self.role_registry.list_roles()
+        if not self.allowed_roles:
+            return all_specs
+        allowed_set = {r.lower().strip() for r in self.allowed_roles}
+        filtered = [s for s in all_specs if s.name in allowed_set]
+        return filtered or all_specs
 
     def _build_worker(self, spec: RoleSpec) -> WorkerAgent:
         return WorkerAgent(
@@ -308,7 +324,7 @@ class OrchestratorSwarm:
         """Rebuild worker instances from the declarative RoleRegistry."""
         self.workers = {
             spec.name: self._build_worker(spec)
-            for spec in self.role_registry.list_roles()
+            for spec in self._active_role_specs()
         }
 
     def run(self, user_input: str, tenant_id: str = "default") -> str:
@@ -344,7 +360,7 @@ class OrchestratorSwarm:
 
         roster_lines = [
             f"- '{s.name}' ({s.title}): {s.instructions} [Tools: {', '.join(s.tool_names)}]"
-            for s in self.role_registry.list_roles()
+            for s in self._active_role_specs()
         ]
         roster_text = "\n".join(roster_lines)
 
@@ -373,20 +389,25 @@ class OrchestratorSwarm:
             },
         }
 
+        orch_tools: Dict[str, Callable[..., str]] = {
+            "delegate_to_worker": delegate_to_worker,
+            "spawn_specialist": spawn_fn,
+            **self.extra_tools,
+        }
+        orch_schemas: List[Dict[str, Any]] = [delegate_schema, spawn_schema, *self.extra_schemas]
+        directive_block = f"\nSWARM MISSION DIRECTIVE:\n{self.directive}\n" if self.directive else ""
+
         orchestrator = WorkerAgent(
             name="orchestrator",
             role="Lead Swarm Coordinator",
-            instructions=f"{CONFIG.orchestrator_prompt}\n\nACTIVE WORKER ROSTER:\n{roster_text}",
+            instructions=f"{CONFIG.orchestrator_prompt}{directive_block}\nACTIVE WORKER ROSTER:\n{roster_text}",
             llm=self.llm,
             storage=self.storage,
             budget=self.budget,
             bus=self.bus,
             tool_names=["remember_fact", "recall_memories"],
-            extra_tools={
-                "delegate_to_worker": delegate_to_worker,
-                "spawn_specialist": spawn_fn,
-            },
-            extra_schemas=[delegate_schema, spawn_schema],
+            extra_tools=orch_tools,
+            extra_schemas=orch_schemas,
         )
 
         past_turns = self.storage.get_session_turns(tenant_id, limit=10)

@@ -57,15 +57,31 @@ class PeerSwarm:
         budget: BudgetTracker,
         bus: EventBus,
         role_registry: Optional[RoleRegistry] = None,
+        allowed_roles: Optional[List[str]] = None,
+        directive: str = "",
+        extra_tools: Optional[Dict[str, Callable[..., str]]] = None,
+        extra_schemas: Optional[List[Dict[str, object]]] = None,
     ) -> None:
         self.llm = llm
         self.storage = storage
         self.budget = budget
         self.bus = bus
         self.role_registry = role_registry or RoleRegistry()
+        self.allowed_roles = allowed_roles
+        self.directive = directive.strip()
+        self.extra_tools = extra_tools or {}
+        self.extra_schemas = extra_schemas or []
         self.nodes: Dict[str, PeerNode] = {}
         self._final_answer: Optional[str] = None
         self.refresh_peers()
+
+    def _active_role_specs(self) -> List[RoleSpec]:
+        all_specs = self.role_registry.list_roles()
+        if not self.allowed_roles:
+            return all_specs
+        allowed_set = {r.lower().strip() for r in self.allowed_roles}
+        filtered = [s for s in all_specs if s.name in allowed_set]
+        return filtered or all_specs
 
     def _inbox_snapshot(self) -> Dict[str, int]:
         return {name: len(node.inbox) for name, node in self.nodes.items()}
@@ -75,7 +91,7 @@ class PeerSwarm:
         old_inboxes = {k: v.inbox for k, v in self.nodes.items()}
         self.nodes.clear()
 
-        specs = self.role_registry.list_roles()
+        specs = self._active_role_specs()
         all_peer_names = ["coordinator"] + [s.name for s in specs]
 
         roster_summary = "\n".join(
@@ -95,12 +111,16 @@ class PeerSwarm:
         spawn_fn, spawn_schema = self.role_registry.make_spawn_specialist_tool(on_spawn=_on_spawn)
         coord_tools, coord_schemas = self._make_peer_comm_tools("coordinator", all_peer_names)
         coord_tools["spawn_specialist"] = spawn_fn
+        coord_tools.update(self.extra_tools)
         coord_schemas.append(spawn_schema)
+        coord_schemas.extend(self.extra_schemas)
+
+        directive_block = f"\nSWARM MISSION DIRECTIVE:\n{self.directive}\n" if self.directive else ""
 
         coord_worker = WorkerAgent(
             name="coordinator",
             role="Mission Router & Synthesizer",
-            instructions=f"{CONFIG.coordinator_prompt}\n\nACTIVE PEER SPECIALISTS:\n{roster_summary}",
+            instructions=f"{CONFIG.coordinator_prompt}{directive_block}\nACTIVE PEER SPECIALISTS:\n{roster_summary}",
             llm=self.llm,
             storage=self.storage,
             budget=self.budget,
@@ -121,15 +141,18 @@ class PeerSwarm:
     def _register_single_specialist(
         self, spec: RoleSpec, existing_inbox: Optional[Deque[PeerMessage]] = None
     ) -> None:
-        all_peer_names = ["coordinator"] + [s.name for s in self.role_registry.list_roles()]
+        all_peer_names = ["coordinator"] + [s.name for s in self._active_role_specs()]
         comm_tools, comm_schemas = self._make_peer_comm_tools(spec.name, all_peer_names)
+        comm_tools.update(self.extra_tools)
+        comm_schemas.extend(self.extra_schemas)
         peer_list_str = ", ".join(p for p in all_peer_names if p != spec.name)
+        directive_block = f"\nSWARM MISSION DIRECTIVE: {self.directive}\n" if self.directive else ""
 
         worker = WorkerAgent(
             name=spec.name,
             role=spec.title,
             instructions=(
-                f"{spec.instructions}\n"
+                f"{spec.instructions}{directive_block}\n"
                 f"You are in a peer network with: [{peer_list_str}].\n"
                 "- Use your tools to complete your part of the mission.\n"
                 "- Then either forward your output to another specialist or 'coordinator' via `send_peer_message`, "

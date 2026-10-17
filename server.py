@@ -21,15 +21,13 @@ import time
 from typing import Any, Dict, List
 from urllib.parse import parse_qs, urlparse
 
-from core.arena import RedVsBlueArena
 from core.budget import BudgetConfig, BudgetTracker
 from core.bus import EventBus, SwarmEvent
 from core.config import CONFIG
 from core.llm import OpenAICompatibleProvider
-from core.peer_swarm import PeerSwarm
 from core.roles import CAPABILITY_BUNDLES, RoleRegistry
 from core.storage import SQLiteStorage, sanitize_tenant_id
-from core.swarm import OrchestratorSwarm
+from core.swarm_manager import SwarmManager
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -39,13 +37,9 @@ storage = SQLiteStorage()
 role_registry = RoleRegistry()
 budget = BudgetTracker(config=BudgetConfig(), bus=bus)
 llm = OpenAICompatibleProvider()
-orchestrator_swarm = OrchestratorSwarm(
-    llm=llm, storage=storage, budget=budget, bus=bus, role_registry=role_registry
+swarm_manager = SwarmManager(
+    storage=storage, bus=bus, role_registry=role_registry, default_llm=llm
 )
-peer_swarm = PeerSwarm(
-    llm=llm, storage=storage, budget=budget, bus=bus, role_registry=role_registry
-)
-arena = RedVsBlueArena(llm=llm, storage=storage, bus=bus, role_registry=role_registry)
 
 # Connected SSE client queues
 _sse_clients_lock = threading.Lock()
@@ -247,12 +241,14 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/api/state":
             qs = parse_qs(parsed.query)
-            tenant_id = sanitize_tenant_id(qs.get("tenant", ["client_a"])[0])
+            default_id = swarm_manager.list_swarms()[0].swarm_id if swarm_manager.list_swarms() else "victim"
+            tenant_id = sanitize_tenant_id(qs.get("tenant", [default_id])[0])
             self._send_json(
                 {
                     "tenant_id": tenant_id,
                     "model": CONFIG.model_name,
                     "endpoint": CONFIG.api_base_url,
+                    "swarms": swarm_manager.list_dicts(),
                     "roles": role_registry.list_dicts(),
                     "capability_bundles": CAPABILITY_BUNDLES,
                     "tenant_memories": storage.get_tenant_memories(tenant_id),
@@ -324,6 +320,39 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             body = {}
 
+        if parsed.path == "/api/swarms":
+            swarm_id = str(body.get("swarm_id", "")).strip()
+            title = str(body.get("title", "")).strip()
+            topology = str(body.get("topology", "peer")).strip().lower()
+            model = str(body.get("model", "")).strip()
+            color = str(body.get("color", "#38bdf8")).strip()
+            roles = body.get("roles", None)
+            allow_cross_swarm = bool(body.get("allow_cross_swarm", False))
+            directive = str(body.get("directive", "")).strip()
+
+            if not swarm_id or not title:
+                self._send_json({"error": "swarm_id and title are required."}, 400)
+                return
+
+            spec = swarm_manager.deploy_swarm(
+                swarm_id=swarm_id,
+                title=title,
+                topology=topology,
+                model=model,
+                color=color,
+                roles=roles if isinstance(roles, list) and roles else None,
+                allow_cross_swarm=allow_cross_swarm,
+                directive=directive,
+            )
+            self._send_json({"swarm": spec.to_dict(role_registry), "swarms": swarm_manager.list_dicts()})
+            return
+
+        if parsed.path == "/api/swarms/delete":
+            swarm_id = str(body.get("swarm_id", "")).strip()
+            deleted = swarm_manager.delete_swarm(swarm_id)
+            self._send_json({"deleted": deleted, "swarms": swarm_manager.list_dicts()})
+            return
+
         if parsed.path == "/api/roles":
             name = str(body.get("name", "")).strip()
             title = str(body.get("title", "")).strip()
@@ -377,8 +406,8 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/run":
             prompt = str(body.get("prompt", "")).strip()
-            tenant_id = sanitize_tenant_id(str(body.get("tenant_id", "client_a")))
-            mode = str(body.get("mode", "peer")).strip().lower()
+            tenant_id = sanitize_tenant_id(str(body.get("tenant_id", "attacker")))
+            mode = str(body.get("mode", "")).strip().lower()
             simulate = bool(body.get("simulate", False))
 
             if not prompt:
@@ -395,25 +424,25 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
                         "mission_start",
                         agent_name="system",
                         tenant_id=tenant_id,
-                        mode=mode,
+                        mode=mode or "peer",
                         prompt=prompt,
                         simulate=simulate,
                     )
                     if simulate:
                         _run_cinematic_simulation(tenant_id, prompt)
                         reply = "Simulation complete."
-                    elif mode == "arena":
-                        reply = arena.run_duel(prompt)
-                    elif mode == "orchestrator":
-                        reply = orchestrator_swarm.run(prompt, tenant_id=tenant_id)
                     else:
-                        reply = peer_swarm.run(prompt, tenant_id=tenant_id)
+                        reply = swarm_manager.run_swarm(
+                            swarm_id=tenant_id,
+                            prompt=prompt,
+                            topology_override=mode if mode in {"peer", "orchestrator"} else None,
+                        )
 
                     bus.emit(
                         "mission_end",
                         agent_name="system",
                         tenant_id=tenant_id,
-                        mode=mode,
+                        mode=mode or "peer",
                         reply=reply,
                     )
                 except Exception as exc:
