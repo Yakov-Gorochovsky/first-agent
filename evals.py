@@ -225,6 +225,17 @@ def eval_peer_swarm_inbox_handoff() -> str:
         return "Coordinator -> Coder -> Critic inbox chain completed in 3 steps (400 tokens)."
 
 
+def eval_framework_abstractions() -> str:
+    """Verify Step 6 LangGraph StateGraph and OpenAI SDK Handoff Runner equivalence."""
+    from frameworks_comparison import demo_langgraph_pattern, demo_openai_sdk_pattern
+
+    lg_state = demo_langgraph_pattern()
+    assert lg_state.get("verified") is True and lg_state.get("result") == 196
+    sdk_out = demo_openai_sdk_pattern()
+    assert "parameterized query" in sdk_out
+    return "LangGraph StateGraph (14^2=196) & OpenAI SDK Handoff chain verified."
+
+
 DETERMINISTIC_SUITE: List[tuple[str, Callable[[], str]]] = [
     ("Budget Step Cap Guardrail", eval_budget_step_guardrail),
     ("Budget Token Cap Guardrail", eval_budget_token_guardrail),
@@ -233,6 +244,7 @@ DETERMINISTIC_SUITE: List[tuple[str, Callable[[], str]]] = [
     ("RoleRegistry & Capability Bundles", eval_role_registry_and_bundles),
     ("Universal Tools & AST Sandbox Safety", eval_universal_tools_sandbox),
     ("PeerSwarm Multi-Hop Inbox Handoff", eval_peer_swarm_inbox_handoff),
+    ("Step 6 Framework Patterns (LangGraph/SDK)", eval_framework_abstractions),
 ]
 
 

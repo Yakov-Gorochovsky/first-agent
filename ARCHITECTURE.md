@@ -116,6 +116,7 @@ flowchart TB
 | [`core/peer_swarm.py`](core/peer_swarm.py) | Step 3 Decentralized Inbox Network | `PeerMessage`, `PeerNode`, `PeerSwarm.run()` |
 | [`agent.py`](agent.py) | Interactive Terminal CLI for both topologies | `main()`, `/roles`, `/add-role`, `/mode`, `/tenant`, `/memory`, `/skills` |
 | [`evals.py`](evals.py) | Step 5 Automated Regression & Benchmark Suite | `run_eval_suite()`, `run_live_llm_eval()`, `ScriptedMockLLM` |
+| [`frameworks_comparison.py`](frameworks_comparison.py) | Step 6 Framework Abstractions (LangGraph & OpenAI SDK) | `StateGraph`, `SDKAgent`, `SDKRunner`, side-by-side comparison |
 | [`server.py`](server.py) | Zero-dependency HTTP + Live SSE streaming server | `SwarmRequestHandler`, `/api/events`, `/api/roles`, `/api/evals`, `/api/run` |
 | [`static/index.html`](static/index.html) | Sci-Fi Mission Control Web Dashboard | Dynamic orbital Canvas graph, `+ New Role` modal, `Run Evals`, Live SSE feed |
 
@@ -150,3 +151,19 @@ Because [`OpenAICompatibleProvider`](core/llm.py) uses the standard OpenAI chat/
    API_KEY=AIza_your_key_here
    MODEL_NAME=gemini-2.5-flash
    ```
+
+---
+
+## 5. Step 6: What Frameworks Abstract Away ([`frameworks_comparison.py`](frameworks_comparison.py))
+
+Because we built the entire harness from first principles in Steps 1–5, every major AI agent framework maps 1-to-1 to code you already own in this repository:
+
+| Framework Concept | Your Custom Implementation | Framework Equivalent |
+| :--- | :--- | :--- |
+| **Single-Agent Tool Loop** | [`WorkerAgent.execute_task()`](core/swarm.py) | LangChain `AgentExecutor` / Claude Agent SDK |
+| **Hub-and-Spoke Delegation** | [`OrchestratorSwarm`](core/swarm.py) (`delegate_to_worker`) | Anthropic Subagents / CrewAI Hierarchical |
+| **Graph Nodes & State Routing** | [`PeerSwarm`](core/peer_swarm.py) + [`StateGraph`](frameworks_comparison.py) | **LangGraph** (`StateGraph`, `add_node`, `add_conditional_edges`) |
+| **Peer Handoffs** | `yield_on_tools=["send_peer_message"]` + [`SDKRunner`](frameworks_comparison.py) | **OpenAI Agents SDK** (`Agent(..., handoffs=[...])`, `Runner.run_sync`) |
+| **Persistence & Checkpointing** | [`SQLiteStorage`](core/storage.py) + [`PrivacyAirlock`](core/storage.py) | LangGraph `SqliteSaver` + `BaseStore` |
+| **Observability & Tracing** | [`EventBus`](core/bus.py) + [`server.py`](server.py) SSE Stream | LangSmith / Langfuse / Arize Phoenix |
+
