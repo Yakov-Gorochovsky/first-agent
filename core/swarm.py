@@ -170,15 +170,25 @@ class WorkerAgent:
 
         self.bus.emit("agent_start", agent_name=self.name, tenant_id=tenant_id, task=task_prompt)
         last_error_tool: Optional[tuple[str, str]] = None
+        collected_observations: List[str] = []
+        local_turn = 0
 
         while True:
+            local_turn += 1
             tools_map, schemas = self._get_tools_and_schemas(tenant_id)
+            # If a specialist worker already ran 2 rounds of tools (e.g. web_search), force synthesis on round 3
+            active_schemas: Optional[List[Dict[str, Any]]] = schemas
+            if self.name not in ("coordinator", "orchestrator") and local_turn >= 3 and collected_observations:
+                active_schemas = None
+
             self.budget.check_and_increment_step(self.name)
-            resp = self.llm.generate(messages=messages, tools=schemas)
+            resp = self.llm.generate(messages=messages, tools=active_schemas)
             self.budget.record_tokens(self.name, resp.prompt_tokens, resp.completion_tokens)
 
             if not resp.tool_calls:
                 answer = resp.content.strip()
+                if not answer and collected_observations:
+                    answer = "\n\n".join(collected_observations)
                 self.bus.emit(
                     "agent_finish",
                     agent_name=self.name,
@@ -218,6 +228,8 @@ class WorkerAgent:
                         raise
                     except Exception as exc:
                         result = f"Error running '{tc.name}': {exc}"
+
+                collected_observations.append(f"[{tc.name}]: {result[:600]}")
 
                 # Auto-detect error recovery and distill a sanitized Global Skill!
                 is_error = result.startswith("Error") or "STDERR:\nTraceback" in result

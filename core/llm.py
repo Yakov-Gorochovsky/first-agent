@@ -172,8 +172,8 @@ class OpenAICompatibleProvider:
             "stream": False,
             "options": {
                 "temperature": CONFIG.react_temperature,
-                "num_ctx": 2048,
-                "num_predict": 256,
+                "num_ctx": 4096,
+                "num_predict": 512,
             },
         }
         if tools:
@@ -186,10 +186,17 @@ class OpenAICompatibleProvider:
         p_toks = int(data.get("prompt_eval_count", 0) or 0)
         c_toks = int(data.get("eval_count", 0) or 0)
 
-        if not msg.get("content") and not msg.get("tool_calls") and payload.get("think") is False:
-            payload["think"] = True
-            payload["options"]["num_predict"] = 384
-            resp = requests.post(self._ollama_native_chat_url(), json=payload, timeout=120)
+        if not msg.get("content") and not msg.get("tool_calls"):
+            # Force a direct text synthesis without tool schemas (keeping think=False for speed)
+            retry_payload = dict(payload)
+            retry_payload.pop("tools", None)
+            retry_payload["messages"] = list(norm_messages) + [
+                {
+                    "role": "user",
+                    "content": "Summarize your findings clearly and concisely based on the above results.",
+                }
+            ]
+            resp = requests.post(self._ollama_native_chat_url(), json=retry_payload, timeout=120)
             resp.raise_for_status()
             data = resp.json()
             msg = data.get("message", {})
