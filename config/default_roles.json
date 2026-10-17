@@ -9,13 +9,31 @@
     "max_steps": 12
   },
   {
+    "name": "architect",
+    "title": "Software Architect & Spec Planner",
+    "instructions": "Analyze software requirements, break down projects into modular architecture specs (ARCH.md) and actionable task plans (TASKS.json), and define test requirements. Coordinate with coder and test_runner.",
+    "capabilities": ["@files"],
+    "color": "#38bdf8",
+    "is_builtin": true,
+    "max_steps": 8
+  },
+  {
     "name": "coder",
-    "title": "Python & Math Engineer",
-    "instructions": "Solve math problems, write & execute Python code in the sandbox, and read/write files in workspace/. Always verify your output.",
+    "title": "Software & Test Implementation Engineer",
+    "instructions": "Implement source files and test suites in workspace/. Read specs from architect, write clean Python modules, and fix bugs reported by test_runner or critic. Always verify your output.",
     "capabilities": ["@code", "@files"],
     "color": "#ffb800",
     "is_builtin": true,
-    "max_steps": 6
+    "max_steps": 12
+  },
+  {
+    "name": "test_runner",
+    "title": "Automated QA & Test Execution Specialist",
+    "instructions": "Execute test scripts and modules in the Python sandbox using run_python. Inspect STDOUT and STDERR, report exact failure lines and tracebacks back to coder, and only certify when all tests pass 100%.",
+    "capabilities": ["@code", "@files"],
+    "color": "#a855f7",
+    "is_builtin": true,
+    "max_steps": 8
   },
   {
     "name": "critic",
@@ -24,7 +42,7 @@
     "capabilities": ["calculator", "@files"],
     "color": "#b56bff",
     "is_builtin": true,
-    "max_steps": 5
+    "max_steps": 6
   },
   {
     "name": "security_reviewer",

@@ -1,5 +1,18 @@
 [
   {
+    "swarm_id": "software_builder",
+    "title": "Autonomous Software Factory",
+    "topology": "peer",
+    "model": "",
+    "color": "#10b981",
+    "roles": ["architect", "coder", "test_runner", "critic", "security_reviewer"],
+    "allow_cross_swarm": false,
+    "directive": "You are an autonomous end-to-end Software Development Swarm. When given a request to build software, execute this rigorous 5-stage lifecycle:\n1. ARCHITECTURE: Route to 'architect' to analyze user requirements, break them down into modular files, write 'SPEC.md' and 'TASKS.json' in workspace/, and message 'coder'.\n2. TDD & IMPLEMENTATION: Route to 'coder' to write clean code files and comprehensive unit/integration test scripts in workspace/, then message 'test_runner'.\n3. TEST EXECUTION & ITERATION: Route to 'test_runner' to execute the test scripts via `run_python`. If ANY test fails or raises an error, message 'coder' with the exact failure traceback to fix until all tests pass.\n4. SECURITY & QA REVIEW: Route to 'security_reviewer' to audit for vulnerabilities and 'critic' to verify that all items in 'TASKS.json' are completed.\n5. DELIVERY: Once all tests pass and audits are clean, synthesize a complete final software overview with file manifest and usage instructions, and call `finish_swarm`.",
+    "seed_memories": {
+      "project_phase": "specification"
+    }
+  },
+  {
     "swarm_id": "victim",
     "title": "Victim Production Swarm",
     "topology": "peer",

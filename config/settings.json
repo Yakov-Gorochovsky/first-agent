@@ -8,11 +8,11 @@
     "react_temperature": 0.1
   },
   "budget": {
-    "max_swarm_steps": 32,
-    "max_coordinator_steps": 12,
-    "max_steps_per_agent": 6,
-    "max_total_tokens": 36000,
-    "max_wall_seconds": 600.0
+    "max_swarm_steps": 48,
+    "max_coordinator_steps": 16,
+    "max_steps_per_agent": 12,
+    "max_total_tokens": 60000,
+    "max_wall_seconds": 900.0
   },
   "storage": {
     "db_filename": "swarm.db",
