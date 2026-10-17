@@ -748,6 +748,10 @@
         <i data-lucide="zap"></i> Simulate Flow
       </button>
 
+      <button class="btn" onclick="runEvals()">
+        <i data-lucide="check-circle-2"></i> Run Evals
+      </button>
+
       <button class="btn" onclick="testPrivacyAirlock()">
         <i data-lucide="shield-check"></i> Test Airlock
       </button>
@@ -1335,6 +1339,15 @@
           problem: `Client ${tenant_id} user admin@${tenant_id}.com with key sk-987654321abcd failed scraping https://private.${tenant_id}.org:9443`,
           solution: 'Always set a custom User-Agent header and retry with exponential backoff.',
         }),
+      });
+    }
+
+    async function runEvals() {
+      spawnPacket('coordinator', 'airlock', '#10b981', 'EVALS');
+      await fetch('/api/evals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
       });
     }
 

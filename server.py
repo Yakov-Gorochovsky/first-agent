@@ -351,6 +351,28 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"deleted": deleted, "roles": role_registry.list_dicts()})
             return
 
+        if parsed.path == "/api/evals":
+            from evals import run_eval_suite
+
+            scorecard = run_eval_suite(bus=bus)
+            lines = [
+                f"{'✅' if r['status'] == 'PASS' else '❌'} {r['name']} ({r['ms']}ms) — {r['detail']}"
+                for r in scorecard["results"]
+            ]
+            summary_text = (
+                f"STEP 5 EVALUATION & REGRESSION SCORECARD: {scorecard['passed']}/{scorecard['total']} "
+                f"Passed ({scorecard['pass_rate']}) in {scorecard['total_ms']}ms\n\n"
+                + "\n".join(lines)
+            )
+            bus.emit(
+                "swarm_complete",
+                agent_name="critic",
+                tenant_id="system",
+                answer=summary_text,
+            )
+            self._send_json(scorecard)
+            return
+
         if parsed.path == "/api/run":
             prompt = str(body.get("prompt", "")).strip()
             tenant_id = str(body.get("tenant_id", "client_a")).strip() or "client_a"

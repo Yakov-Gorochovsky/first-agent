@@ -115,8 +115,9 @@ flowchart TB
 | [`core/swarm.py`](core/swarm.py) | Worker loop + Step 2 Hub-and-Spoke Swarm | `WorkerAgent.execute_task()`, `OrchestratorSwarm.run()` |
 | [`core/peer_swarm.py`](core/peer_swarm.py) | Step 3 Decentralized Inbox Network | `PeerMessage`, `PeerNode`, `PeerSwarm.run()` |
 | [`agent.py`](agent.py) | Interactive Terminal CLI for both topologies | `main()`, `/roles`, `/add-role`, `/mode`, `/tenant`, `/memory`, `/skills` |
-| [`server.py`](server.py) | Zero-dependency HTTP + Live SSE streaming server | `SwarmRequestHandler`, `/api/events`, `/api/roles`, `/api/run`, `/api/state` |
-| [`static/index.html`](static/index.html) | Sci-Fi Mission Control Web Dashboard | Dynamic orbital Canvas graph, `+ New Agent Role` modal, Live SSE feed |
+| [`evals.py`](evals.py) | Step 5 Automated Regression & Benchmark Suite | `run_eval_suite()`, `run_live_llm_eval()`, `ScriptedMockLLM` |
+| [`server.py`](server.py) | Zero-dependency HTTP + Live SSE streaming server | `SwarmRequestHandler`, `/api/events`, `/api/roles`, `/api/evals`, `/api/run` |
+| [`static/index.html`](static/index.html) | Sci-Fi Mission Control Web Dashboard | Dynamic orbital Canvas graph, `+ New Role` modal, `Run Evals`, Live SSE feed |
 
 ---
 
