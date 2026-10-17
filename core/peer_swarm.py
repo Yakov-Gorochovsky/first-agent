@@ -147,6 +147,9 @@ class PeerSwarm:
     ) -> None:
         all_peer_names = ["coordinator"] + [s.name for s in self._active_role_specs()]
         comm_tools, comm_schemas = self._make_peer_comm_tools(spec.name, all_peer_names)
+        if self.extra_tools:
+            comm_tools.update(self.extra_tools)
+            comm_schemas.extend(self.extra_schemas)
         peer_list_str = ", ".join(p for p in all_peer_names if p != spec.name)
         directive_block = f"\nSWARM MISSION DIRECTIVE: {self.directive}\n" if self.directive else ""
 
@@ -280,10 +283,14 @@ class PeerSwarm:
         try:
             while self._final_answer is None:
                 active_node: Optional[PeerNode] = None
-                for node in self.nodes.values():
-                    if node.inbox:
+                # Schedule specialist peers before coordinator so multi-peer fan-outs
+                # complete all specialist work before coordinator synthesizes the batch.
+                for name, node in self.nodes.items():
+                    if name != "coordinator" and node.inbox:
                         active_node = node
                         break
+                if active_node is None and self.nodes["coordinator"].inbox:
+                    active_node = self.nodes["coordinator"]
 
                 if active_node is None:
                     break
@@ -315,8 +322,13 @@ class PeerSwarm:
                     break
 
                 any_pending = any(len(n.inbox) > 0 for n in self.nodes.values())
-                if not any_pending and last_output:
-                    if active_node.name != "coordinator":
+                if active_node.name == "coordinator":
+                    if not any_pending and last_output:
+                        self._final_answer = last_output
+                        break
+                elif last_output:
+                    if not any_pending and not self.extra_tools:
+                        # Single-specialist fast-path for standard swarms
                         self.bus.emit(
                             "peer_message",
                             agent_name=active_node.name,
@@ -326,8 +338,26 @@ class PeerSwarm:
                             message=last_output,
                             inboxes=self._inbox_snapshot(),
                         )
-                    self._final_answer = last_output
-                    break
+                        self._final_answer = last_output
+                        break
+                    else:
+                        # Multi-specialist fan-out or cross-swarm bridge: route output to coordinator inbox
+                        self.nodes["coordinator"].inbox.append(
+                            PeerMessage(
+                                sender=active_node.name,
+                                recipient="coordinator",
+                                content=last_output,
+                            )
+                        )
+                        self.bus.emit(
+                            "peer_message",
+                            agent_name=active_node.name,
+                            tenant_id=tenant_id,
+                            from_agent=active_node.name,
+                            to_agent="coordinator",
+                            message=last_output,
+                            inboxes=self._inbox_snapshot(),
+                        )
 
             final = self._final_answer or last_output or "Swarm completed with no output."
             self.storage.append_session_turn(tenant_id, "user", user_input)
