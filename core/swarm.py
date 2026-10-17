@@ -156,7 +156,6 @@ class WorkerAgent:
         conversation_history: Optional[List[Dict[str, str]]] = None,
     ) -> str:
         """Run the Think -> Act -> Observe loop for this agent under budget constraints."""
-        tools_map, schemas = self._get_tools_and_schemas(tenant_id)
         include_skills = self.name not in ("coordinator", "orchestrator")
         system_prompt = (
             f"You are '{self.name}' ({self.role}).\n"
@@ -173,6 +172,7 @@ class WorkerAgent:
         last_error_tool: Optional[tuple[str, str]] = None
 
         while True:
+            tools_map, schemas = self._get_tools_and_schemas(tenant_id)
             self.budget.check_and_increment_step(self.name)
             resp = self.llm.generate(messages=messages, tools=schemas)
             self.budget.record_tokens(self.name, resp.prompt_tokens, resp.completion_tokens)

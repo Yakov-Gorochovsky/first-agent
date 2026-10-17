@@ -100,7 +100,20 @@ class PeerSwarm:
         )
 
         def _on_spawn(new_spec: RoleSpec) -> None:
+            if self.allowed_roles is not None and new_spec.name not in self.allowed_roles:
+                self.allowed_roles.append(new_spec.name)
             self._register_single_specialist(new_spec)
+            # Update coordinator's peer communication tools & schemas with the new peer
+            updated_peers = ["coordinator"] + [s.name for s in self._active_role_specs()]
+            new_comm_tools, new_comm_schemas = self._make_peer_comm_tools("coordinator", updated_peers)
+            new_comm_tools["spawn_specialist"] = spawn_fn
+            new_comm_tools.update(self.extra_tools)
+            new_comm_schemas.append(spawn_schema)
+            new_comm_schemas.extend(self.extra_schemas)
+            if "coordinator" in self.nodes:
+                self.nodes["coordinator"].agent.extra_tools = new_comm_tools
+                self.nodes["coordinator"].agent.extra_schemas = new_comm_schemas
+
             self.bus.emit(
                 "role_created",
                 agent_name="coordinator",
@@ -112,6 +125,7 @@ class PeerSwarm:
         coord_tools, coord_schemas = self._make_peer_comm_tools("coordinator", all_peer_names)
         coord_tools["spawn_specialist"] = spawn_fn
         coord_tools.update(self.extra_tools)
+        coord_schemas.append(spawn_schema)
         coord_schemas.extend(self.extra_schemas)
         self._spawn_schema = spawn_schema
 
@@ -123,7 +137,7 @@ class PeerSwarm:
             instructions=(
                 f"{CONFIG.coordinator_prompt}{directive_block}\n"
                 f"ACTIVE PEER SPECIALISTS:\n{roster_summary}\n"
-                "IMPORTANT: Always call `send_peer_message` to route the user's task to the best specialist."
+                "IMPORTANT: Always call `send_peer_message` to route tasks to specialists, or `spawn_specialist` to create new specialist roles when needed."
             ),
             llm=self.llm,
             storage=self.storage,

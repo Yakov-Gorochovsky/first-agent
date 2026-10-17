@@ -86,6 +86,17 @@ class SwarmManager:
         self._deployments: Dict[str, SwarmDeploymentSpec] = {}
         self._last_budgets: Dict[str, BudgetTracker] = {}
         self._load()
+        self.bus.subscribe(self._on_bus_event)
+
+    def _on_bus_event(self, event: Any) -> None:
+        if getattr(event, "event_type", "") == "role_created":
+            s_id = sanitize_tenant_id(str(getattr(event, "tenant_id", "")).lower())
+            role_data = (getattr(event, "data", None) or {}).get("role") or {}
+            role_name = str(role_data.get("name", "")).strip().lower()
+            spec = self._deployments.get(s_id)
+            if spec and role_name and role_name not in spec.roles:
+                spec.roles.append(role_name)
+                self._save()
 
     def _load_default_seed(self) -> List[Dict[str, Any]]:
         if DEFAULT_SWARMS_CONFIG_PATH.exists():
