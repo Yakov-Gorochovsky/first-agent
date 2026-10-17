@@ -13,7 +13,13 @@ Uses loosely coupled interfaces from `core/`:
 
 import argparse
 import os
+import sys
 from dotenv import load_dotenv
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from core.budget import BudgetConfig, BudgetTracker
 from core.bus import EventBus, SwarmEvent
