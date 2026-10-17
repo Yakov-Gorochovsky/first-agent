@@ -278,7 +278,29 @@ def eval_security_hardening() -> str:
     finally:
         (WORKSPACE_DIR / "outside.txt").unlink(missing_ok=True)
 
-    return "SSRF blocked (127.0.0.1 & 169.254.169.254), env secrets scrubbed, exponent DoS & .env write blocked."
+    # 5. run_python subprocess network SSRF firewall (HTTP & raw socket)
+    py_http_ssrf = run_python(
+        "import requests\n"
+        "try:\n"
+        "    requests.get('http://127.0.0.1:8080', timeout=1.0)\n"
+        "    print('FAIL_HTTP_ALLOWED')\n"
+        "except Exception as e:\n"
+        "    print('HTTP_BLOCKED:', type(e).__name__)\n"
+    )
+    assert "HTTP_BLOCKED" in py_http_ssrf and "FAIL_HTTP_ALLOWED" not in py_http_ssrf, py_http_ssrf
+
+    py_sock_ssrf = run_python(
+        "import socket\n"
+        "try:\n"
+        "    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+        "    s.connect(('127.0.0.1', 8080))\n"
+        "    print('FAIL_SOCK_ALLOWED')\n"
+        "except PermissionError as e:\n"
+        "    print('SOCK_BLOCKED:', type(e).__name__)\n"
+    )
+    assert "SOCK_BLOCKED" in py_sock_ssrf and "FAIL_SOCK_ALLOWED" not in py_sock_ssrf, py_sock_ssrf
+
+    return "SSRF blocked (fetch_url & run_python subprocess), env secrets scrubbed, exponent DoS & .env write blocked."
 
 
 def eval_multi_swarm_deployment() -> str:

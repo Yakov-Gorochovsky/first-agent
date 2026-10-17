@@ -8,6 +8,8 @@ Security Controls Built In:
 3. Secret-Scrubbed Python Sandbox (`_get_sandbox_env` strips API_KEY/TOKEN/SECRET env vars
    before launching the child Python process).
 4. Strict Path Traversal Prevention (`_safe_workspace_path` confines all file I/O to `workspace/`).
+5. Subprocess Network Confinement & SSRF Firewall in `run_python` (`_SUBPROCESS_SANDBOX_BOOTSTRAP`
+   blocks outbound loopback, RFC-1918 private IPs, and link-local metadata connections inside child processes).
 """
 
 import ast
@@ -288,11 +290,79 @@ def fetch_url(url: str) -> str:
         return f"Error fetching URL '{url}': {exc}"
 
 
-def run_python(code: str) -> str:
-    """Execute Python code in a secret-scrubbed subprocess inside workspace/."""
+_SUBPROCESS_SANDBOX_BOOTSTRAP = '''
+import socket
+import ipaddress
+
+_orig_connect = socket.socket.connect
+_orig_connect_ex = socket.socket.connect_ex
+
+def _check_sandbox_addr(address):
     try:
+        if isinstance(address, tuple) and len(address) >= 2:
+            host, port = address[0], address[1]
+        else:
+            return
+        if not host:
+            return
+        host_str = str(host).strip().lower()
+        if host_str in {"localhost", "0.0.0.0", "::1", "127.0.0.1", "169.254.169.254"}:
+            raise PermissionError(f"SSRF Protection: Outbound connection to '{host}:{port}' is blocked by sandbox policy.")
+        try:
+            ip = ipaddress.ip_address(host_str)
+            if (
+                ip.is_loopback
+                or ip.is_private
+                or ip.is_link_local
+                or ip.is_reserved
+                or ip.is_multicast
+                or ip.is_unspecified
+            ):
+                raise PermissionError(f"SSRF Protection: Outbound connection to non-public IP ({ip}:{port}) is blocked.")
+        except ValueError:
+            try:
+                for entry in socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP):
+                    target_ip = ipaddress.ip_address(entry[4][0])
+                    if (
+                        target_ip.is_loopback
+                        or target_ip.is_private
+                        or target_ip.is_link_local
+                        or target_ip.is_reserved
+                        or target_ip.is_multicast
+                        or target_ip.is_unspecified
+                    ):
+                        raise PermissionError(
+                            f"SSRF Protection: Host '{host}' resolves to non-public IP ({target_ip}:{port}) and is blocked."
+                        )
+            except socket.gaierror:
+                pass
+    except PermissionError:
+        raise
+    except Exception:
+        pass
+
+def _guarded_connect(self, address):
+    _check_sandbox_addr(address)
+    return _orig_connect(self, address)
+
+def _guarded_connect_ex(self, address):
+    _check_sandbox_addr(address)
+    return _orig_connect_ex(self, address)
+
+socket.socket.connect = _guarded_connect
+socket.socket.connect_ex = _guarded_connect_ex
+'''
+
+
+def run_python(code: str) -> str:
+    """Execute Python code in a secret-scrubbed, network-confined subprocess inside workspace/."""
+    try:
+        sandboxed_script = (
+            f"{_SUBPROCESS_SANDBOX_BOOTSTRAP}\n"
+            f"exec(compile({repr(code)}, '<sandbox>', 'exec'), globals())\n"
+        )
         completed = subprocess.run(
-            [sys.executable, "-c", code],
+            [sys.executable, "-c", sandboxed_script],
             cwd=str(WORKSPACE_DIR),
             env=_get_sandbox_env(),
             capture_output=True,

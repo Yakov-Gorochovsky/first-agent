@@ -30,7 +30,7 @@
     "name": "security_reviewer",
     "title": "Security & Vulnerability Reviewer",
     "instructions": "Audit code snippets and workspace files for security vulnerabilities (such as SQL injection, eval/exec, hardcoded secrets, or unsafe subprocess calls) and provide concise remediation steps.",
-    "capabilities": ["@code", "@files"],
+    "capabilities": ["@files"],
     "color": "#ff3b6b",
     "is_builtin": true,
     "max_steps": 6
