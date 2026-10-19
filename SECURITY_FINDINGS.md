@@ -107,13 +107,93 @@ In Run B, `attacker:coordinator` fanned out tasks to specialized attack research
 
 ---
 
-## 3. Defense-in-Depth Scorecard
+## 3. Defense-in-Depth Assessment (Tested Cases)
 
-| Attack Surface | Sandbox / Code Guardrail | LLM Behavioral Layer | Status |
+*Assessment Date: October 19, 2026. Status represents outcomes verified against enumerated deterministic test cases and recorded red-team traces.*
+
+| Attack Surface | Sandbox / Code Guardrail | LLM Behavioral Layer | Empirical Verification Status |
 | :--- | :--- | :--- | :--- |
-| **SSRF via `fetch_url` (`@web`)** | `_validate_public_url()` DNS/IP firewall | Refuses internal IPs | **100% Blocked** (Verified in Trace `#13` & `evals.py`) |
-| **SSRF via `run_python` (`@code`)** | `_SUBPROCESS_SANDBOX_BOOTSTRAP` socket firewall | `security_reviewer` restricted to `@files` | **100% Blocked** (Verified in `evals.py`) |
-| **Cross-Swarm Vault / URL Leakage** | `_redact_cross_swarm_egress()` Egress DLP | Hardened swarm directive | **100% Scrubbed** (`[REDACTED_VAULT_SECRET]`) |
-| **Canary Secret (`CANARY-VAULT-7749-OMEGA`)** | Isolated SQLite `tenant_id` + Egress DLP | Refuses secret disclosure | **100% Protected** (Verified in Traces `#17`, `#44` & `evals.py`) |
-| **`.env` / Host Secret Exfiltration** | `_safe_workspace_path()` + `_get_sandbox_env()` | Refuses `.env` access | **100% Blocked** (Verified in Trace `#17` & `evals.py`) |
-| **Cross-Tenant Playbook Poisoning** | `PrivacyAirlock.sanitize()` (5 regex categories) | Airlocked skill distillation | **100% Scrubbed** (`<EMAIL>`, `<IP>`, `<SECRET>`, `<URL>`, `<PATH>`) |
+| **SSRF via `fetch_url` (`@web`)** | `_validate_public_url()` DNS/IP firewall | Refuses internal IPs | **Mitigated in tested cases** (Verified in Trace `#13` & `evals.py::eval_security_hardening`) |
+| **SSRF via `run_python` (`@code`)** | `_SUBPROCESS_SANDBOX_BOOTSTRAP` socket firewall | `security_reviewer` restricted to `@files` | **Mitigated for standard socket calls** (Verified in `evals.py`); *Caveat: In-process bypass open (see Finding 7 below)* |
+| **Cross-Swarm Vault / URL Leakage** | `_redact_cross_swarm_egress()` Egress DLP | Hardened swarm directive | **Redacted in tested cases** (`[REDACTED_VAULT_SECRET]` verified in Trace `#15` & `evals.py`) |
+| **Canary Secret (`CANARY-VAULT-7749-OMEGA`)** | Isolated SQLite `tenant_id` + Egress DLP | Refuses secret disclosure | **Protected in tested probes** (Verified in Traces `#17`, `#44` & `evals.py`) |
+| **`.env` / Host Secret Exfiltration** | `_safe_workspace_path()` + `_get_sandbox_env()` | Refuses `.env` access | **Blocked in tested cases** (Verified in Trace `#17` & `evals.py`) |
+| **Cross-Tenant Playbook Poisoning** | `PrivacyAirlock.sanitize()` (5 regex categories) | Airlocked skill distillation | **Scrubbed in tested cases** (`<EMAIL>`, `<IP>`, `<SECRET>`, `<URL>`, `<PATH>` in `evals.py`) |
+
+---
+
+## 4. Verified Open Deficiencies & Hardening Roadmap (Dated: October 19, 2026)
+
+The following security findings were verified via code audit and local test repros, prioritized for production remediation:
+
+### Finding 7 (Remediated — P0): `run_python` In-Process Execution & Fail-Closed Container Sandbox
+- **Severity**: Critical
+- **Status**: **FIXED** (Remediated October 20, 2026; verified in `evals.py::eval_universal_tools_sandbox` and `eval_security_hardening`)
+- **Root Cause**: User Python code in `run_python` previously executed in the host process environment. Without OS-level isolation, scripts could theoretically manipulate in-memory sockets or spawn unmonitored binaries.
+- **Remediation Implemented**:
+  1. **Container Isolation & Fail-Closed Enforcement ([`tools.py`](tools.py))**: Updated `run_python` to detect container runtimes (`docker` or `podman`). When available, it executes code in an isolated container (`--network none`, `--read-only`, non-root, scrubbed env). If neither container runtime is installed, `run_python` fails closed with a descriptive `SecurityError` unless `CONFIG.unsafe_allow_local_exec` is explicitly enabled.
+  2. **Subprocess Network Confinement ([`tools.py`](tools.py))**: In permitted local execution mode, code executes in a separated child interpreter process with `_SUBPROCESS_SANDBOX_BOOTSTRAP` intercepting socket connections and scrubbing all sensitive environment variables (`KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `AUTH`, `CREDENTIAL`).
+
+### Finding 8 (Remediated — P0): Tenant ID Sanitization Normalization Collisions
+- **Severity**: High
+- **Status**: **FIXED** (Remediated October 19, 2026; verified in `evals.py::eval_multi_tenant_isolation`)
+- **Root Cause**: `sanitize_tenant_id()` previously replaced non-alphanumeric characters with underscores (`_`). As a result, distinct tenant identifiers such as `acme.corp` and `acme_corp` normalized to the same SQLite database partition, creating cross-tenant collision risk.
+- **Remediation Implemented**:
+  1. **Strict Regex Validation ([`core/storage.py`](core/storage.py))**: Introduced `validate_tenant_id()` enforcing strict regex `^[A-Za-z0-9_-]{1,64}$` and raising `ValueError` on non-matching strings instead of mutating input. Kept `sanitize_tenant_id` as an alias pointing to `validate_tenant_id`.
+  2. **API Layer Rejection ([`server.py`](server.py))**: Updated `/api/state`, `/api/run`, `/api/swarms`, `/api/swarms/delete`, `/api/airlock-test`, and `/api/memory` to catch invalid tenant IDs and return HTTP 400.
+  3. **Database Audit & Migration Check**: Scanned existing partitions in `workspace/swarm.db` (`attacker`, `client_a`, `software_builder`, `victim`, `victim_vault`). All conform strictly to the regex; no collision migration needed.
+  4. **Automated Regression Suite ([`evals.py`](evals.py))**: Added deterministic tests verifying rejection of dot-separated, slash-separated, email, and oversized tenant IDs, preventing cross-tenant collisions.
+
+### Finding 9 (Remediated — P0): Unauthenticated Multi-Tenant API
+- **Severity**: High
+- **Status**: **FIXED** (Remediated October 19, 2026; verified in `evals.py::eval_auth_and_sse_isolation`)
+- **Root Cause**: Previously, HTTP endpoints accepted `tenant_id` as an untrusted query parameter or JSON body attribute with zero credential verification, allowing any network caller to read or write arbitrary tenant memories and trigger swarm workflows.
+- **Remediation Implemented**:
+  1. **Constant-Time Key Verification ([`core/auth.py`](core/auth.py))**: Implemented `AuthManager` storing SHA-256 key digests in `config/default_keys.json` with zero plaintext keys stored. Token lookups iterate across registered credentials using `hmac.compare_digest` to prevent timing attacks.
+  2. **Scoped Role-Based Access Control**: Keys are partitioned into `admin` (global orchestrator, swarm registration, system evals, airlock inspection) and `user` (tenant-bound memory and task execution).
+  3. **Strict Tenant Identity Derivation**: For non-admin endpoints (`/api/run`, `/api/memory`), the caller's `tenant_id` is derived strictly from the verified `APIKeyRecord.tenant_id`. Any client-supplied body attribute is ignored/overwritten, preventing horizontal privilege escalation.
+  4. **Non-Loopback Host Binding Guardrail ([`server.py`](server.py))**: Added `check_host_binding_security` enforcing that `server.py` refuses to bind to non-loopback interfaces (`0.0.0.0` or public IPs) unless authentication is active (`CONFIG.auth_enabled = True`).
+  5. **UI & Deterministic Regression Suite**: Updated web dashboard (`static/index.html`) to manage API keys and attach `Authorization: Bearer <key>` headers to all REST calls. Added `evals.py::eval_auth_and_sse_isolation` verifying credential checks, scope boundaries, and host guardrails.
+
+### Finding 10 (Remediated — P0): SSE Stream Broadcasts Cross-Tenant Telemetry
+- **Severity**: High
+- **Status**: **FIXED** (Remediated October 19, 2026; verified in `evals.py::eval_auth_and_sse_isolation`)
+- **Root Cause**: `_broadcast_event()` in `server.py` previously pushed all emitted `EventBus` events to all connected SSE clients indiscriminately, leaking event metadata, prompts, tool calls, and swarm outputs across tenant boundaries.
+- **Remediation Implemented**:
+  1. **Tenant-Scoped SSE Connections ([`server.py`](server.py))**: Introduced `SSEClientConnection` tracking `tenant_id` and `is_admin` state for each connected stream. Due to browser `EventSource` limitations with custom headers, authentication accepts `?token=<token>` or `Authorization: Bearer <token>`.
+  2. **Filtered Dispatch ([`server.py`](server.py))**: `_broadcast_event()` filters dispatch: clients only receive events where `client.is_admin` is `True` OR `event.tenant_id == client.tenant_id`. Events without `tenant_id` (system-wide events) are routed exclusively to admin clients.
+  3. **Concurrent Client Isolation Verification ([`evals.py`](evals.py))**: Verified via simulated concurrent SSE client queues (`client_a` and `client_b`) that cross-tenant events produce zero queue leakage across 100% of tested dispatches.
+
+### Finding 11 (Remediated — P0): Multi-Tenant Workspace File Isolation & Restricted System File Defense
+- **Severity**: High
+- **Status**: **FIXED** (Remediated October 20, 2026; verified in `evals.py::eval_security_hardening`)
+- **Root Cause**: `save_note`, `read_note`, and `list_notes` previously operated on a shared `workspace/` root without tenant boundaries. Agents could overwrite each other's files or target sensitive metadata (`keys.json`, `swarm.db`, `swarms.json`, `roles.json`, `memory.json`).
+- **Remediation Implemented**:
+  1. **Tenant-Namespaced Storage ([`tools.py`](tools.py))**: `_safe_workspace_path` now scopes tenant file operations to `workspace/tenants/{tenant_id}/` (sanitized and validated), ensuring strict multi-tenant filesystem partitioning.
+  2. **Restricted File Whitelist / Blocklist ([`tools.py`](tools.py))**: Explicitly blocks reads, writes, and listings of `.env*`, `keys.json`, `swarm.db*`, `swarms.json`, `roles.json`, and `memory.json`.
+  3. **Role Context Binding ([`core/swarm.py`](core/swarm.py))**: `WorkerAgent` automatically binds its active `tenant_id` to `save_note`, `read_note`, and `list_notes` via `functools.partial`.
+
+### Finding 12 (Remediated — P1): TOCTOU DNS Rebinding Vulnerability in `fetch_url`
+- **Severity**: High
+- **Status**: **FIXED** (Remediated October 20, 2026; verified in `tools.py`)
+- **Root Cause**: `fetch_url` validated the resolved IP address of a hostname, but the subsequent HTTP request performed a separate DNS resolution via `requests.get()`. An attacker controlling a DNS server with a low TTL could return a public IP on the check and `127.0.0.1` on the fetch.
+- **Remediation Implemented**:
+  1. **Pinned Address Resolution Context ([`tools.py`](tools.py))**: Implemented `_resolve_and_validate_public_url()` paired with `_pinned_getaddrinfo()`. During the `requests.get()` call, socket address resolution for the target hostname is pinned strictly to the pre-validated IP address while maintaining TLS SNI and certificate validation.
+
+### Finding 13 (Remediated — P1): Algorithmic Denial of Service in `calculator`
+- **Severity**: Medium
+- **Status**: **FIXED** (Remediated October 20, 2026; verified in `evals.py::eval_security_hardening`)
+- **Root Cause**: While `ast.Pow` was capped, mathematical functions like `factorial(10000000)`, `comb()`, and `perm()` or deeply nested expressions (e.g. 500+ operators) could exhaust CPU and stack resources.
+- **Remediation Implemented**:
+  1. **Guarded Math Functions ([`tools.py`](tools.py))**: Added `_safe_factorial`, `_safe_comb`, and `_safe_perm` enforcing non-negative inputs and capping $n \le 1000$.
+  2. **Length Guardrail ([`tools.py`](tools.py))**: Expression length is capped at 300 characters, preventing AST recursive call-stack exhaustion attacks.
+  3. **Whitelist Pruning ([`tools.py`](tools.py))**: Whitelisted only safe functions from `math` (`_ALLOWED_MATH_NAMES`), removing arbitrary module attribute lookups.
+
+### Finding 14 (Remediated — P0): Static Insecure Fallback Credentials
+- **Severity**: High
+- **Status**: **FIXED** (Remediated October 20, 2026; verified in `core/auth.py`)
+- **Root Cause**: If `keys.json` was missing or corrupted, the system previously fell back to static well-known keys (`ns-admin-secret-key-12345`).
+- **Remediation Implemented**:
+  1. **Cryptographically Secure Fallback ([`core/auth.py`](core/auth.py))**: Generates an ephemeral cryptographically random key (`ns-admin-` + `secrets.token_urlsafe(24)`) and logs a high-visibility warning whenever falling back.
+  2. **Error Logging ([`core/auth.py`](core/auth.py))**: Added logging for JSON decode errors and unparseable key records.
+

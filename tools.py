@@ -13,6 +13,7 @@ Security Controls Built In:
 """
 
 import ast
+from contextlib import contextmanager
 import datetime
 from html.parser import HTMLParser
 import ipaddress
@@ -22,38 +23,85 @@ import operator
 import os
 from pathlib import Path
 import re
+import shutil
 import socket
 import subprocess
 import sys
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 import requests
 
 from core.config import CONFIG, WORKSPACE_DIR
-
-MEMORY_FILE = WORKSPACE_DIR / "memory.json"
+from core.storage import sanitize_tenant_id
 
 _SENSITIVE_ENV_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH", "CREDENTIAL")
+
+_RESTRICTED_FILENAMES = {
+    ".env",
+    "keys.json",
+    "swarm.db",
+    "swarms.json",
+    "roles.json",
+    "memory.json",
+}
+
+_DDG_LINK_RE = re.compile(r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', re.DOTALL)
+_DDG_SNIPPET_RE = re.compile(r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>', re.DOTALL)
 
 
 # ---------------------------------------------------------------------------
 # Security & HTML Helpers
 # ---------------------------------------------------------------------------
 
-def _safe_workspace_path(filename: str) -> Path:
-    """Resolve filename strictly inside WORKSPACE_DIR, blocking path traversal."""
-    clean_name = Path(filename).name
-    if not clean_name or clean_name in {".", ".."} or clean_name.startswith(".env"):
+def _safe_workspace_path(filename: str, tenant_id: Optional[str] = None) -> Path:
+    """Resolve filename strictly inside WORKSPACE_DIR (or tenant folder), blocking traversal and system files."""
+    raw_path = Path(filename.strip().replace("\\", "/"))
+    clean_name = raw_path.name
+    lower_name = clean_name.lower()
+
+    if not clean_name or clean_name in {".", ".."} or clean_name.startswith("."):
         raise ValueError(f"Invalid or restricted filename: '{filename}'")
+
+    if (
+        lower_name in _RESTRICTED_FILENAMES
+        or lower_name.startswith(".env")
+        or lower_name.endswith((".db", ".db-wal", ".db-shm"))
+    ):
+        raise ValueError(f"Restricted system file cannot be accessed: '{filename}'")
+
     ws_resolved = WORKSPACE_DIR.resolve()
-    target = (ws_resolved / clean_name).resolve()
-    if target.parent != ws_resolved:
+    if tenant_id:
+        safe_tenant = sanitize_tenant_id(tenant_id)
+        base_dir = (ws_resolved / "tenants" / safe_tenant).resolve()
+        base_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        base_dir = ws_resolved
+
+    target = (base_dir / clean_name).resolve()
+    if not target.is_relative_to(ws_resolved) or target.parent != base_dir:
         raise ValueError(f"Path traversal blocked for '{filename}'")
     return target
 
 
-def _validate_public_url(url: str) -> str:
-    """Validate URL scheme and block SSRF against localhost, private networks, and metadata IPs."""
+@contextmanager
+def _pinned_getaddrinfo(hostname: str, pinned_ip: str):
+    """Context manager that forces socket.getaddrinfo to resolve hostname strictly to pinned_ip, preventing DNS rebinding."""
+    orig_getaddrinfo = socket.getaddrinfo
+
+    def _custom_getaddrinfo(host, port, *args, **kwargs):
+        if str(host).lower() == hostname.lower():
+            return orig_getaddrinfo(pinned_ip, port, *args, **kwargs)
+        return orig_getaddrinfo(host, port, *args, **kwargs)
+
+    socket.getaddrinfo = _custom_getaddrinfo
+    try:
+        yield
+    finally:
+        socket.getaddrinfo = orig_getaddrinfo
+
+
+def _resolve_and_validate_public_url(url: str) -> tuple[str, str, str, int]:
+    """Validate URL scheme and resolve IP, verifying non-loopback, non-private, and non-metadata address."""
     parsed = urlparse(url.strip())
     if parsed.scheme not in {"http", "https"}:
         raise ValueError(f"Blocked URL scheme '{parsed.scheme}'. Only http/https are allowed.")
@@ -63,11 +111,13 @@ def _validate_public_url(url: str) -> str:
     if hostname.lower() in {"localhost", "0.0.0.0"}:
         raise ValueError("SSRF blocked: localhost access is not permitted.")
 
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
     try:
-        addr_info = socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80))
+        addr_info = socket.getaddrinfo(hostname, port)
     except socket.gaierror as exc:
         raise ValueError(f"Could not resolve hostname '{hostname}': {exc}") from exc
 
+    valid_ip: Optional[str] = None
     for entry in addr_info:
         ip_str = entry[4][0]
         ip_obj = ipaddress.ip_address(ip_str)
@@ -82,7 +132,18 @@ def _validate_public_url(url: str) -> str:
             raise ValueError(
                 f"SSRF protection blocked access to non-public IP address ({ip_str}) for '{hostname}'."
             )
-    return url.strip()
+        if valid_ip is None:
+            valid_ip = ip_str
+
+    if valid_ip is None:
+        raise ValueError(f"No valid public IP found for '{hostname}'.")
+    return url.strip(), hostname, valid_ip, port
+
+
+def _validate_public_url(url: str) -> str:
+    """Validate URL scheme and block SSRF against localhost, private networks, and metadata IPs."""
+    safe_url, _, _, _ = _resolve_and_validate_public_url(url)
+    return safe_url
 
 
 def _get_sandbox_env() -> Dict[str, str]:
@@ -145,43 +206,109 @@ def _safe_pow(base: float, exp: float) -> float:
     return float(operator.pow(base, exp))
 
 
+def _safe_factorial(n: Any) -> int:
+    try:
+        val = int(n)
+    except Exception:
+        raise ValueError("factorial(n) argument must be an integer.")
+    if val < 0 or val > 1000:
+        raise ValueError("factorial(n) input must be between 0 and 1000.")
+    return math.factorial(val)
+
+
+def _safe_comb(n: Any, k: Any) -> int:
+    try:
+        n_val, k_val = int(n), int(k)
+    except Exception:
+        raise ValueError("comb(n, k) arguments must be integers.")
+    if n_val < 0 or n_val > 1000 or k_val < 0:
+        raise ValueError("comb(n, k) input must be non-negative with n <= 1000.")
+    return math.comb(n_val, k_val)
+
+
+def _safe_perm(n: Any, k: Any = None) -> int:
+    try:
+        n_val = int(n)
+        k_val = int(k) if k is not None else None
+    except Exception:
+        raise ValueError("perm(n, k) arguments must be integers.")
+    if n_val < 0 or n_val > 1000 or (k_val is not None and k_val < 0):
+        raise ValueError("perm(n, k) input must be non-negative with n <= 1000.")
+    return math.perm(n_val, k_val)
+
+
+_ALLOWED_MATH_NAMES: Dict[str, Any] = {
+    "pi": math.pi,
+    "e": math.e,
+    "tau": math.tau,
+    "inf": math.inf,
+    "nan": math.nan,
+    "sqrt": math.sqrt,
+    "sin": math.sin,
+    "cos": math.cos,
+    "tan": math.tan,
+    "asin": math.asin,
+    "acos": math.acos,
+    "atan": math.atan,
+    "atan2": math.atan2,
+    "exp": math.exp,
+    "log": math.log,
+    "log10": math.log10,
+    "log2": math.log2,
+    "ceil": math.ceil,
+    "floor": math.floor,
+    "trunc": math.trunc,
+    "abs": abs,
+    "round": round,
+    "factorial": _safe_factorial,
+    "comb": _safe_comb,
+    "perm": _safe_perm,
+    "degrees": math.degrees,
+    "radians": math.radians,
+    "hypot": math.hypot,
+    "gcd": math.gcd,
+    "lcm": math.lcm,
+}
+
+_ALLOWED_CALC_OPERATORS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: _safe_pow,
+    ast.USub: operator.neg,
+    ast.UAdd: operator.pos,
+}
+
+
 def calculator(expression: str) -> str:
     """Safely evaluate a mathematical expression using a strict AST whitelist."""
-    allowed_names = {
-        k: v for k, v in math.__dict__.items() if not k.startswith("__")
-    }
-    allowed_operators = {
-        ast.Add: operator.add,
-        ast.Sub: operator.sub,
-        ast.Mult: operator.mul,
-        ast.Div: operator.truediv,
-        ast.FloorDiv: operator.floordiv,
-        ast.Mod: operator.mod,
-        ast.Pow: _safe_pow,
-        ast.USub: operator.neg,
-        ast.UAdd: operator.pos,
-    }
+    expr_clean = expression.strip()
+    if len(expr_clean) > 300:
+        return f"Error evaluating '{expression}': expression length exceeds safe limit (300 chars)."
 
     def _eval(node: ast.AST) -> Any:
         if isinstance(node, ast.Expression):
             return _eval(node.body)
         if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
             return node.value
-        if isinstance(node, ast.BinOp) and type(node.op) in allowed_operators:
-            return allowed_operators[type(node.op)](_eval(node.left), _eval(node.right))
-        if isinstance(node, ast.UnaryOp) and type(node.op) in allowed_operators:
-            return allowed_operators[type(node.op)](_eval(node.operand))
-        if isinstance(node, ast.Name) and node.id in allowed_names:
-            return allowed_names[node.id]
+        if isinstance(node, ast.BinOp) and type(node.op) in _ALLOWED_CALC_OPERATORS:
+            return _ALLOWED_CALC_OPERATORS[type(node.op)](_eval(node.left), _eval(node.right))
+        if isinstance(node, ast.UnaryOp) and type(node.op) in _ALLOWED_CALC_OPERATORS:
+            return _ALLOWED_CALC_OPERATORS[type(node.op)](_eval(node.operand))
+        if isinstance(node, ast.Name) and node.id in _ALLOWED_MATH_NAMES:
+            return _ALLOWED_MATH_NAMES[node.id]
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             func_name = node.func.id
-            if func_name in allowed_names and callable(allowed_names[func_name]):
+            if func_name in _ALLOWED_MATH_NAMES and callable(_ALLOWED_MATH_NAMES[func_name]):
                 args = [_eval(arg) for arg in node.args]
-                return allowed_names[func_name](*args)
+                return _ALLOWED_MATH_NAMES[func_name](*args)
         raise ValueError(f"Unsupported math expression: {expression}")
 
     try:
-        parsed = ast.parse(expression.strip(), mode="eval")
+        parsed = ast.parse(expr_clean, mode="eval")
         result = _eval(parsed)
         return f"{expression} = {result}"
     except Exception as exc:
@@ -233,17 +360,8 @@ def web_search(query: str) -> str:
         resp.raise_for_status()
         html = resp.text
 
-        link_pattern = re.compile(
-            r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
-            re.DOTALL,
-        )
-        snippet_pattern = re.compile(
-            r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
-            re.DOTALL,
-        )
-
-        links = link_pattern.findall(html)
-        snippets = snippet_pattern.findall(html)
+        links = _DDG_LINK_RE.findall(html)
+        snippets = _DDG_SNIPPET_RE.findall(html)
 
         results = []
         for idx, (raw_href, raw_title) in enumerate(links[: CONFIG.search_max_results], start=1):
@@ -262,9 +380,9 @@ def web_search(query: str) -> str:
 
 
 def fetch_url(url: str) -> str:
-    """Fetch a public webpage URL (SSRF-protected) and return readable text content."""
+    """Fetch a public webpage URL (SSRF & DNS-rebinding protected) and return readable text content."""
     try:
-        safe_url = _validate_public_url(url)
+        safe_url, hostname, pinned_ip, port = _resolve_and_validate_public_url(url)
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -272,12 +390,13 @@ def fetch_url(url: str) -> str:
                 "Chrome/122.0.0.0 Safari/537.36"
             )
         }
-        resp = requests.get(
-            safe_url,
-            headers=headers,
-            timeout=CONFIG.fetch_timeout_sec,
-            allow_redirects=False,
-        )
+        with _pinned_getaddrinfo(hostname, pinned_ip):
+            resp = requests.get(
+                safe_url,
+                headers=headers,
+                timeout=CONFIG.fetch_timeout_sec,
+                allow_redirects=False,
+            )
         resp.raise_for_status()
         text = _html_to_text(resp.text)
         if not text:
@@ -355,20 +474,54 @@ socket.socket.connect_ex = _guarded_connect_ex
 
 
 def run_python(code: str) -> str:
-    """Execute Python code in a secret-scrubbed, network-confined subprocess inside workspace/."""
+    """Execute Python code in an isolated container sandbox or fail closed unless local execution is permitted."""
+    container_bin = shutil.which("docker") or shutil.which("podman")
+    use_container = container_bin is not None and CONFIG.python_sandbox_mode in {"auto", "container"}
+
+    if not use_container:
+        if not CONFIG.unsafe_allow_local_exec and CONFIG.python_sandbox_mode != "local":
+            return (
+                "SecurityError: True container isolation (Docker/Podman) is unavailable on this host. "
+                "Subprocess execution failed closed to prevent host compromise. "
+                "To permit local execution for development, enable UNSAFE_ALLOW_LOCAL_EXEC=true in your .env."
+            )
+
     try:
-        sandboxed_script = (
-            f"{_SUBPROCESS_SANDBOX_BOOTSTRAP}\n"
-            f"exec(compile({repr(code)}, '<sandbox>', 'exec'), globals())\n"
-        )
-        completed = subprocess.run(
-            [sys.executable, "-c", sandboxed_script],
-            cwd=str(WORKSPACE_DIR),
-            env=_get_sandbox_env(),
-            capture_output=True,
-            text=True,
-            timeout=CONFIG.python_timeout_sec,
-        )
+        if use_container:
+            cmd = [
+                container_bin,
+                "run",
+                "--rm",
+                "--network", "none",
+                "--read-only",
+                "--memory", "256m",
+                "--cpus", "1.0",
+                "--pids-limit", "64",
+                "-v", f"{WORKSPACE_DIR.resolve()}:/workspace:rw",
+                "-w", "/workspace",
+                "python:3.11-slim",
+                "python", "-c", code,
+            ]
+            completed = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=CONFIG.python_timeout_sec,
+            )
+        else:
+            sandboxed_script = (
+                f"{_SUBPROCESS_SANDBOX_BOOTSTRAP}\n"
+                f"exec(compile({repr(code)}, '<sandbox>', 'exec'), globals())\n"
+            )
+            completed = subprocess.run(
+                [sys.executable, "-c", sandboxed_script],
+                cwd=str(WORKSPACE_DIR),
+                env=_get_sandbox_env(),
+                capture_output=True,
+                text=True,
+                timeout=CONFIG.python_timeout_sec,
+            )
+
         stdout = completed.stdout.strip()
         stderr = completed.stderr.strip()
         parts = []
@@ -388,63 +541,72 @@ def run_python(code: str) -> str:
         return f"Error running Python code: {exc}"
 
 
-def load_memories() -> Dict[str, str]:
-    """Load persistent key-value memories from workspace/memory.json."""
-    if not MEMORY_FILE.exists():
-        return {}
-    try:
-        data = json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            return {str(k): str(v) for k, v in data.items()}
-    except Exception:
-        pass
-    return {}
-
-
-def remember_fact(key: str, fact: str) -> str:
-    """Save or update a persistent fact in long-term memory across sessions."""
-    memories = load_memories()
-    memories[key.strip()] = fact.strip()
-    MEMORY_FILE.write_text(json.dumps(memories, indent=2, ensure_ascii=False), encoding="utf-8")
+def remember_fact(key: str, fact: str, tenant_id: str = "default") -> str:
+    """Save or update a persistent fact in multi-tenant SQLite storage."""
+    from core.storage import SQLiteStorage
+    storage = SQLiteStorage()
+    storage.save_tenant_memory(tenant_id, key.strip(), fact.strip())
     return f"Remembered '{key}': {fact}"
 
 
-def recall_memories() -> str:
-    """Retrieve all facts stored in persistent long-term memory."""
-    memories = load_memories()
-    if not memories:
+def recall_memories(tenant_id: str = "default") -> str:
+    """Retrieve all facts stored in persistent multi-tenant SQLite storage."""
+    from core.storage import SQLiteStorage
+    storage = SQLiteStorage()
+    mems = storage.get_tenant_memories(tenant_id)
+    if not mems:
         return "Long-term memory is currently empty."
-    lines = [f"- {k}: {v}" for k, v in memories.items()]
+    lines = [f"- {k}: {v}" for k, v in mems.items()]
     return "Stored memories:\n" + "\n".join(lines)
 
 
-def save_note(filename: str, content: str) -> str:
-    """Save text content to a file strictly inside the agent's workspace folder."""
+def save_note(filename: str, content: str, tenant_id: Optional[str] = None) -> str:
+    """Save text content to a file strictly inside the agent's workspace folder (or tenant workspace)."""
     try:
-        target = _safe_workspace_path(filename)
+        target = _safe_workspace_path(filename, tenant_id=tenant_id)
         target.write_text(content, encoding="utf-8")
-        return f"Saved {len(content)} characters to workspace/{target.name}"
+        rel_path = target.relative_to(WORKSPACE_DIR)
+        return f"Saved {len(content)} characters to workspace/{rel_path}"
     except Exception as exc:
         return f"Error saving note '{filename}': {exc}"
 
 
-def read_note(filename: str) -> str:
-    """Read text content from a file strictly inside the agent's workspace folder."""
+def read_note(filename: str, tenant_id: Optional[str] = None) -> str:
+    """Read text content from a file strictly inside the agent's workspace folder (or tenant workspace)."""
     try:
-        target = _safe_workspace_path(filename)
+        target = _safe_workspace_path(filename, tenant_id=tenant_id)
         if not target.exists():
-            return f"File 'workspace/{target.name}' does not exist."
+            rel_path = target.relative_to(WORKSPACE_DIR)
+            return f"File 'workspace/{rel_path}' does not exist."
         return target.read_text(encoding="utf-8")
     except Exception as exc:
         return f"Error reading note '{filename}': {exc}"
 
 
-def list_notes() -> str:
-    """List all files saved inside the agent's workspace folder."""
-    files = sorted(p.name for p in WORKSPACE_DIR.iterdir() if p.is_file())
+def list_notes(tenant_id: Optional[str] = None) -> str:
+    """List all files saved inside the agent's workspace folder (or tenant workspace)."""
+    ws_resolved = WORKSPACE_DIR.resolve()
+    if tenant_id:
+        safe_tenant = sanitize_tenant_id(tenant_id)
+        base_dir = ws_resolved / "tenants" / safe_tenant
+        if not base_dir.exists():
+            return f"The workspace folder for '{safe_tenant}' is currently empty."
+    else:
+        base_dir = ws_resolved
+
+    files = sorted(
+        p.name
+        for p in base_dir.iterdir()
+        if p.is_file()
+        and not p.name.startswith(".")
+        and p.name.lower() not in _RESTRICTED_FILENAMES
+        and not p.name.lower().endswith((".db", ".db-wal", ".db-shm"))
+    )
     if not files:
-        return "The workspace folder is currently empty."
-    return "Files in workspace: " + ", ".join(files)
+        label = f" for '{tenant_id}'" if tenant_id else ""
+        return f"The workspace folder{label} is currently empty."
+    header = f"Files in workspace [{tenant_id}]: " if tenant_id else "Files in workspace: "
+    return header + ", ".join(files)
 
 
 # ---------------------------------------------------------------------------

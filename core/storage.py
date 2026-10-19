@@ -21,10 +21,27 @@ from typing import Any, Dict, Iterator, List, Optional, Protocol, Tuple
 from core.config import CONFIG
 
 
-def sanitize_tenant_id(tenant_id: str) -> str:
-    """Restrict tenant_id to safe alphanumeric, underscore, and hyphen characters."""
-    cleaned = re.sub(r"[^a-zA-Z0-9_-]", "_", (tenant_id or "").strip())[:64]
-    return cleaned or "default"
+TENANT_ID_REGEX = r"^[A-Za-z0-9_-]{1,64}$"
+_TENANT_ID_PATTERN = re.compile(TENANT_ID_REGEX)
+
+
+def validate_tenant_id(tenant_id: str) -> str:
+    """Strictly validate tenant_id against ^[A-Za-z0-9_-]{1,64}$.
+
+    Rejects non-matching characters (dots, spaces, slashes) to prevent cross-tenant
+    collision vulnerabilities (e.g., 'acme.corp' colliding with 'acme_corp').
+    Raises:
+        ValueError: If tenant_id is not a string matching the strict regex pattern.
+    """
+    if not isinstance(tenant_id, str) or not _TENANT_ID_PATTERN.match(tenant_id):
+        raise ValueError(
+            f"Invalid tenant_id {tenant_id!r}. Must match regex {TENANT_ID_REGEX} (1-64 alphanumeric chars, underscores, or hyphens)."
+        )
+    return tenant_id
+
+
+# Backwards-compatible alias for existing imports
+sanitize_tenant_id = validate_tenant_id
 
 
 class PrivacyAirlock:
@@ -59,9 +76,9 @@ class StorageBackend(Protocol):
     def save_tenant_memory(self, tenant_id: str, key: str, fact: str) -> None: ...
     def get_tenant_memories(self, tenant_id: str) -> Dict[str, str]: ...
     def add_global_skill(self, category: str, problem: str, solution: str) -> Dict[str, str]: ...
-    def get_global_skills(self, limit: int = 10) -> List[Dict[str, Any]]: ...
+    def get_global_skills(self, limit: Optional[int] = None) -> List[Dict[str, Any]]: ...
     def append_session_turn(self, tenant_id: str, role: str, content: str) -> None: ...
-    def get_session_turns(self, tenant_id: str, limit: int = 12) -> List[Dict[str, str]]: ...
+    def get_session_turns(self, tenant_id: str, limit: Optional[int] = None) -> List[Dict[str, str]]: ...
     def clear_session(self, tenant_id: str) -> None: ...
     def log_trace(self, tenant_id: str, agent_name: str, event_type: str, payload: Dict[str, Any]) -> None: ...
 
@@ -130,6 +147,9 @@ class SQLiteStorage:
                     payload TEXT NOT NULL,
                     created_at REAL NOT NULL
                 );
+
+                CREATE INDEX IF NOT EXISTS idx_tenant_sessions ON tenant_sessions(tenant_id, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_swarm_traces_id ON swarm_traces(id DESC);
                 """
             )
 
@@ -180,7 +200,8 @@ class SQLiteStorage:
             "solution_rule": safe_solution,
         }
 
-    def get_global_skills(self, limit: int = CONFIG.max_global_skills) -> List[Dict[str, Any]]:
+    def get_global_skills(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        eff_limit = limit if limit is not None else CONFIG.max_global_skills
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -189,7 +210,7 @@ class SQLiteStorage:
                 ORDER BY learned_count DESC, updated_at DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (eff_limit,),
             ).fetchall()
             return [dict(row) for row in rows]
 
@@ -210,8 +231,9 @@ class SQLiteStorage:
                 (safe_tenant, safe_tenant, self.max_session_turns),
             )
 
-    def get_session_turns(self, tenant_id: str, limit: int = CONFIG.context_session_turns) -> List[Dict[str, str]]:
+    def get_session_turns(self, tenant_id: str, limit: Optional[int] = None) -> List[Dict[str, str]]:
         safe_tenant = sanitize_tenant_id(tenant_id)
+        eff_limit = limit if limit is not None else CONFIG.context_session_turns
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -220,7 +242,7 @@ class SQLiteStorage:
                     WHERE tenant_id = ? ORDER BY id DESC LIMIT ?
                 ) ORDER BY id ASC
                 """,
-                (safe_tenant, limit),
+                (safe_tenant, eff_limit),
             ).fetchall()
             return [{"role": row["role"], "content": row["content"]} for row in rows]
 

@@ -22,14 +22,19 @@ WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 DEFAULT_ROLES_FILE = CONFIG_DIR / "default_roles.json"
+DEFAULT_SWARMS_FILE = CONFIG_DIR / "default_swarms.json"
+DEFAULT_KEYS_FILE = CONFIG_DIR / "default_keys.json"
 
 
 def _load_raw_settings() -> dict:
     if SETTINGS_FILE.exists():
         try:
             return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+        except Exception as exc:
+            import logging
+            logging.getLogger("SwarmConfig").warning(
+                "Failed to parse %s: %s. Using default settings.", SETTINGS_FILE, exc
+            )
     return {}
 
 
@@ -57,7 +62,9 @@ class SwarmConfig:
     db_path: Path = field(default_factory=lambda: WORKSPACE_DIR / "swarm.db")
     roles_path: Path = field(default_factory=lambda: WORKSPACE_DIR / "roles.json")
     swarms_path: Path = field(default_factory=lambda: WORKSPACE_DIR / "swarms.json")
+    keys_path: Path = field(default_factory=lambda: WORKSPACE_DIR / "keys.json")
     default_roles_path: Path = field(default_factory=lambda: DEFAULT_ROLES_FILE)
+    auth_enabled: bool = True
     max_trace_rows: int = 500
     max_session_turns: int = 30
     context_session_turns: int = 10
@@ -72,6 +79,8 @@ class SwarmConfig:
     python_timeout_sec: int = 15
     python_max_output_chars: int = 4000
     calc_max_exponent: int = 1000
+    python_sandbox_mode: str = "auto"
+    unsafe_allow_local_exec: bool = True
 
     # Server settings
     host: str = "127.0.0.1"
@@ -133,6 +142,8 @@ class SwarmConfig:
             python_timeout_sec=int(os.getenv("PYTHON_TIMEOUT_SEC", str(tools_cfg.get("python_timeout_sec", 15)))),
             python_max_output_chars=int(tools_cfg.get("python_max_output_chars", 4000)),
             calc_max_exponent=int(tools_cfg.get("calc_max_exponent", 1000)),
+            python_sandbox_mode=os.getenv("PYTHON_SANDBOX_MODE", str(tools_cfg.get("python_sandbox_mode", "auto"))).lower(),
+            unsafe_allow_local_exec=os.getenv("UNSAFE_ALLOW_LOCAL_EXEC", str(tools_cfg.get("unsafe_allow_local_exec", "true"))).lower() == "true",
             host=os.getenv("HOST", str(server_cfg.get("host", "127.0.0.1"))),
             port=int(os.getenv("PORT", str(server_cfg.get("port", 8000)))),
             max_body_bytes=int(server_cfg.get("max_body_bytes", 65536)),
@@ -141,6 +152,8 @@ class SwarmConfig:
             capability_bundles=dict(bundles_cfg),
             orchestrator_prompt=str(prompts_cfg.get("orchestrator", "")),
             coordinator_prompt=str(prompts_cfg.get("coordinator", "")),
+            keys_path=WORKSPACE_DIR / "keys.json",
+            auth_enabled=os.getenv("AUTH_ENABLED", str(server_cfg.get("auth_enabled", "true"))).lower() == "true",
         )
 
 

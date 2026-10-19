@@ -100,6 +100,19 @@ class WorkerAgent:
                 return "\n".join(f"- {k}: {v}" for k, v in mems.items())
             tools_map["recall_memories"] = _tenant_recall
 
+        # Namespace workspace note tools per tenant
+        if "save_note" in self.tool_names and "save_note" in tools_map:
+            orig_save = tools_map["save_note"]
+            tools_map["save_note"] = lambda filename, content: orig_save(filename, content, tenant_id=tenant_id)
+
+        if "read_note" in self.tool_names and "read_note" in tools_map:
+            orig_read = tools_map["read_note"]
+            tools_map["read_note"] = lambda filename: orig_read(filename, tenant_id=tenant_id)
+
+        if "list_notes" in self.tool_names and "list_notes" in tools_map:
+            orig_list = tools_map["list_notes"]
+            tools_map["list_notes"] = lambda: orig_list(tenant_id=tenant_id)
+
         # Add cross-swarm PrivacyAirlock skill-sharing tool
         def _share_global_skill(category: str, problem: str, solution: str) -> str:
             sanitized = self.storage.add_global_skill(category, problem, solution)

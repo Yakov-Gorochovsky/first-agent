@@ -15,8 +15,10 @@ Includes two tiers of evaluations:
 """
 
 import argparse
+import json
 import os
 from pathlib import Path
+import queue
 import sys
 import tempfile
 import time
@@ -31,7 +33,7 @@ from core.bus import EventBus
 from core.llm import LLMResponse, OpenAICompatibleProvider, ToolCallRequest
 from core.peer_swarm import PeerSwarm
 from core.roles import RoleRegistry
-from core.storage import PrivacyAirlock, SQLiteStorage
+from core.storage import PrivacyAirlock, SQLiteStorage, validate_tenant_id
 from core.swarm import OrchestratorSwarm
 from tools import execute_tool
 
@@ -104,9 +106,31 @@ def eval_budget_token_guardrail() -> str:
 
 
 def eval_multi_tenant_isolation() -> str:
-    """Verify Tenant B can never read Tenant A's private memories or session history."""
+    """Verify Tenant B can never read Tenant A's private memories and reject collision-inducing tenant IDs."""
+    # 1. Verify strict tenant_id regex validation & collision rejection (P0.2)
+    invalid_ids = ["acme.corp", "user@corp", "tenant/123", "tenant space", "", "a" * 65]
+    for invalid in invalid_ids:
+        try:
+            validate_tenant_id(invalid)
+            raise AssertionError(f"Expected ValueError for invalid tenant_id: {invalid!r}")
+        except ValueError:
+            pass
+
+    # Verify valid alphanumeric, underscore, and hyphen IDs pass
+    assert validate_tenant_id("acme_corp") == "acme_corp"
+    assert validate_tenant_id("tenant-123_prod") == "tenant-123_prod"
+
     with tempfile.TemporaryDirectory() as tmp:
         store = SQLiteStorage(Path(tmp) / "test_eval.db")
+
+        # Verify storage backend rejects invalid collision-inducing tenant IDs
+        try:
+            store.save_tenant_memory("acme.corp", "secret_key", "leak")
+            raise AssertionError("Expected ValueError when saving memory with invalid tenant_id 'acme.corp'")
+        except ValueError:
+            pass
+
+        # 2. Verify strict cross-tenant partitioning for valid tenants
         store.save_tenant_memory("tenant_alpha", "api_secret_project", "Project Apollo $9.5M")
         store.save_tenant_memory("tenant_beta", "public_note", "Healthcare Portal")
 
@@ -116,7 +140,7 @@ def eval_multi_tenant_isolation() -> str:
         assert alpha_mem.get("api_secret_project") == "Project Apollo $9.5M"
         assert "api_secret_project" not in beta_mem
         assert beta_mem.get("public_note") == "Healthcare Portal"
-        return "Strict tenant isolation verified (0 cross-tenant leaks)."
+        return "Strict tenant isolation & collision rejection verified (0 cross-tenant leaks)."
 
 
 def eval_privacy_airlock_scrubbing() -> str:
@@ -263,20 +287,41 @@ def eval_security_hardening() -> str:
     finally:
         os.environ.pop("TEST_SECRET_API_KEY", None)
 
-    # 3. Calculator exponent DoS cap
+    # 3. Calculator exponent and factorial DoS caps & length limits
     dos_calc = calculator("999999 ** 999999")
     assert "exceeds safe limit" in dos_calc, dos_calc
 
-    # 4. Path traversal & .env protection in workspace notes
-    from tools import WORKSPACE_DIR
+    fact_dos = calculator("factorial(10000000)")
+    assert "between 0 and 1000" in fact_dos or "exceeds safe limit" in fact_dos, fact_dos
+
+    len_dos = calculator("1 + " * 200 + "1")
+    assert "expression length exceeds safe limit" in len_dos, len_dos
+
+    # 4. Path traversal, restricted file protection, and multi-tenant workspace isolation
+    from tools import WORKSPACE_DIR, read_note
 
     env_write = save_note(".env", "malicious")
+    keys_write = save_note("keys.json", "malicious")
+    db_write = save_note("swarm.db", "malicious")
     traversal_write = save_note("../../outside.txt", "malicious")
     try:
         assert "Invalid or restricted filename" in env_write, env_write
+        assert "Restricted system file" in keys_write or "Invalid or restricted filename" in keys_write, keys_write
+        assert "Restricted system file" in db_write or "Invalid or restricted filename" in db_write, db_write
         assert "workspace/outside.txt" in traversal_write, traversal_write
+
+        # Multi-tenant note isolation
+        save_note("shared.txt", "data_tenant_alpha", tenant_id="tenant_alpha")
+        save_note("shared.txt", "data_tenant_beta", tenant_id="tenant_beta")
+        alpha_content = read_note("shared.txt", tenant_id="tenant_alpha")
+        beta_content = read_note("shared.txt", tenant_id="tenant_beta")
+        assert alpha_content == "data_tenant_alpha", alpha_content
+        assert beta_content == "data_tenant_beta", beta_content
     finally:
         (WORKSPACE_DIR / "outside.txt").unlink(missing_ok=True)
+        import shutil
+        shutil.rmtree(WORKSPACE_DIR / "tenants" / "tenant_alpha", ignore_errors=True)
+        shutil.rmtree(WORKSPACE_DIR / "tenants" / "tenant_beta", ignore_errors=True)
 
     # 5. run_python subprocess network SSRF firewall (HTTP & raw socket)
     py_http_ssrf = run_python(
@@ -393,6 +438,93 @@ def eval_multi_swarm_deployment() -> str:
         return "2 swarms deployed ('attacker' & 'victim'), cross-swarm bridge & Egress DLP verified."
 
 
+def eval_auth_and_sse_isolation() -> str:
+    """Verify API-key authentication, constant-time verification, and zero cross-tenant SSE leakage."""
+    from core.auth import AuthManager
+    from core.bus import SwarmEvent
+    from server import (
+        SSEClientConnection,
+        _broadcast_event,
+        _sse_clients,
+        _sse_clients_lock,
+        check_host_binding_security,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        keys_file = Path(tmp) / "keys.json"
+        auth = AuthManager(keys_file=keys_file)
+
+        # 1. Verify constant-time credential hashing and verification
+        admin_rec = auth.verify_key("ns-admin-secret-key-12345")
+        assert admin_rec is not None, "Default admin key should be verified"
+        assert admin_rec.has_scope("admin") and admin_rec.has_scope("user")
+
+        # Verify invalid or tampered key fails
+        assert auth.verify_key("invalid-token-tampered") is None
+        assert auth.verify_key("") is None
+
+        # Verify user scope cannot pass admin check
+        client_rec = auth.verify_key("ns-client-a-secret-key-12345")
+        assert client_rec is not None
+        assert client_rec.has_scope("user") is True
+        assert client_rec.has_scope("admin") is False
+
+        # 2. Verify non-loopback host binding guardrail
+        try:
+            check_host_binding_security("0.0.0.0", auth_enabled=False, auth_manager=auth)
+            raise AssertionError("Expected RuntimeError when binding on 0.0.0.0 with auth disabled")
+        except RuntimeError:
+            pass
+
+        # 3. Verify Cross-Tenant SSE Event Stream Isolation
+        q_a: queue.Queue = queue.Queue(maxsize=10)
+        q_b: queue.Queue = queue.Queue(maxsize=10)
+        conn_a = SSEClientConnection(client_queue=q_a, tenant_id="tenant_alpha", is_admin=False)
+        conn_b = SSEClientConnection(client_queue=q_b, tenant_id="tenant_beta", is_admin=False)
+
+        with _sse_clients_lock:
+            _sse_clients.extend([conn_a, conn_b])
+
+        try:
+            # Emit event for tenant_alpha
+            _broadcast_event(
+                SwarmEvent(
+                    event_type="agent_start",
+                    agent_name="researcher",
+                    tenant_id="tenant_alpha",
+                    data={"task": "Secret task for tenant_alpha"},
+                )
+            )
+
+            # Tenant alpha MUST receive it
+            assert not q_a.empty(), "Tenant alpha should receive its own event"
+            ev_a = json.loads(q_a.get_nowait())
+            assert ev_a["tenant_id"] == "tenant_alpha"
+
+            # Tenant beta MUST NOT receive it (zero cross-tenant leak!)
+            assert q_b.empty(), "Tenant beta must NEVER receive tenant alpha events"
+
+            # Emit event for tenant_beta
+            _broadcast_event(
+                SwarmEvent(
+                    event_type="agent_start",
+                    agent_name="coder",
+                    tenant_id="tenant_beta",
+                    data={"task": "Task for tenant_beta"},
+                )
+            )
+            assert not q_b.empty(), "Tenant beta should receive its own event"
+            assert q_a.empty(), "Tenant alpha must not receive tenant beta event"
+        finally:
+            with _sse_clients_lock:
+                if conn_a in _sse_clients:
+                    _sse_clients.remove(conn_a)
+                if conn_b in _sse_clients:
+                    _sse_clients.remove(conn_b)
+
+        return "Constant-time auth verified & zero cross-tenant SSE delivery confirmed (2 concurrent tenants)."
+
+
 DETERMINISTIC_SUITE: List[tuple[str, Callable[[], str]]] = [
     ("Budget Step Cap Guardrail", eval_budget_step_guardrail),
     ("Budget Token Cap Guardrail", eval_budget_token_guardrail),
@@ -404,6 +536,7 @@ DETERMINISTIC_SUITE: List[tuple[str, Callable[[], str]]] = [
     ("Step 6 Framework Patterns (LangGraph/SDK)", eval_framework_abstractions),
     ("Security Hardening (SSRF/Env/DoS/Path)", eval_security_hardening),
     ("Multi-Swarm Deployment & Cross-Swarm Bridge", eval_multi_swarm_deployment),
+    ("API Authentication & Cross-Tenant SSE Isolation", eval_auth_and_sse_isolation),
 ]
 
 

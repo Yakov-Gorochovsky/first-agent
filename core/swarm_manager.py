@@ -23,14 +23,14 @@ from typing import Any, Callable, Dict, List, Optional
 
 from core.budget import BudgetConfig, BudgetTracker
 from core.bus import EventBus
-from core.config import CONFIG
+from core.config import CONFIG, DEFAULT_SWARMS_FILE
 from core.llm import LLMProvider, OpenAICompatibleProvider
 from core.peer_swarm import PeerSwarm
 from core.roles import RoleRegistry
-from core.storage import StorageBackend, sanitize_tenant_id
+from core.storage import StorageBackend, sanitize_tenant_id, validate_tenant_id
 from core.swarm import OrchestratorSwarm
 
-DEFAULT_SWARMS_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "default_swarms.json"
+DEFAULT_SWARMS_CONFIG_PATH = DEFAULT_SWARMS_FILE
 MAX_CROSS_SWARM_DEPTH = 3
 
 
@@ -90,7 +90,11 @@ class SwarmManager:
 
     def _on_bus_event(self, event: Any) -> None:
         if getattr(event, "event_type", "") == "role_created":
-            s_id = sanitize_tenant_id(str(getattr(event, "tenant_id", "")).lower())
+            raw_id = str(getattr(event, "tenant_id", "")).lower().strip()
+            try:
+                s_id = validate_tenant_id(raw_id)
+            except ValueError:
+                return
             role_data = (getattr(event, "data", None) or {}).get("role") or {}
             role_name = str(role_data.get("name", "")).strip().lower()
             spec = self._deployments.get(s_id)
@@ -143,7 +147,8 @@ class SwarmManager:
         self._save()
 
     def _register_from_dict(self, item: Dict[str, Any], save: bool = True) -> SwarmDeploymentSpec:
-        s_id = sanitize_tenant_id(str(item.get("swarm_id", "swarm_1")).lower())
+        raw_id = str(item.get("swarm_id", "swarm_1")).lower().strip()
+        s_id = validate_tenant_id(raw_id)
         spec = SwarmDeploymentSpec(
             swarm_id=s_id,
             title=str(item.get("title", s_id)),
@@ -190,7 +195,10 @@ class SwarmManager:
         return [s.to_dict(self.role_registry) for s in self._deployments.values()]
 
     def get_swarm(self, swarm_id: str) -> Optional[SwarmDeploymentSpec]:
-        return self._deployments.get(sanitize_tenant_id(swarm_id.lower()))
+        try:
+            return self._deployments.get(validate_tenant_id(swarm_id.lower().strip()))
+        except ValueError:
+            return None
 
     def deploy_swarm(
         self,
@@ -227,7 +235,10 @@ class SwarmManager:
         return spec
 
     def delete_swarm(self, swarm_id: str) -> bool:
-        key = sanitize_tenant_id(swarm_id.lower())
+        try:
+            key = validate_tenant_id(swarm_id.lower().strip())
+        except ValueError:
+            return False
         if key in self._deployments and len(self._deployments) > 1:
             del self._deployments[key]
             self._save()
@@ -260,9 +271,10 @@ class SwarmManager:
                 if len(match) >= 6:
                     sensitive_tokens.append(match)
 
-        for token in sorted(set(sensitive_tokens), key=len, reverse=True):
-            if token in redacted:
-                redacted = redacted.replace(token, "[REDACTED_VAULT_SECRET]")
+        unique_tokens = sorted(set(sensitive_tokens), key=len, reverse=True)
+        if unique_tokens:
+            pattern = re.compile("|".join(re.escape(t) for t in unique_tokens))
+            redacted = pattern.sub("[REDACTED_VAULT_SECRET]", redacted)
         return redacted
 
     def _make_cross_swarm_tool(
@@ -327,11 +339,24 @@ class SwarmManager:
         }
         return {"send_external_swarm_message": send_external_swarm_message}, [schema]
 
+    def get_last_budget(self, swarm_id: Optional[str] = None) -> Optional[BudgetTracker]:
+        """Return the most recent BudgetTracker for a specific swarm or the global latest."""
+        if swarm_id:
+            try:
+                s_id = validate_tenant_id(swarm_id.lower().strip())
+                return self._last_budgets.get(s_id)
+            except ValueError:
+                return None
+        if self._last_budgets:
+            return list(self._last_budgets.values())[-1]
+        return None
+
     def run_swarm(
         self,
         swarm_id: str,
         prompt: str,
         topology_override: Optional[str] = None,
+        budget: Optional[BudgetTracker] = None,
         _depth: int = 0,
     ) -> str:
         """Execute a deployed swarm instance (and any cross-swarm calls it triggers)."""
@@ -347,8 +372,8 @@ class SwarmManager:
             if spec.model and spec.model != CONFIG.model_name
             else self.default_llm
         )
-        budget = BudgetTracker(config=BudgetConfig(), bus=self.bus, tenant_id=spec.swarm_id)
-        self._last_budgets[spec.swarm_id] = budget
+        active_budget = budget or BudgetTracker(config=BudgetConfig(), bus=self.bus, tenant_id=spec.swarm_id)
+        self._last_budgets[spec.swarm_id] = active_budget
 
         extra_tools, extra_schemas = (
             self._make_cross_swarm_tool(spec.swarm_id, _depth)
@@ -360,7 +385,7 @@ class SwarmManager:
             engine = OrchestratorSwarm(
                 llm=llm,
                 storage=self.storage,
-                budget=budget,
+                budget=active_budget,
                 bus=self.bus,
                 role_registry=self.role_registry,
                 allowed_roles=spec.roles,
@@ -373,7 +398,7 @@ class SwarmManager:
         engine_peer = PeerSwarm(
             llm=llm,
             storage=self.storage,
-            budget=budget,
+            budget=active_budget,
             bus=self.bus,
             role_registry=self.role_registry,
             allowed_roles=spec.roles,

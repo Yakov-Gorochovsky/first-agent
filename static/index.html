@@ -790,6 +790,20 @@
         </select>
       </div>
 
+      <div class="control-group" title="API Key Authentication & Scoped Identity">
+        <span class="control-label"><i data-lucide="key" style="width:11px;height:11px;display:inline-block;vertical-align:-1px;"></i> Token</span>
+        <select id="apiKeySelect" class="select-clean" onchange="onApiKeySelectChange(this.value)">
+          <option value="ns-admin-secret-key-12345">Admin (Full Access)</option>
+          <option value="ns-client-a-secret-key-12345">Client A (Tenant)</option>
+          <option value="ns-victim-secret-key-12345">Victim (Tenant)</option>
+          <option value="ns-attacker-secret-key-12345">Attacker (Tenant)</option>
+          <option value="custom">Custom Token...</option>
+        </select>
+        <button type="button" class="btn" style="padding: 2px 6px; font-size: 10px; background: rgba(255,255,255,0.06); border: none; cursor: pointer;" onclick="promptCustomToken()" title="Edit API key string">
+          <i data-lucide="edit-3" style="width: 10px; height: 10px;"></i>
+        </button>
+      </div>
+
       <button class="btn btn-emerald" onclick="triggerSimulation()">
         <i data-lucide="zap"></i> Simulate Flow
       </button>
@@ -1702,10 +1716,75 @@
       refreshState();
     }
 
+    function getApiKey() {
+      return localStorage.getItem('neural_swarm_api_key') || 'ns-admin-secret-key-12345';
+    }
+
+    function setApiKey(key) {
+      if (!key) return;
+      localStorage.setItem('neural_swarm_api_key', key.trim());
+      syncApiKeyUI();
+      setupEventSource();
+      refreshState();
+      appendLog('peer_message', 'AUTH UPDATED', `Switched active credentials. Token active.`);
+    }
+
+    function onApiKeySelectChange(val) {
+      if (val === 'custom') {
+        promptCustomToken();
+        return;
+      }
+      setApiKey(val);
+    }
+
+    function promptCustomToken() {
+      const current = getApiKey();
+      const entered = prompt('Enter API Key / Bearer Token:', current);
+      if (entered && entered.trim()) {
+        setApiKey(entered.trim());
+      } else {
+        syncApiKeyUI();
+      }
+    }
+
+    function syncApiKeyUI() {
+      const sel = document.getElementById('apiKeySelect');
+      if (!sel) return;
+      const current = getApiKey();
+      let matched = false;
+      for (let i = 0; i < sel.options.length; i++) {
+        if (sel.options[i].value === current) {
+          sel.selectedIndex = i;
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) {
+        let customOpt = sel.querySelector('option[data-custom="true"]');
+        if (!customOpt) {
+          customOpt = document.createElement('option');
+          customOpt.setAttribute('data-custom', 'true');
+          sel.appendChild(customOpt);
+        }
+        customOpt.value = current;
+        customOpt.textContent = `Custom (${current.substring(0, 10)}...)`;
+        sel.value = current;
+      }
+    }
+
+    function authHeaders(extra = {}) {
+      return {
+        ...extra,
+        'Authorization': `Bearer ${getApiKey()}`
+      };
+    }
+
     async function refreshState() {
       const sel = document.getElementById('tenantSelect');
       const currentTenant = sel.value || 'attacker';
-      const res = await fetch(`/api/state?tenant=${encodeURIComponent(currentTenant)}`);
+      const res = await fetch(`/api/state?tenant=${encodeURIComponent(currentTenant)}`, {
+        headers: authHeaders()
+      });
       const data = await res.json();
 
       const swarms = data.swarms || [];
@@ -1846,7 +1925,7 @@
 
       await fetch('/api/swarms', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ swarm_id, title, topology, color, model, roles, allow_cross_swarm, directive }),
       });
       closeSwarmModal();
@@ -1857,7 +1936,7 @@
     async function deleteSwarm(swarm_id) {
       await fetch('/api/swarms/delete', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ swarm_id }),
       });
       await refreshState();
@@ -1885,7 +1964,7 @@
 
       await fetch('/api/roles', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ name, title, instructions, capabilities, color, max_steps }),
       });
       closeRoleModal();
@@ -1895,7 +1974,7 @@
     async function deleteRole(name) {
       await fetch('/api/roles/delete', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ name }),
       });
       await refreshState();
@@ -1906,8 +1985,13 @@
       appendLog('peer_message', 'ACTIVE SWARM SWITCHED', `Selected swarm: ${document.getElementById('tenantSelect').value}`);
     });
 
-    const evtSource = new EventSource('/api/events');
-    evtSource.onmessage = async (e) => {
+    let evtSource = null;
+    function setupEventSource() {
+      if (evtSource) {
+        try { evtSource.close(); } catch (err) {}
+      }
+      evtSource = new EventSource('/api/events?token=' + encodeURIComponent(getApiKey()));
+      evtSource.onmessage = async (e) => {
       const ev = JSON.parse(e.data);
       const etype = ev.event_type;
       const sId = ev.tenant_id || document.getElementById('tenantSelect').value || 'default';
@@ -2019,6 +2103,10 @@
         refreshState();
       }
     };
+    evtSource.onerror = (err) => {
+      // SSE disconnected or reconnecting
+    };
+  }
 
     async function launchMission(simulate = false) {
       const input = document.getElementById('promptInput');
@@ -2031,7 +2119,7 @@
 
       await fetch('/api/run', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ prompt, tenant_id, mode, simulate }),
       });
     }
@@ -2048,7 +2136,7 @@
       const tenant_id = document.getElementById('tenantSelect').value;
       await fetch('/api/airlock-test', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           tenant_id,
           category: 'python_api',
@@ -2061,7 +2149,7 @@
     async function runEvals() {
       await fetch('/api/evals', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({}),
       });
     }
@@ -2070,6 +2158,8 @@
       if (e.key === 'Enter') launchMission(false);
     });
 
+    syncApiKeyUI();
+    setupEventSource();
     refreshState();
   </script>
 </body>

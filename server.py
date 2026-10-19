@@ -11,6 +11,7 @@ Usage:
     Then open http://localhost:8000 in your browser.
 """
 
+from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -22,11 +23,12 @@ from typing import Any, Dict, List
 from urllib.parse import parse_qs, urlparse
 
 from core.budget import BudgetConfig, BudgetTracker
+from core.auth import APIKeyRecord, AuthManager
 from core.bus import EventBus, SwarmEvent
 from core.config import CONFIG
 from core.llm import OpenAICompatibleProvider
 from core.roles import CAPABILITY_BUNDLES, RoleRegistry
-from core.storage import SQLiteStorage, sanitize_tenant_id
+from core.storage import SQLiteStorage, sanitize_tenant_id, validate_tenant_id
 from core.swarm_manager import SwarmManager
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -40,21 +42,72 @@ llm = OpenAICompatibleProvider()
 swarm_manager = SwarmManager(
     storage=storage, bus=bus, role_registry=role_registry, default_llm=llm
 )
+auth_manager = AuthManager(CONFIG.keys_path)
 
-# Connected SSE client queues
+
+@dataclass
+class SSEClientConnection:
+    client_queue: queue.Queue
+    tenant_id: str
+    is_admin: bool
+
+
+# Connected tenant-scoped SSE client connections
 _sse_clients_lock = threading.Lock()
-_sse_clients: List[queue.Queue] = []
-_run_lock = threading.Lock()
+_sse_clients: List[SSEClientConnection] = []
+_tenant_run_locks_lock = threading.Lock()
+_tenant_run_locks: Dict[str, threading.Lock] = {}
+
+
+def _get_tenant_run_lock(tenant_id: str) -> threading.Lock:
+    with _tenant_run_locks_lock:
+        if tenant_id not in _tenant_run_locks:
+            _tenant_run_locks[tenant_id] = threading.Lock()
+        return _tenant_run_locks[tenant_id]
+
+
+def check_host_binding_security(host: str, auth_enabled: bool, auth_manager: AuthManager) -> None:
+    """Security Guardrail: Refuse to start on non-loopback host without configured authentication."""
+    is_loopback = host.strip().lower() in {"127.0.0.1", "::1", "localhost"}
+    if not is_loopback:
+        if not auth_enabled or not auth_manager.list_records():
+            raise RuntimeError(
+                f"Security Guardrail Refusal: Server configured to bind on non-loopback host '{host}' "
+                "without configured API-key authentication. Refusing to start."
+            )
 
 
 def _broadcast_event(event: SwarmEvent) -> None:
-    payload = json.dumps(event.to_dict(), default=str)
+    """Fan out telemetry events strictly scoped by tenant boundary."""
     with _sse_clients_lock:
-        for q in list(_sse_clients):
-            try:
-                q.put_nowait(payload)
-            except queue.Full:
-                pass
+        if not _sse_clients:
+            return
+        active_clients = list(_sse_clients)
+
+    payload = json.dumps(event.to_dict(), default=str)
+    event_tenant = str(getattr(event, "tenant_id", "") or "").lower().strip()
+    event_data = getattr(event, "data", {}) or {}
+    target_swarm = str(event_data.get("to_swarm") or "").lower().strip()
+
+    with _sse_clients_lock:
+        for client in list(_sse_clients):
+            # Admin clients receive all events (including system telemetry)
+            if client.is_admin:
+                try:
+                    client.client_queue.put_nowait(payload)
+                except queue.Full:
+                    pass
+                continue
+
+            # Non-admin clients ONLY receive events belonging to or addressed to their tenant
+            if client.tenant_id and (
+                client.tenant_id == event_tenant
+                or (target_swarm and client.tenant_id == target_swarm)
+            ):
+                try:
+                    client.client_queue.put_nowait(payload)
+                except queue.Full:
+                    pass
 
 
 bus.subscribe(_broadcast_event)
@@ -221,6 +274,49 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _authenticate(self, required_scope: str = "user") -> Optional[APIKeyRecord]:
+        """Authenticate request using Bearer token or ?token= query parameter.
+
+        Returns:
+            The authenticated APIKeyRecord, or None if authentication failed or scope is insufficient.
+        """
+        if not CONFIG.auth_enabled:
+            return APIKeyRecord(name="Local Dev No-Auth", key_hash="", tenant_id="admin", scopes=["admin", "user"])
+
+        raw_key: Optional[str] = None
+        auth_header = self.headers.get("Authorization", "").strip()
+        if auth_header.startswith("Bearer "):
+            raw_key = auth_header[7:].strip()
+        elif auth_header:
+            raw_key = auth_header
+
+        if not raw_key:
+            parsed = urlparse(self.path)
+            qs = parse_qs(parsed.query)
+            if "token" in qs and qs["token"]:
+                raw_key = qs["token"][0].strip()
+
+        if not raw_key:
+            self._send_json(
+                {"error": "Unauthorized: API key required in 'Authorization: Bearer <token>' header or '?token=' query parameter."},
+                401,
+            )
+            return None
+
+        record = auth_manager.verify_key(raw_key)
+        if not record:
+            self._send_json({"error": "Unauthorized: Invalid API key."}, 401)
+            return None
+
+        if not record.has_scope(required_scope):
+            self._send_json(
+                {"error": f"Forbidden: Insufficient privileges. Required scope: '{required_scope}'."},
+                403,
+            )
+            return None
+
+        return record
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
@@ -240,9 +336,23 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/state":
+            auth = self._authenticate("user")
+            if not auth:
+                return
+
             qs = parse_qs(parsed.query)
-            default_id = swarm_manager.list_swarms()[0].swarm_id if swarm_manager.list_swarms() else "victim"
-            tenant_id = sanitize_tenant_id(qs.get("tenant", [default_id])[0])
+            if auth.has_scope("admin"):
+                default_id = swarm_manager.list_swarms()[0].swarm_id if swarm_manager.list_swarms() else "victim"
+                raw_tenant = qs.get("tenant", [default_id])[0]
+                try:
+                    tenant_id = validate_tenant_id(raw_tenant)
+                except ValueError as exc:
+                    self._send_json({"error": str(exc)}, 400)
+                    return
+            else:
+                tenant_id = auth.tenant_id
+
+            active_budget = swarm_manager.get_last_budget(tenant_id) or budget
             self._send_json(
                 {
                     "tenant_id": tenant_id,
@@ -255,18 +365,22 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
                     "global_skills": storage.get_global_skills(limit=12),
                     "session_turns": storage.get_session_turns(tenant_id, limit=10),
                     "budget": {
-                        "total_steps": budget.total_steps,
-                        "max_swarm_steps": budget.config.max_swarm_steps,
-                        "total_tokens": budget.total_tokens,
-                        "max_total_tokens": budget.config.max_total_tokens,
-                        "elapsed_seconds": budget.elapsed_seconds,
-                        "agent_steps": budget.agent_steps,
+                        "total_steps": active_budget.total_steps,
+                        "max_swarm_steps": active_budget.config.max_swarm_steps,
+                        "total_tokens": active_budget.total_tokens,
+                        "max_total_tokens": active_budget.config.max_total_tokens,
+                        "elapsed_seconds": active_budget.elapsed_seconds,
+                        "agent_steps": active_budget.agent_steps,
                     },
                 }
             )
             return
 
         if path == "/api/events":
+            auth = self._authenticate("user")
+            if not auth:
+                return
+
             self.send_response(HTTPStatus.OK)
             self._send_security_headers()
             self.send_header("Content-Type", "text/event-stream")
@@ -274,16 +388,20 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Connection", "keep-alive")
             self.end_headers()
 
-            client_q: queue.Queue = queue.Queue(maxsize=200)
+            client_conn = SSEClientConnection(
+                client_queue=queue.Queue(maxsize=CONFIG.sse_queue_size),
+                tenant_id=auth.tenant_id,
+                is_admin=auth.has_scope("admin"),
+            )
             with _sse_clients_lock:
-                _sse_clients.append(client_q)
+                _sse_clients.append(client_conn)
 
             try:
                 self.wfile.write(b"data: {\"event_type\": \"connected\"}\n\n")
                 self.wfile.flush()
                 while True:
                     try:
-                        msg = client_q.get(timeout=CONFIG.sse_heartbeat_sec)
+                        msg = client_conn.client_queue.get(timeout=CONFIG.sse_heartbeat_sec)
                         self.wfile.write(f"data: {msg}\n\n".encode("utf-8"))
                         self.wfile.flush()
                     except queue.Empty:
@@ -293,8 +411,8 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
                 pass
             finally:
                 with _sse_clients_lock:
-                    if client_q in _sse_clients:
-                        _sse_clients.remove(client_q)
+                    if client_conn in _sse_clients:
+                        _sse_clients.remove(client_conn)
             return
 
         self._send_json({"error": "Not found"}, 404)
@@ -321,6 +439,10 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
             body = {}
 
         if parsed.path == "/api/swarms":
+            auth = self._authenticate("admin")
+            if not auth:
+                return
+
             swarm_id = str(body.get("swarm_id", "")).strip()
             title = str(body.get("title", "")).strip()
             topology = str(body.get("topology", "peer")).strip().lower()
@@ -332,6 +454,12 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
 
             if not swarm_id or not title:
                 self._send_json({"error": "swarm_id and title are required."}, 400)
+                return
+
+            try:
+                validate_tenant_id(swarm_id)
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, 400)
                 return
 
             spec = swarm_manager.deploy_swarm(
@@ -348,12 +476,25 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/swarms/delete":
+            auth = self._authenticate("admin")
+            if not auth:
+                return
+
             swarm_id = str(body.get("swarm_id", "")).strip()
+            try:
+                validate_tenant_id(swarm_id)
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, 400)
+                return
             deleted = swarm_manager.delete_swarm(swarm_id)
             self._send_json({"deleted": deleted, "swarms": swarm_manager.list_dicts()})
             return
 
         if parsed.path == "/api/roles":
+            auth = self._authenticate("admin")
+            if not auth:
+                return
+
             name = str(body.get("name", "")).strip()
             title = str(body.get("title", "")).strip()
             instructions = str(body.get("instructions", "")).strip()
@@ -382,6 +523,10 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/roles/delete":
+            auth = self._authenticate("admin")
+            if not auth:
+                return
+
             name = str(body.get("name", "")).strip()
             deleted = role_registry.delete_role(name)
             bus.emit("role_deleted", agent_name="system", tenant_id="default", name=name)
@@ -389,6 +534,10 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/evals":
+            auth = self._authenticate("admin")
+            if not auth:
+                return
+
             from evals import run_eval_suite
 
             scorecard = run_eval_suite(bus=bus)
@@ -411,8 +560,11 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/run":
+            auth = self._authenticate("user")
+            if not auth:
+                return
+
             prompt = str(body.get("prompt", "")).strip()
-            tenant_id = sanitize_tenant_id(str(body.get("tenant_id", "attacker")))
             mode = str(body.get("mode", "")).strip().lower()
             simulate = bool(body.get("simulate", False))
 
@@ -420,8 +572,20 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "Prompt is required"}, 400)
                 return
 
-            if not _run_lock.acquire(blocking=False):
-                self._send_json({"error": "A swarm mission is already running."}, 409)
+            # Tenant derivation: Admins may target any valid tenant; user tokens are locked to their credential's tenant
+            if auth.has_scope("admin"):
+                raw_tenant = str(body.get("tenant_id", "attacker")).strip()
+                try:
+                    tenant_id = validate_tenant_id(raw_tenant)
+                except ValueError as exc:
+                    self._send_json({"error": str(exc)}, 400)
+                    return
+            else:
+                tenant_id = auth.tenant_id
+
+            run_lock = _get_tenant_run_lock(tenant_id)
+            if not run_lock.acquire(blocking=False):
+                self._send_json({"error": f"A mission is already running for tenant '{tenant_id}'."}, 409)
                 return
 
             def _worker() -> None:
@@ -459,24 +623,46 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
                         error=str(exc),
                     )
                 finally:
-                    _run_lock.release()
+                    run_lock.release()
 
             threading.Thread(target=_worker, daemon=True).start()
             self._send_json({"status": "started", "tenant_id": tenant_id, "mode": mode})
             return
 
         if parsed.path == "/api/airlock-test":
+            auth = self._authenticate("admin")
+            if not auth:
+                return
+
             category = str(body.get("category", "security"))
             problem = str(body.get("problem", ""))
             solution = str(body.get("solution", ""))
-            tenant_id = sanitize_tenant_id(str(body.get("tenant_id", "client_a")))
+            raw_tenant = str(body.get("tenant_id", auth.tenant_id)).strip()
+            try:
+                tenant_id = validate_tenant_id(raw_tenant)
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, 400)
+                return
             sanitized = storage.add_global_skill(category, problem, solution)
             bus.emit("skill_learned", agent_name="privacy_airlock", tenant_id=tenant_id, **sanitized)
             self._send_json({"sanitized": sanitized})
             return
 
         if parsed.path == "/api/memory":
-            tenant_id = sanitize_tenant_id(str(body.get("tenant_id", "client_a")))
+            auth = self._authenticate("user")
+            if not auth:
+                return
+
+            if auth.has_scope("admin"):
+                raw_tenant = str(body.get("tenant_id", "client_a")).strip()
+                try:
+                    tenant_id = validate_tenant_id(raw_tenant)
+                except ValueError as exc:
+                    self._send_json({"error": str(exc)}, 400)
+                    return
+            else:
+                tenant_id = auth.tenant_id
+
             key = str(body.get("key", "")).strip()
             fact = str(body.get("fact", "")).strip()
             if key and fact:
@@ -488,12 +674,14 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    check_host_binding_security(CONFIG.host, CONFIG.auth_enabled, auth_manager)
     server = ThreadingHTTPServer((CONFIG.host, CONFIG.port), SwarmRequestHandler)
     print("=" * 72)
-    print(f" NEURAL SWARM // COMMAND CENTER UI")
+    print(f" NEURAL SWARM // EVENT DASHBOARD SERVER")
     print(f" URL:      http://{CONFIG.host}:{CONFIG.port}")
     print(f" Model:    {CONFIG.model_name} ({CONFIG.api_base_url})")
     print(f" Roles:    {', '.join(r.name for r in role_registry.list_roles())}")
+    print(f" Auth:     {'ENABLED (' + str(len(auth_manager.list_records())) + ' keys)' if CONFIG.auth_enabled else 'DISABLED'}")
     print(f" Database: {CONFIG.db_path}")
     print("=" * 72)
     print("Press Ctrl+C to stop the server.\n")

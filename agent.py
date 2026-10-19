@@ -125,7 +125,12 @@ def main() -> None:
     print("=" * 78)
 
     def run_active(prompt_text: str) -> str:
-        return swarm_manager.run_swarm(swarm_id=tenant_id, prompt=prompt_text, topology_override=mode)
+        return swarm_manager.run_swarm(
+            swarm_id=tenant_id,
+            prompt=prompt_text,
+            topology_override=mode,
+            budget=budget,
+        )
 
     if args.prompt:
         print(f"\nYou ({tenant_id}): {args.prompt}")
@@ -210,7 +215,8 @@ def main() -> None:
             print(f"\nShared Global Skills (All Tenants): {skills or 'Empty'}\n")
             continue
         if user_input.lower() == "/budget":
-            print(f"\nLast Run Budget Summary: {budget.summary()}\n")
+            curr_budget = swarm_manager.get_last_budget(tenant_id) or budget
+            print(f"\nLast Run Budget Summary: {curr_budget.summary()}\n")
             continue
         if user_input.lower() == "/clear":
             storage.clear_session(tenant_id)
@@ -220,7 +226,8 @@ def main() -> None:
         try:
             reply = run_active(user_input)
             print(f"\nSwarm: {reply}")
-            print(f"  [Budget Summary] {budget.summary()}\n")
+            curr_budget = swarm_manager.get_last_budget(tenant_id) or budget
+            print(f"  [Budget Summary] {curr_budget.summary()}\n")
         except Exception as exc:
             print(f"\n[Error] {exc}\n")
 
