@@ -47,14 +47,26 @@ Whenever a new feature or capability is proposed:
 
 ## 4. Approved Specification: FP-02 ML-Powered Prompt Optimization, Semantic Vector Partitions & Exemplar Memory
 
+### Core Invariant: Universal Domain Agnosticism
+
+The Neural Swarm harness is a **general-purpose cognitive runtime**. It must NEVER hardcode domain assumptions (such as assuming every swarm builds software or writes code).
+- A swarm may be configured for **financial analysis**, **legal contract auditing**, **medical research synthesis**, **customer support**, **investigative journalism**, or **software development**.
+- All factories, schemas, memory stores, and optimization loops must be strictly domain-neutral:
+  - Roles are defined purely by `(instructions, capabilities, tools)`.
+  - Exemplars capture arbitrary `(task, reasoning_steps, tool_calls, synthesis)`.
+  - User profiles capture arbitrary domain preferences (e.g. `jurisdiction: 'EU-GDPR'`, `citation_style: 'APA'`, `tone: 'formal'`, `risk_tolerance: 'conservative'`).
+
+---
+
 ### Architectural Objectives & Machine Learning Principles
 Elevate the harness from static string prompts into an adaptive, mathematically grounded learning and retrieval system:
-1. **Vector Embedding Layer & Semantic Retrieval**: Replace naive top-$K$ frequency sorting of skills with dense embedding similarity search.
+1. **Vector Embedding Layer & Semantic Retrieval**: Replace naive top-$K$ frequency sorting of skills with dense embedding similarity search across any problem domain.
 2. **Tunable Hybrid Dense/Sparse Scoring**: Allow operators to control the trade-off weight $\alpha$ between conceptual semantic similarity (Dense) and exact keyword matching (BM25/Sparse).
 3. **Multi-Tenant Vector Partitions**: Partition vector indices strictly by `(tenant_id, category)` to guarantee zero cross-tenant embedding leakage.
 4. **Dynamic Few-Shot In-Context Learning (Prompt Improvement)**: Automatically distill verified successful swarm trajectories into "Exemplars" and inject the top matching exemplars into agent prompts at runtime.
-5. **Role-Specific Decoding Hyperparameters**: Expose per-role decoding profiles (temperature $T$, nucleus top-$p$, frequency penalty) matched to each role's cognitive objective (deterministic coding vs. exploratory research).
-6. **LLM-as-a-Judge Evaluation & RLHF Dataset Logger**: Quantitative multi-rubric scoring (Groundedness, Relevance, Tool Efficiency) and active learning logging (`datasets/chosen.jsonl` vs `datasets/rejected.jsonl`).
+5. **Universal User Personalization & Non-Parametric Memory**: Persist user-specific preferences, stylistic constraints, and domain knowledge in an embedded/relational database, bridging the gap between frozen model weights and tailored user results.
+6. **Role-Specific Decoding Hyperparameters**: Expose per-role decoding profiles (temperature $T$, nucleus top-$p$, frequency penalty) matched to each role's cognitive objective (deterministic analysis vs. exploratory research).
+7. **LLM-as-a-Judge Evaluation & RLHF Dataset Logger**: Quantitative multi-rubric scoring (Groundedness, Relevance, Tool Efficiency) and active learning logging (`datasets/chosen.jsonl` vs `datasets/rejected.jsonl`).
 
 ---
 
@@ -150,6 +162,31 @@ class DecodingProfile:
   - Upvoted runs $\to$ appended to `datasets/chosen.jsonl`.
   - Downvoted runs $\to$ appended to `datasets/rejected.jsonl`.
   - Yields clean Direct Preference Optimization (DPO) and RLHF datasets.
+
+#### 6. Universal User Personalization & Non-Parametric Memory (`core/storage.py`)
+- **Domain-Neutral User Profile Schema (`workspace/swarm.db`)**:
+  ```sql
+  CREATE TABLE IF NOT EXISTS user_profiles (
+      tenant_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      domain_focus TEXT NOT NULL DEFAULT '',     -- e.g., 'Biomedical Research', 'Quantitative Finance', 'Fullstack Engineering'
+      preferences_json TEXT NOT NULL DEFAULT '{}', -- Key-value constraints: {"tone": "formal", "compliance": "HIPAA", "citation_format": "APA"}
+      updated_at REAL NOT NULL,
+      PRIMARY KEY(tenant_id, user_id)
+  );
+  ```
+- **Universal Context Injection Protocol**:
+  When any specialist agent initializes its context block in `WorkerAgent._build_context_block()`:
+  ```text
+  [USER PREFERENCES & DOMAIN CONSTRAINTS (tenant='{tenant_id}', user='{user_id}')]:
+    - Domain Context: Biomedical Research
+    - Response Style: Formal, evidence-backed
+    - Mandatory Constraints: Always cite PubMed IDs; flag experimental drug interactions explicitly.
+  ```
+- **Database Architecture Evolution**:
+  - **Embedded Baseline**: SQLite (WAL mode) with packed binary vector blobs for zero-setup local execution.
+  - **Enterprise Migration**: Ready-to-plug PostgreSQL + `pgvector` adapter implementing the identical `StorageBackend` Protocol, supporting combined relational user metadata and vector similarity queries (`ORDER BY embedding <=> query_vector`).
 
 ---
 
