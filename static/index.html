@@ -2044,7 +2044,7 @@
               lightConnection(nodeId(sId, m.from), nodeId(sId, ev.agent_name), '#38bdf8', 'INTEGRATED');
             }
           });
-          appendLog('peer_message', `[${sId}] ${ev.agent_name.toUpperCase()} · THINKING`, `Processing ${d.messages.length} inbox message(s) via Ollama...`);
+          appendLog('peer_message', `[${sId}] ${ev.agent_name.toUpperCase()} · THINKING`, `Processing ${d.messages.length} inbox message(s)...`);
         }
       } else if (etype === 'peer_message') {
         const fromKey = nodeId(sId, d.from_agent);
