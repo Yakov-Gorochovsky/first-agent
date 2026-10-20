@@ -22,11 +22,29 @@ Whenever a new feature or capability is proposed:
 
 | ID | Feature Proposal | Category | Priority | Status | Summary & Technical Impact |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| *—* | *(Awaiting your first proposal)* | *—* | *—* | *Under Review* | *—* |
+| **FP-01** | **Autonomous Swarm & Agent Factory (with Editable Lifecycle & Scoped Auth)** | Core Architecture / Runtime | **P0 (Current Focus)** | **Approved** | Formal Factory DP for agents and swarms, prompt-driven auto-generation, full swarm editability, and strict tenant-bound authorization. |
 
 ---
 
-## 3. Candidate Ideas for Consideration
+## 3. Approved Specification: FP-01 Swarm & Agent Factory System
+
+### Architectural Goals
+1. **Formal Factory Design Pattern**:
+   - `AgentFactory`: Centralizes `WorkerAgent` and `PeerNode` instantiation, capability resolution (`@code`, `@files`, `@web`, `@memory`), tenant filesystem namespace injection, and role instruction binding.
+   - `SwarmFactory`: Pluggable topology registry (`register_topology()`, `create_swarm()`). Zero procedural `if/else` branching when adding new topologies.
+2. **Autonomous Swarm Generation (Meta-Planner)**:
+   - Given a natural language mission (e.g. *"Audit smart contracts for reentrancy bugs"*), an AI meta-planner generates a candidate `SwarmDeploymentSpec` with inferred specialist roles, tools, directive, and topology.
+3. **Editable Swarm Lifecycle (CRUD)**:
+   - Users can automatically generate or manually define a swarm, but can freely **inspect, edit, and reconfigure** its roles, directives, model, and topology before or after running.
+4. **Tenant-Bound Authorization & Ownership**:
+   - **`admin`**: Full authority to create, edit, reassign, or delete swarms across all tenants.
+   - **`user`**: Strictly scoped to `auth.tenant_id`. A tenant can only create, list, edit, or delete swarms belonging to their verified tenant partition. Cross-tenant mutation attempts are deterministically blocked with HTTP 403/404.
+5. **Clean Code & No Legacy Burden**:
+   - Build cleanly from first principles; no legacy compatibility wrappers required.
+
+---
+
+## 4. Candidate Ideas for Consideration
 
 The following items are potential enhancements identified during architecture reviews:
 
@@ -56,7 +74,7 @@ The following items are potential enhancements identified during architecture re
 
 ---
 
-## 4. Completed Milestones Archive
+## 5. Completed Milestones Archive
 
 - [x] **Decoupled Hexagonal Core**: Abstract `LLMProvider`, `StorageBackend`, and `EventBus` protocols.
 - [x] **Two Swarm Topologies**: Step 2 Orchestrator delegation + Step 3 Peer Inbox network.
