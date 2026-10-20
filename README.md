@@ -55,18 +55,22 @@ All settings, capability bundles, prompts, and roles live outside the Python cod
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
+pip install -r requirements-dev.txt
 cp .env.example .env
 
-# 1. Launch the Live Event Dashboard Web UI (http://127.0.0.1:8000)
-python server.py
+# 1. Run the Full Modular Pytest Suite with Code Coverage (39 tests)
+pytest --cov=core --cov=tools --cov=server
 
-# 2. Run Interactive Terminal CLI (Peer or Orchestrator mode)
-python agent.py -m peer -t client_a
-
-# 3. Run the 11-Test Deterministic Regression & Security Suite
+# 2. Run the 11-Test Deterministic Regression & Security Scorecard
 python evals.py
 
-# 4. Run Step 6 Framework Abstractions Comparison (LangGraph & OpenAI SDK)
+# 3. Launch the Live Event Dashboard Web UI (http://127.0.0.1:8000)
+python server.py
+
+# 4. Run Interactive Terminal CLI (Peer or Orchestrator mode)
+python agent.py -m peer -t client_a
+
+# 5. Run Step 6 Framework Abstractions Comparison (LangGraph & OpenAI SDK)
 python frameworks_comparison.py
 ```
 
