@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import Dict, List
 from dotenv import load_dotenv
 
-load_dotenv()
+ROOT_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(ROOT_DIR / ".env", override=True)
 
-ROOT_DIR = Path(__file__).parent.parent
 CONFIG_DIR = ROOT_DIR / "config"
 WORKSPACE_DIR = Path(os.getenv("WORKSPACE_DIR", str(ROOT_DIR / "workspace")))
 WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
