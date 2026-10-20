@@ -22,7 +22,8 @@ Whenever a new feature or capability is proposed:
 
 | ID | Feature Proposal | Category | Priority | Status | Summary & Technical Impact |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **FP-01** | **Autonomous Swarm & Agent Factory (with Editable Lifecycle & Scoped Auth)** | Core Architecture / Runtime | **P0 (Current Focus)** | **Approved** | Formal Factory DP for agents and swarms, prompt-driven auto-generation, full swarm editability, and strict tenant-bound authorization. |
+| **FP-01** | **Autonomous Swarm & Agent Factory (with Editable Lifecycle & Scoped Auth)** | Core Architecture / Runtime | **P0** | **Approved** | Formal Factory DP for agents and swarms, prompt-driven auto-generation, full swarm editability, and strict tenant-bound authorization. |
+| **FP-02** | **ML-Powered Prompt Optimization, Semantic Vector Partitions & Exemplar Memory** | Applied ML / Optimization | **P1 (Next Target)** | **Approved** | Dense vector embeddings, multi-tenant vector partitions, tunable hybrid retrieval ($\alpha$), dynamic few-shot exemplar injection, per-role decoding profiles, and RLHF dataset logger. |
 
 ---
 
@@ -44,7 +45,122 @@ Whenever a new feature or capability is proposed:
 
 ---
 
-## 4. Candidate Ideas for Consideration
+## 4. Approved Specification: FP-02 ML-Powered Prompt Optimization, Semantic Vector Partitions & Exemplar Memory
+
+### Architectural Objectives & Machine Learning Principles
+Elevate the harness from static string prompts into an adaptive, mathematically grounded learning and retrieval system:
+1. **Vector Embedding Layer & Semantic Retrieval**: Replace naive top-$K$ frequency sorting of skills with dense embedding similarity search.
+2. **Tunable Hybrid Dense/Sparse Scoring**: Allow operators to control the trade-off weight $\alpha$ between conceptual semantic similarity (Dense) and exact keyword matching (BM25/Sparse).
+3. **Multi-Tenant Vector Partitions**: Partition vector indices strictly by `(tenant_id, category)` to guarantee zero cross-tenant embedding leakage.
+4. **Dynamic Few-Shot In-Context Learning (Prompt Improvement)**: Automatically distill verified successful swarm trajectories into "Exemplars" and inject the top matching exemplars into agent prompts at runtime.
+5. **Role-Specific Decoding Hyperparameters**: Expose per-role decoding profiles (temperature $T$, nucleus top-$p$, frequency penalty) matched to each role's cognitive objective (deterministic coding vs. exploratory research).
+6. **LLM-as-a-Judge Evaluation & RLHF Dataset Logger**: Quantitative multi-rubric scoring (Groundedness, Relevance, Tool Efficiency) and active learning logging (`datasets/chosen.jsonl` vs `datasets/rejected.jsonl`).
+
+---
+
+### Component Specifications & Interfaces
+
+#### 1. Vector Embeddings Protocol (`core/embeddings.py`)
+```python
+class EmbeddingProvider(Protocol):
+    """Abstract interface for dense vector embedding generation."""
+    dimension: int
+
+    def embed_text(self, text: str) -> List[float]:
+        """Generate a dense vector for a single string."""
+        ...
+
+    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        """Batch generate embeddings for multiple strings."""
+        ...
+```
+- **Implementations**:
+  - `GeminiEmbeddingProvider`: Uses `models/text-embedding-004` (768-dim) via Google's API key.
+  - `DeterministicHashEmbeddingProvider`: Fast, zero-dependency 64-dim n-gram feature hashing fallback for unit tests and local environments without API keys.
+
+#### 2. Vector Partition Store & SQLite Schema (`core/vector_store.py`)
+- **Database Schema (`workspace/swarm.db`)**:
+  ```sql
+  CREATE TABLE IF NOT EXISTS tenant_vector_store (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id TEXT NOT NULL,
+      category TEXT NOT NULL,
+      item_id TEXT NOT NULL,
+      text_content TEXT NOT NULL,
+      metadata_json TEXT NOT NULL,
+      vector_blob BLOB NOT NULL,  -- packed struct.pack(f'{dim}f', *vector)
+      created_at REAL NOT NULL,
+      UNIQUE(tenant_id, category, item_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_vector_tenant_cat 
+  ON tenant_vector_store(tenant_id, category);
+  ```
+- **Similarity & Hybrid Scoring Formulas**:
+  - **Cosine Similarity**:
+    $$\text{CosineSim}(\mathbf{u}, \mathbf{v}) = \frac{\mathbf{u} \cdot \mathbf{v}}{\|\mathbf{u}\|_2 \|\mathbf{v}\|_2} = \frac{\sum_{i=1}^d u_i v_i}{\sqrt{\sum_{i=1}^d u_i^2} \sqrt{\sum_{i=1}^d v_i^2}}$$
+  - **Tunable Hybrid Score ($\alpha \in [0.0, 1.0]$)**:
+    $$\text{Score}(q, d) = \alpha \cdot \text{NormalizedDense}(e_q, e_d) + (1 - \alpha) \cdot \text{NormalizedBM25}(q, d)$$
+    - $\alpha = 1.0 \implies$ Pure conceptual semantic search.
+    - $\alpha = 0.0 \implies$ Pure exact keyword matching.
+    - Default $\alpha = 0.7 \implies$ Best-of-both hybrid retrieval.
+
+#### 3. Exemplar Distillation & Prompt Injection (`core/exemplars.py`)
+- **Exemplar Record Schema**:
+  - `task_pattern`: String describing the problem solved.
+  - `tool_chain`: List of `(tool_name, arguments, result_summary)`.
+  - `final_synthesis`: The verified solution.
+  - `score`: Confidence score $[0.0, 1.0]$ assigned by critic or operator.
+- **In-Context Injection Protocol ([`core/swarm.py`](core/swarm.py))**:
+  When preparing `messages` for `execute_task`:
+  1. Embed the incoming `task_prompt`.
+  2. Query `tenant_vector_store` for partition `(tenant_id, role)` with $K=2$ nearest neighbors.
+  3. Format matching exemplars into the system context:
+     ```text
+     [VERIFIED SUCCESSFUL DEMONSTRATIONS (FEW-SHOT EXEMPLARS)]:
+     Example 1:
+       Task: "Calculate compound interest for $5,000 at 6% for 5 years"
+       Action: calculator(expression="5000 * (1 + 0.06)**5")
+       Observation: 6691.1278
+       Output: "The investment grows to $6,691.13 over 5 years."
+     ```
+
+#### 4. Role-Specific Decoding Profiles (`core/decoding.py`)
+```python
+@dataclass
+class DecodingProfile:
+    temperature: float = 0.1
+    top_p: float = 0.9
+    presence_penalty: float = 0.0
+    frequency_penalty: float = 0.0
+```
+- **Profiles mapped in `config/settings.json`**:
+  - `"coder"`: `temperature=0.0`, `top_p=0.1` (greedy, deterministic code/math).
+  - `"critic"`: `temperature=0.1`, `top_p=0.2` (strict verification).
+  - `"researcher"`: `temperature=0.4`, `top_p=0.85`, `presence_penalty=0.2` (query diversity).
+  - `"architect"`: `temperature=0.5`, `top_p=0.9`, `presence_penalty=0.3` (creative decomposition).
+
+#### 5. Evaluation Judge & Active Learning Dataset Generator (`core/evaluation_judge.py`)
+- **Automated Rubrics**:
+  - **Faithfulness Score $[0.0, 1.0]$**: Verification that all factual statements in the output match facts returned by tool executions.
+  - **Relevance Score $[0.0, 1.0]$**: Cosine similarity between user prompt embedding and final output embedding.
+  - **Tool Efficiency $[0.0, 1.0]$**: $1.0 - \min(1.0, \frac{\text{redundant\_calls}}{\text{total\_calls}})$.
+- **Preference Data Collection**:
+  - `/api/feedback` endpoint records `(prompt, swarm_output, user_critique)`.
+  - Upvoted runs $\to$ appended to `datasets/chosen.jsonl`.
+  - Downvoted runs $\to$ appended to `datasets/rejected.jsonl`.
+  - Yields clean Direct Preference Optimization (DPO) and RLHF datasets.
+
+---
+
+### Security, Isolation & Validation Rules
+1. **Tenant Isolation Invariant**: All vector store queries MUST include `WHERE tenant_id = ?` using `validate_tenant_id()`. Zero cross-tenant embedding comparisons.
+2. **Privacy Airlock**: Any exemplar promoted from tenant-private memory to global cross-swarm memory MUST pass through `PrivacyAirlock.sanitize()` to scrub emails, IPs, URLs, secrets, and file paths.
+3. **Graceful Degradation**: If vector services or embedding APIs fail, the harness automatically falls back to keyword matching without crashing.
+
+---
+
+## 5. Candidate Ideas for Consideration
 
 The following items are potential enhancements identified during architecture reviews:
 
@@ -74,7 +190,7 @@ The following items are potential enhancements identified during architecture re
 
 ---
 
-## 5. Completed Milestones Archive
+## 6. Completed Milestones Archive
 
 - [x] **Decoupled Hexagonal Core**: Abstract `LLMProvider`, `StorageBackend`, and `EventBus` protocols.
 - [x] **Two Swarm Topologies**: Step 2 Orchestrator delegation + Step 3 Peer Inbox network.
