@@ -129,3 +129,37 @@ def test_run_python_fail_closed_mode(monkeypatch):
     res = run_python("print('should fail closed')")
     assert "SecurityError" in res
     assert "Subprocess execution failed closed" in res
+
+
+def test_fetch_url_rate_limiting_retry(monkeypatch):
+    """Verify that fetch_url automatically retries when receiving an HTTP 429 rate limit."""
+    import requests
+
+    call_count = 0
+
+    class DummyResponse:
+        def __init__(self, status_code, text, headers=None):
+            self.status_code = status_code
+            self.text = text
+            self.headers = headers or {}
+
+        def raise_for_status(self):
+            if self.status_code == 429:
+                err = requests.HTTPError("429 Too Many Requests")
+                err.response = self
+                raise err
+
+    def fake_get(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return DummyResponse(429, "Too Many Requests", {"retry-after": "0.01"})
+        return DummyResponse(200, "<html><body><h1>Target Verified</h1></body></html>")
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr("tools._resolve_and_validate_public_url", lambda url: (url, "example.com", "93.184.216.34", 80))
+
+    result = fetch_url("http://example.com/status")
+    assert call_count == 2
+    assert "Target Verified" in result
+

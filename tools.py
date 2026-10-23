@@ -33,6 +33,7 @@ from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 import requests
 
 from core.config import CONFIG, WORKSPACE_DIR
+from core.resilience import RetryConfig, retry_with_backoff
 from core.storage import sanitize_tenant_id
 
 _SENSITIVE_ENV_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH", "CREDENTIAL")
@@ -357,8 +358,17 @@ def web_search(query: str) -> str:
                 "Chrome/122.0.0.0 Safari/537.36"
             )
         }
-        resp = requests.get(url, headers=headers, timeout=CONFIG.search_timeout_sec)
-        resp.raise_for_status()
+
+        def _do_search() -> requests.Response:
+            r = requests.get(url, headers=headers, timeout=CONFIG.search_timeout_sec)
+            r.raise_for_status()
+            return r
+
+        resp = retry_with_backoff(
+            _do_search,
+            retry_config=RetryConfig(max_retries=3, initial_delay=1.0, max_delay=15.0),
+            retryable_exceptions=(requests.RequestException,),
+        )
         html = resp.text
 
         links = _DDG_LINK_RE.findall(html)
@@ -392,13 +402,21 @@ def fetch_url(url: str) -> str:
             )
         }
         with _pinned_getaddrinfo(hostname, pinned_ip):
-            resp = requests.get(
-                safe_url,
-                headers=headers,
-                timeout=CONFIG.fetch_timeout_sec,
-                allow_redirects=False,
+            def _do_fetch() -> requests.Response:
+                r = requests.get(
+                    safe_url,
+                    headers=headers,
+                    timeout=CONFIG.fetch_timeout_sec,
+                    allow_redirects=False,
+                )
+                r.raise_for_status()
+                return r
+
+            resp = retry_with_backoff(
+                _do_fetch,
+                retry_config=RetryConfig(max_retries=3, initial_delay=1.0, max_delay=15.0),
+                retryable_exceptions=(requests.RequestException,),
             )
-        resp.raise_for_status()
         from core.cleaning import clean_html_to_markdown
         text = clean_html_to_markdown(resp.text, max_chars=CONFIG.fetch_max_chars)
         if not text:

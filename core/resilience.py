@@ -14,7 +14,7 @@ import re
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, Callable, Dict, Optional, TypeVar
 
 T = TypeVar("T")
 
@@ -134,39 +134,150 @@ class RetryConfig:
     jitter: bool = True
 
 
-def extract_retry_delay(exc: Exception) -> Optional[float]:
+def extract_retry_delay(exc: Exception, attempt: int = 1) -> Optional[float]:
     """
-    Extract recommended retry delay (in seconds) from RateLimitError, HTTP 429 response,
-    headers, or error message body.
+    Universally extract recommended retry delay (in seconds) from any rate limit error:
+    - Internal RateLimitExceededError / RateLimitError attributes (exc.retry_after)
+    - HTTP response headers (Retry-After in seconds or HTTP date, retry-after-ms, x-ratelimit-reset-*)
+    - JSON error response bodies (OpenAI, Anthropic, Google, Groq, Cloudflare, etc.)
+    - Text patterns in error messages across all major model and web providers (seconds & milliseconds)
+    - Fallback progressive backoff for generic HTTP 429 / Rate Limit errors without explicit timestamps
     """
-    # 1. Check HTTP response headers (e.g. Retry-After)
+    # 0. Direct attribute on exception (e.g. exc.retry_after, exc.retry_delay)
+    for attr in ("retry_after", "retry_delay", "retryAfter"):
+        direct_attr = getattr(exc, attr, None)
+        if direct_attr is not None:
+            try:
+                return float(direct_attr)
+            except (ValueError, TypeError):
+                pass
+
+    # 1. HTTP Response object or headers dictionary attached to exception
     response = getattr(exc, "response", None)
+    headers = None
     if response is not None:
         headers = getattr(response, "headers", None)
-        if headers:
-            retry_after = headers.get("retry-after") or headers.get("Retry-After")
-            if retry_after:
+    if headers is None:
+        headers = getattr(exc, "headers", None)
+
+    if headers and hasattr(headers, "get"):
+        # 1a. Standard Retry-After header (seconds or HTTP-date)
+        retry_after = headers.get("retry-after") or headers.get("Retry-After")
+        if retry_after:
+            try:
+                return max(0.5, float(retry_after))
+            except ValueError:
+                # Attempt to parse HTTP Date format (RFC 2822 / 1123)
                 try:
-                    return float(retry_after)
-                except ValueError:
+                    from email.utils import parsedate_to_datetime
+                    dt = parsedate_to_datetime(str(retry_after))
+                    diff = dt.timestamp() - time.time()
+                    if diff > 0:
+                        return max(0.5, diff)
+                except Exception:
                     pass
 
-    # 2. Check error message / body for 'retryDelay' or 'Please retry in X.Xs'
+        # 1b. retry-after-ms (milliseconds used by Azure, OpenAI, Cloudflare)
+        retry_ms = headers.get("retry-after-ms") or headers.get("Retry-After-Ms")
+        if retry_ms:
+            try:
+                return max(0.5, float(retry_ms) / 1000.0)
+            except ValueError:
+                pass
+
+        # 1c. x-ratelimit-reset-requests, x-ratelimit-reset-tokens, x-ratelimit-reset, ratelimit-reset
+        for h_key in (
+            "x-ratelimit-reset-requests",
+            "x-ratelimit-reset-tokens",
+            "x-ratelimit-reset",
+            "ratelimit-reset",
+        ):
+            h_val = headers.get(h_key)
+            if h_val:
+                val_str = str(h_val).strip()
+                if val_str.endswith("ms"):
+                    try:
+                        return max(0.5, float(val_str[:-2]) / 1000.0)
+                    except ValueError:
+                        pass
+                elif val_str.endswith("s"):
+                    try:
+                        return max(0.5, float(val_str[:-1]))
+                    except ValueError:
+                        pass
+                else:
+                    try:
+                        val_num = float(val_str)
+                        if val_num > 1_000_000_000:  # Epoch timestamp
+                            return max(1.0, val_num - time.time())
+                        return max(0.5, val_num)
+                    except ValueError:
+                        pass
+
+    # 2. Check JSON error body if present (e.g. OpenAI body dict or body string)
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        raw_err = body.get("error")
+        err_dict: Dict[str, Any] = raw_err if isinstance(raw_err, dict) else body
+        for k in ("retry_after", "retryDelay", "retry_delay", "retryAfter"):
+            b_delay = err_dict.get(k)
+            if b_delay is not None:
+                try:
+                    return max(0.5, float(b_delay))
+                except (ValueError, TypeError):
+                    pass
+
+    # 3. Comprehensive Regex matching across error strings and bodies
     exc_str = str(exc)
-    m = re.search(
-        r"(?:retry(?:Delay|_delay)?|retry in)[:\s'\"\\]*([0-9]+(?:\.[0-9]+)?)s?",
+    if body and not isinstance(body, dict):
+        exc_str += " " + str(body)
+
+    # 3a. Millisecond durations: e.g. "try again in 500ms", "retry in 800ms"
+    ms_match = re.search(
+        r"(?:retry(?:Delay|_delay)?|try again in|retry in)[:\s'\"\\]*([0-9]+(?:\.[0-9]+)?)\s*ms",
         exc_str,
         re.IGNORECASE,
     )
-    if m:
+    if ms_match:
         try:
-            return float(m.group(1))
+            return max(0.5, float(ms_match.group(1)) / 1000.0)
         except ValueError:
             pass
 
-    # 3. If it is a 429 RateLimitError or contains "429" / "rate_limit" / "RESOURCE_EXHAUSTED"
-    if "429" in exc_str or "rate limit" in exc_str.lower() or "resource_exhausted" in exc_str.lower():
-        return 15.0
+    # 3b. Seconds durations: e.g. "Please retry in 21.7s", "try again in 5 seconds", "retry after 10s", "resets in 8s"
+    s_match = re.search(
+        r"(?:retry(?:Delay|_delay)?|try again in|retry in|retry after|resets? in)[:\s'\"\\]*([0-9]+(?:\.[0-9]+)?)\s*(?:s|sec|seconds)?",
+        exc_str,
+        re.IGNORECASE,
+    )
+    if s_match:
+        try:
+            return max(0.5, float(s_match.group(1)))
+        except ValueError:
+            pass
+
+    # 4. Universal rate limit indicators without explicit timestamp (HTTP 429, Quota, TPM/RPM limit)
+    status_code = getattr(exc, "status_code", None) or getattr(response, "status_code", None)
+    err_code = getattr(exc, "code", None)
+    is_rate_limit = (
+        status_code == 429
+        or err_code in (429, "429", "rate_limit_exceeded")
+        or "429" in exc_str
+        or "rate limit" in exc_str.lower()
+        or "ratelimit" in exc_str.lower()
+        or "resource_exhausted" in exc_str.lower()
+        or "quota exceeded" in exc_str.lower()
+        or "too many requests" in exc_str.lower()
+        or "tpm limit" in exc_str.lower()
+        or "rpm limit" in exc_str.lower()
+    )
+
+    if is_rate_limit:
+        # Step-wise progressive cooldown for rate limits without explicit delay:
+        # attempt 1: 5s, attempt 2: 12s, attempt 3: 25s, attempt 4+: 45s
+        backoffs = [5.0, 12.0, 25.0, 45.0]
+        idx = min(max(attempt - 1, 0), len(backoffs) - 1)
+        return backoffs[idx]
 
     return None
 
@@ -207,7 +318,7 @@ def retry_with_backoff(
                 raise exc
 
             # Calculate sleep delay: prioritize provider-instructed retryDelay on rate limits
-            suggested_delay = extract_retry_delay(exc)
+            suggested_delay = extract_retry_delay(exc, attempt=attempt)
             if suggested_delay is not None:
                 actual_delay = max(suggested_delay + 1.0, 1.0)
             elif cfg.jitter:

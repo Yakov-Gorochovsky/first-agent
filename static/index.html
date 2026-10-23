@@ -2130,10 +2130,21 @@
           }
         }
         refreshState();
+      } else {
+        // Universal catch-all listener for any untyped or novel swarm/operator events
+        const label = String(etype || 'event').replace(/_/g, ' ').toUpperCase();
+        const detail = d.message || d.error || d.status || d.answer || d.task || (typeof d === 'string' ? d : JSON.stringify(d).slice(0, 160));
+        appendLog('peer_message', `[${sId}] ${label}`, detail);
+        refreshState();
       }
     };
     evtSource.onerror = (err) => {
-      // SSE disconnected or reconnecting
+      document.getElementById('swarmStatusPill').textContent = 'CONNECTION INTERRUPTED · RECONNECTING...';
+    };
+    evtSource.onopen = () => {
+      if (document.getElementById('swarmStatusPill').textContent.includes('RECONNECTING')) {
+        document.getElementById('swarmStatusPill').textContent = 'STANDBY · CONNECTED';
+      }
     };
   }
 
@@ -2146,11 +2157,26 @@
       const prompt = input.value.trim() || defaultPrompt;
       const mode = document.getElementById('modeSelect').value;
 
-      await fetch('/api/run', {
-        method: 'POST',
-        headers: authHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ prompt, tenant_id, mode, simulate }),
-      });
+      document.getElementById('swarmStatusPill').textContent = `DISPATCHING · SWARM '${tenant_id.toUpperCase()}'...`;
+
+      try {
+        const resp = await fetch('/api/run', {
+          method: 'POST',
+          headers: authHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ prompt, tenant_id, mode, simulate }),
+        });
+        if (!resp.ok) {
+          const errData = await resp.json().catch(() => ({}));
+          const errMsg = errData.error || `HTTP ${resp.status} ${resp.statusText}`;
+          document.getElementById('swarmStatusPill').textContent = `DISPATCH FAILED · ${errMsg.slice(0, 30)}`;
+          appendLog('arena_attack', '[SYSTEM] RUN ERROR', errMsg);
+          document.getElementById('answerText').textContent = `[Dispatch Failed]: ${errMsg}`;
+          document.getElementById('answerDrawer').classList.add('visible');
+        }
+      } catch (networkErr) {
+        document.getElementById('swarmStatusPill').textContent = 'DISPATCH FAILED · NETWORK ERROR';
+        appendLog('arena_attack', '[SYSTEM] NETWORK ERROR', String(networkErr));
+      }
     }
 
     function triggerSimulation() {

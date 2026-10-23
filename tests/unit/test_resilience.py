@@ -141,3 +141,103 @@ def test_retry_with_backoff_exhausted():
         )
     assert attempts == 3
     assert "Dead server" in str(exc_info.value)
+
+
+def test_extract_retry_delay_from_http_headers():
+    from core.resilience import extract_retry_delay
+
+    class DummyResponse:
+        def __init__(self, headers):
+            self.headers = headers
+            self.status_code = 429
+
+    class DummyHttpError(Exception):
+        def __init__(self, headers):
+            self.response = DummyResponse(headers)
+            super().__init__("429 Client Error: Too Many Requests")
+
+    # 1. Standard Retry-After seconds
+    err1 = DummyHttpError({"retry-after": "12"})
+    assert extract_retry_delay(err1) == 12.0
+
+    # 2. retry-after-ms
+    err2 = DummyHttpError({"retry-after-ms": "15000"})
+    assert extract_retry_delay(err2) == 15.0
+
+    # 3. x-ratelimit-reset-requests
+    err3 = DummyHttpError({"x-ratelimit-reset-requests": "6s"})
+    assert extract_retry_delay(err3) == 6.0
+
+    # 4. x-ratelimit-reset-tokens with ms
+    err4 = DummyHttpError({"x-ratelimit-reset-tokens": "2500ms"})
+    assert extract_retry_delay(err4) == 2.5
+
+
+def test_extract_retry_delay_from_error_bodies_and_messages():
+    from core.resilience import extract_retry_delay
+
+    class BodyError(Exception):
+        def __init__(self, msg, body):
+            self.body = body
+            super().__init__(msg)
+
+    # 1. JSON body with retry_after
+    err_body = BodyError("rate_limit", {"error": {"retry_after": 8.5}})
+    assert extract_retry_delay(err_body) == 8.5
+
+    # 2. OpenAI-style message string
+    err_openai = Exception("Rate limit reached for model gpt-4o. Please try again in 4.2s.")
+    assert extract_retry_delay(err_openai) == 4.2
+
+    # 3. Google Gemini Quota exceeded message
+    err_gemini = Exception(
+        "Generate content requests per minute limit exceeded on Free Tier. "
+        "Please retry in 21.744843478s. status: RESOURCE_EXHAUSTED"
+    )
+    assert extract_retry_delay(err_gemini) == 21.744843478
+
+    # 4. Milliseconds in message
+    err_ms = Exception("Too Many Requests. try again in 800ms")
+    assert extract_retry_delay(err_ms) == 0.8
+
+
+def test_extract_retry_delay_progressive_fallback():
+    from core.resilience import extract_retry_delay
+
+    err_generic_429 = Exception("HTTP 429 Too Many Requests")
+    assert extract_retry_delay(err_generic_429, attempt=1) == 5.0
+    assert extract_retry_delay(err_generic_429, attempt=2) == 12.0
+    assert extract_retry_delay(err_generic_429, attempt=3) == 25.0
+    assert extract_retry_delay(err_generic_429, attempt=4) == 45.0
+
+    # Non-rate-limit error should return None
+    err_val = ValueError("Invalid parameter value 'foo'")
+    assert extract_retry_delay(err_val, attempt=1) is None
+
+
+def test_circuit_breaker_does_not_trip_on_rate_limits():
+    cb = CircuitBreaker("cb_rate_limit", CircuitBreakerConfig(failure_threshold=2, recovery_timeout=1.0))
+
+    class RateLimitEx(Exception):
+        def __init__(self):
+            self.status_code = 429
+            super().__init__("429 Rate limit exceeded. retry in 10s")
+
+    # Rate limit exceptions should NOT count against failure_threshold
+    for _ in range(5):
+        with pytest.raises(RateLimitEx):
+            cb.call(lambda: (_ for _ in ()).throw(RateLimitEx()))
+
+    assert cb.state == CircuitState.CLOSED
+    assert cb.failure_count == 0
+
+
+def test_direct_retry_after_attribute():
+    from core.resilience import extract_retry_delay
+
+    class CustomRateLimit(Exception):
+        retry_after = 18.5
+
+    err = CustomRateLimit("rate limit active")
+    assert extract_retry_delay(err) == 18.5
+
