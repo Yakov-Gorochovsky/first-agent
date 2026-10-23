@@ -311,6 +311,14 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
             raw_key = auth_header
 
         if not raw_key:
+            parsed = urlparse(self.path)
+            if parsed.path == "/api/events":
+                # Standard browser EventSource cannot send custom HTTP headers; accept token from query parameter
+                qs = parse_qs(parsed.query)
+                if "token" in qs and qs["token"]:
+                    raw_key = qs["token"][0].strip()
+
+        if not raw_key:
             self._send_json(
                 {"error": "Unauthorized: API key required in 'Authorization: Bearer <token>' header."},
                 401,
@@ -340,7 +348,15 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
             if not index_file.exists():
                 self._send_json({"error": "static/index.html not found"}, 404)
                 return
-            content = index_file.read_bytes()
+            html = index_file.read_text(encoding="utf-8")
+            active_key = (
+                getattr(auth_manager, "active_admin_key", "")
+                or getattr(auth_manager, "initial_admin_key", "")
+                or ""
+            )
+            bootstrap_script = f"<script>window.__BOOTSTRAP_API_KEY__ = {json.dumps(active_key)};</script>"
+            html = html.replace("<head>", f"<head>\n  {bootstrap_script}", 1)
+            content = html.encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self._send_security_headers()
             self.send_header("Content-Type", "text/html; charset=utf-8")

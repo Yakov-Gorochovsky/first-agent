@@ -16,6 +16,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -56,6 +57,7 @@ class AuthManager:
         self.keys_file = keys_file or (CONFIG.workspace_dir / "keys.json")
         self._records: List[APIKeyRecord] = []
         self.initial_admin_key: Optional[str] = None
+        self.active_admin_key: Optional[str] = None
         self._load()
 
     @staticmethod
@@ -105,19 +107,36 @@ class AuthManager:
             seeds = self._generate_initial_seed()
             self._records = self._records_from_raw(seeds)
             self._save()
-            return
+        else:
+            try:
+                raw = json.loads(self.keys_file.read_text(encoding="utf-8"))
+                if isinstance(raw, list):
+                    self._records = self._records_from_raw(raw)
+                else:
+                    self._records = self._records_from_raw(self._generate_initial_seed())
+                    self._save()
+            except Exception as exc:
+                _LOGGER.warning("Corrupted keys file %s: %s. Falling back to defaults.", self.keys_file, exc)
+                self._records = self._records_from_raw(self._generate_initial_seed())
+                self._save()
 
-        try:
-            raw = json.loads(self.keys_file.read_text(encoding="utf-8"))
-            if isinstance(raw, list):
-                self._records = self._records_from_raw(raw)
-                return
-        except Exception as exc:
-            _LOGGER.warning("Corrupted keys file %s: %s. Falling back to defaults.", self.keys_file, exc)
-
-        # Fallback to defaults if corrupt
-        self._records = self._records_from_raw(self._generate_initial_seed())
-        self._save()
+        env_admin = os.getenv("ADMIN_API_KEY")
+        if env_admin and env_admin.strip():
+            self.active_admin_key = env_admin.strip()
+            env_hash = self.hash_key(self.active_admin_key)
+            if not any(r.key_hash == env_hash for r in self._records):
+                self._records.insert(
+                    0,
+                    APIKeyRecord(
+                        name="Environment Administrator",
+                        key_hash=env_hash,
+                        tenant_id="admin",
+                        scopes=["admin", "user"],
+                    ),
+                )
+                self._save()
+        else:
+            self.active_admin_key = self.initial_admin_key
 
     def _save(self) -> None:
         self.keys_file.parent.mkdir(parents=True, exist_ok=True)

@@ -793,10 +793,7 @@
       <div class="control-group" title="API Key Authentication & Scoped Identity">
         <span class="control-label"><i data-lucide="key" style="width:11px;height:11px;display:inline-block;vertical-align:-1px;"></i> Token</span>
         <select id="apiKeySelect" class="select-clean" onchange="onApiKeySelectChange(this.value)">
-          <option value="ns-admin-secret-key-12345">Admin (Full Access)</option>
-          <option value="ns-client-a-secret-key-12345">Client A (Tenant)</option>
-          <option value="ns-victim-secret-key-12345">Victim (Tenant)</option>
-          <option value="ns-attacker-secret-key-12345">Attacker (Tenant)</option>
+          <option value="auto">Admin (Active Key)</option>
           <option value="custom">Custom Token...</option>
         </select>
         <button type="button" class="btn" style="padding: 2px 6px; font-size: 10px; background: rgba(255,255,255,0.06); border: none; cursor: pointer;" onclick="promptCustomToken()" title="Edit API key string">
@@ -1716,8 +1713,19 @@
       refreshState();
     }
 
+    const STALE_DEFAULT_KEYS = new Set([
+      'ns-admin-secret-key-12345',
+      'ns-client-a-secret-key-12345',
+      'ns-victim-secret-key-12345',
+      'ns-attacker-secret-key-12345',
+    ]);
+
     function getApiKey() {
-      return localStorage.getItem('neural_swarm_api_key') || 'ns-admin-secret-key-12345';
+      const stored = localStorage.getItem('neural_swarm_api_key');
+      if (stored && !STALE_DEFAULT_KEYS.has(stored)) {
+        return stored;
+      }
+      return window.__BOOTSTRAP_API_KEY__ || '';
     }
 
     function setApiKey(key) {
@@ -1732,6 +1740,11 @@
     function onApiKeySelectChange(val) {
       if (val === 'custom') {
         promptCustomToken();
+        return;
+      }
+      if (val === 'auto') {
+        localStorage.removeItem('neural_swarm_api_key');
+        setApiKey(window.__BOOTSTRAP_API_KEY__ || '');
         return;
       }
       setApiKey(val);
