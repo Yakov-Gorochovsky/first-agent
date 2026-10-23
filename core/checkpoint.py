@@ -24,8 +24,6 @@ Key Capabilities:
    - Allows cancellation of running swarms with fail-fast cooperative aborts.
 """
 
-from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
 import hashlib
 import hmac
 import json
@@ -33,18 +31,24 @@ import logging
 import os
 import sqlite3
 import time
-from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from core.config import CONFIG
-from core.storage import sanitize_tenant_id, validate_tenant_id
+from core.storage import validate_tenant_id
 
 logger = logging.getLogger("neural_swarm.checkpoint")
 
-# System HMAC signing secret (uses secret from env/config or fallback derivation)
-_DEFAULT_HMAC_SECRET = os.getenv(
-    "CHECKPOINT_HMAC_SECRET",
-    getattr(CONFIG, "secret_key", "default_antigravity_checkpoint_hmac_secret_key_2026")
-).encode("utf-8")
+def get_checkpoint_hmac_secret() -> bytes:
+    """Retrieve checkpoint HMAC signing secret, failing closed if not configured."""
+    secret = os.getenv("CHECKPOINT_HMAC_SECRET") or getattr(CONFIG, "secret_key", None)
+    if not secret:
+        raise RuntimeError(
+            "Security Configuration Error: CHECKPOINT_HMAC_SECRET must be set in the environment or config. "
+            "Refusing to use an insecure hardcoded fallback key."
+        )
+    return secret.encode("utf-8") if isinstance(secret, str) else bytes(secret)
 
 
 @contextmanager
@@ -58,7 +62,7 @@ def _connect_db(db_path: str) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-class CheckpointTamperedError(SecurityError if "SecurityError" in globals() else PermissionError):
+class CheckpointTamperedError(PermissionError):
     """Raised when a checkpoint's cryptographic HMAC signature fails verification."""
     pass
 
@@ -111,13 +115,15 @@ class MissionCheckpoint:
         }
         return json.dumps(canonical_dict, sort_keys=True, ensure_ascii=True).encode("utf-8")
 
-    def sign(self, secret: bytes = _DEFAULT_HMAC_SECRET) -> None:
+    def sign(self, secret: Optional[bytes] = None) -> None:
         """Compute and attach HMAC-SHA256 signature to this checkpoint."""
-        self.hmac_signature = hmac.new(secret, self.payload_bytes(), hashlib.sha256).hexdigest()
+        key = secret if secret is not None else get_checkpoint_hmac_secret()
+        self.hmac_signature = hmac.new(key, self.payload_bytes(), hashlib.sha256).hexdigest()
 
-    def verify_integrity(self, secret: bytes = _DEFAULT_HMAC_SECRET) -> bool:
+    def verify_integrity(self, secret: Optional[bytes] = None) -> bool:
         """Verify HMAC-SHA256 signature using constant-time comparison."""
-        expected = hmac.new(secret, self.payload_bytes(), hashlib.sha256).hexdigest()
+        key = secret if secret is not None else get_checkpoint_hmac_secret()
+        expected = hmac.new(key, self.payload_bytes(), hashlib.sha256).hexdigest()
         return hmac.compare_digest(self.hmac_signature, expected)
 
 
@@ -217,9 +223,9 @@ class CheckpointStore:
     Durable storage engine for mission checkpoints with tenant isolation and HMAC verification.
     """
 
-    def __init__(self, db_path: Optional[str] = None, hmac_secret: bytes = _DEFAULT_HMAC_SECRET) -> None:
+    def __init__(self, db_path: Optional[str] = None, hmac_secret: Optional[bytes] = None) -> None:
         self.db_path = str(db_path or CONFIG.db_path)
-        self.hmac_secret = hmac_secret
+        self.hmac_secret = hmac_secret if hmac_secret is not None else get_checkpoint_hmac_secret()
         self.idempotency = IdempotencyRegistry(self.db_path)
         self._init_db()
 

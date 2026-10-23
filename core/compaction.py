@@ -21,10 +21,9 @@ Key Capabilities:
      exact restoration if an agent requires complete historical evidence.
 """
 
-from dataclasses import dataclass, field
-import json
 import logging
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Set
 
 from core.scratchpad import ScratchpadPointer, ScratchpadStore
 

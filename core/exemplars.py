@@ -23,14 +23,14 @@ Key Capabilities:
    - Enforces a hard budget of at most k exemplars (k in {1, 2, 4}) and a character/token cap.
 """
 
-from contextlib import contextmanager
-from dataclasses import dataclass, field
 import hashlib
 import json
 import logging
 import sqlite3
 import time
-from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from typing import Any, Dict, Iterator, List, Optional
 
 from core.config import CONFIG
 from core.storage import PrivacyAirlock, validate_tenant_id

@@ -2,17 +2,15 @@
 tests/unit/test_tools.py - Unit tests for universal tools, AST calculator safety, SSRF, and file isolation.
 """
 
-from pathlib import Path
 import os
 import shutil
+
 import pytest
 
-from core.config import WORKSPACE_DIR
+from core.config import CONFIG, WORKSPACE_DIR
 from tools import (
     calculator,
-    execute_tool,
     fetch_url,
-    list_notes,
     read_note,
     run_python,
     save_note,
@@ -62,11 +60,14 @@ def test_fetch_url_ssrf_protection() -> None:
 def test_run_python_environment_secret_scrubbing() -> None:
     """Child Python processes must not inherit host secrets or API keys."""
     os.environ["SECRET_TEST_TOKEN"] = "CLASSIFIED_VALUE_9999"
+    orig = CONFIG.unsafe_allow_local_exec
+    CONFIG.unsafe_allow_local_exec = True
     try:
         out = run_python("import os; print(os.environ.get('SECRET_TEST_TOKEN', 'SCRUBBED'))")
         assert "CLASSIFIED_VALUE_9999" not in out
         assert "SCRUBBED" in out
     finally:
+        CONFIG.unsafe_allow_local_exec = orig
         os.environ.pop("SECRET_TEST_TOKEN", None)
 
 
@@ -101,18 +102,24 @@ def test_notes_multi_tenant_isolation_and_restricted_files() -> None:
 
 def test_run_python_process_breakout_blocked():
     """Verify FP-01: child interpreter / process spawning from within sandbox is blocked."""
-    code = "import subprocess; subprocess.run(['echo', 'escaped'])"
-    res = run_python(code)
-    assert "PermissionError" in res or "blocked by sandbox policy" in res
+    orig = CONFIG.unsafe_allow_local_exec
+    CONFIG.unsafe_allow_local_exec = True
+    try:
+        code = "import subprocess; subprocess.run(['echo', 'escaped'])"
+        res = run_python(code)
+        assert "PermissionError" in res or "blocked by sandbox policy" in res
 
-    code_os = "import os; os.system('echo escaped')"
-    res_os = run_python(code_os)
-    assert "PermissionError" in res_os or "blocked by sandbox policy" in res_os
+        code_os = "import os; os.system('echo escaped')"
+        res_os = run_python(code_os)
+        assert "PermissionError" in res_os or "blocked by sandbox policy" in res_os
+    finally:
+        CONFIG.unsafe_allow_local_exec = orig
 
 
 def test_run_python_fail_closed_mode(monkeypatch):
     """Verify FP-01: fails closed if container is absent and unsafe local execution is disabled."""
     import shutil
+
     import core.config
 
     monkeypatch.setattr(shutil, "which", lambda cmd: None)

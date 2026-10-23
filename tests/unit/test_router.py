@@ -3,14 +3,14 @@ tests/unit/test_router.py - Unit tests for FP-04 Per-Role Model Routing & Provid
 """
 
 from typing import Any, Dict, List, Optional
+
 import pytest
 
-from core.llm import LLMProvider, LLMResponse, ToolCallRequest
+from core.llm import LLMResponse
 from core.router import (
     AllProvidersFailedError,
     ModelPolicyRouter,
     PolicyViolationError,
-    ProviderProfile,
     RoleRoutingConfig,
     RoutingLLMProvider,
     TenantModelPolicy,

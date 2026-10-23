@@ -3,6 +3,7 @@ tests/unit/test_bus.py - Unit tests for EventBus pub/sub, deque retention, and s
 """
 
 from collections import deque
+
 import pytest
 
 from core.bus import EventBus, SwarmEvent
@@ -18,7 +19,7 @@ def test_event_bus_publish_subscribe(event_bus: EventBus) -> None:
 
     event_bus.subscribe(subscriber)
 
-    evt = event_bus.emit(
+    event_bus.emit(
         event_type="task_start",
         agent_name="coordinator",
         tenant_id="client_a",

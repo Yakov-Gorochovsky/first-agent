@@ -2,9 +2,9 @@
 tests/integration/test_server_api.py - Integration tests for HTTP server security, SSE isolation, and host binding.
 """
 
-from pathlib import Path
 import json
 import queue
+
 import pytest
 
 from core.auth import AuthManager

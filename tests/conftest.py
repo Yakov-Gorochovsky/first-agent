@@ -2,15 +2,19 @@
 tests/conftest.py - Shared pytest fixtures and mocks for Neural Swarm test suite.
 """
 
-from pathlib import Path
+import os
 import tempfile
+from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional
+
 import pytest
 
-from core.auth import APIKeyRecord, AuthManager
+os.environ.setdefault("CHECKPOINT_HMAC_SECRET", "test_checkpoint_secret_key_fixed_hash_1234567890")
+
+from core.auth import AuthManager
 from core.budget import BudgetConfig, BudgetTracker
 from core.bus import EventBus
-from core.llm import LLMResponse, ToolCallRequest
+from core.llm import LLMResponse
 from core.roles import RoleRegistry
 from core.storage import SQLiteStorage
 

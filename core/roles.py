@@ -8,11 +8,12 @@ core/roles.py - Declarative Role Engine, Capability Bundles & Dynamic Role Regis
 - On-the-fly AI recruiting via the `spawn_specialist` tool or Web UI modal
 """
 
-from dataclasses import asdict, dataclass, field
 import json
-from pathlib import Path
 import re
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
 from core.config import CONFIG
 from tools import AVAILABLE_TOOLS
 

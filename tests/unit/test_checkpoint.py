@@ -4,6 +4,7 @@ tests/unit/test_checkpoint.py - Unit tests for FP-10 Durable Mission State and R
 
 import os
 import tempfile
+
 import pytest
 
 from core.checkpoint import (
@@ -160,7 +161,9 @@ def test_cancellation_lifecycle(temp_db_path: str) -> None:
         store=store,
     )
 
-    stage_1 = lambda inp, s: inp + " -> Stage 1"
+    def stage_1(inp, s):
+        return inp + " -> Stage 1"
+
     runner.execute_stages([stage_1], "Start")
 
     # Cancel mission

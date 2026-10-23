@@ -3,6 +3,7 @@ tests/integration/test_swarm_manager.py - Integration tests for multi-swarm life
 """
 
 from pathlib import Path
+
 import pytest
 
 from core.bus import EventBus

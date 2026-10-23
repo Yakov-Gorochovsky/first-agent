@@ -18,9 +18,9 @@ Features:
    - CRITICAL: Never hides stderr or execution errors.
 """
 
-from html.parser import HTMLParser
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from html.parser import HTMLParser
+from typing import List, Optional
 
 _HIDDEN_STYLE_RE = re.compile(r"display\s*:\s*none|visibility\s*:\s*hidden", re.IGNORECASE)
 _EXCESS_BLANK_LINES_RE = re.compile(r"\n{3,}")

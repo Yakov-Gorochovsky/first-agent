@@ -2,7 +2,6 @@
 tests/unit/test_storage.py - Unit tests for SQLite multi-tenant storage, indexing, and validation.
 """
 
-from pathlib import Path
 import pytest
 
 from core.storage import SQLiteStorage, validate_tenant_id
@@ -12,10 +11,16 @@ from core.storage import SQLiteStorage, validate_tenant_id
 @pytest.mark.security
 def test_tenant_id_validation_strict() -> None:
     """Valid tenant IDs conform to ^[A-Za-z0-9_-]{1,64}$; invalid ones raise ValueError."""
-    # Valid
+    # Valid (normalizes to lowercase)
     assert validate_tenant_id("tenant_a") == "tenant_a"
-    assert validate_tenant_id("Client-123") == "Client-123"
+    assert validate_tenant_id("Client-123") == "client-123"
     assert validate_tenant_id("alpha_beta_gamma") == "alpha_beta_gamma"
+
+    # Reserved Windows/POSIX device names
+    for reserved in ["CON", "con", "PRN", "AUX", "NUL", "COM1", "LPT1"]:
+        with pytest.raises(ValueError) as exc_info:
+            validate_tenant_id(reserved)
+        assert "reserved system device name" in str(exc_info.value)
 
     # Invalid characters & traversal
     with pytest.raises(ValueError):

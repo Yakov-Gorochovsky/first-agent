@@ -8,12 +8,14 @@ Agents talk only to `LLMProvider.generate(...)`. You can swap between:
 without changing a single line of agent or swarm code.
 """
 
-from dataclasses import dataclass, field
 import json
 import re
 import time
-from typing import Any, Dict, List, Optional, Protocol
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Protocol, cast
+
 from openai import BadRequestError, OpenAI
+
 from core.config import CONFIG
 from core.resilience import CircuitBreaker, RetryConfig, retry_with_backoff
 from core.telemetry import UsageLedger, calculate_call_cost
@@ -310,8 +312,8 @@ class OpenAICompatibleProvider:
                 resp = retry_with_backoff(
                     lambda: self.client.chat.completions.create(
                         model=self.model,
-                        messages=prepared_messages,
-                        tools=tools,
+                        messages=cast(Any, prepared_messages),
+                        tools=cast(Any, tools),
                         temperature=CONFIG.react_temperature,
                     ),
                     retry_config=self.retry_config,
@@ -340,14 +342,17 @@ class OpenAICompatibleProvider:
                 parsed_calls: List[ToolCallRequest] = []
                 if msg.tool_calls:
                     for tc in msg.tool_calls:
+                        fn = getattr(tc, "function", None)
+                        fn_name = getattr(fn, "name", "") if fn else ""
+                        raw_args = getattr(fn, "arguments", "{}") if fn else "{}"
                         try:
-                            args = json.loads(tc.function.arguments or "{}")
+                            args = json.loads(raw_args or "{}")
                         except json.JSONDecodeError:
                             args = {}
                         parsed_calls.append(
                             ToolCallRequest(
                                 id=tc.id,
-                                name=tc.function.name,
+                                name=fn_name,
                                 arguments=args,
                             )
                         )
@@ -379,7 +384,7 @@ class OpenAICompatibleProvider:
         resp = retry_with_backoff(
             lambda: self.client.chat.completions.create(
                 model=self.model,
-                messages=react_messages,
+                messages=cast(Any, react_messages),
                 temperature=CONFIG.react_temperature,
                 stop=["Observation:"],
             ),

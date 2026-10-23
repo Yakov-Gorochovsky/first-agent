@@ -6,13 +6,13 @@ Tracks exact per-call and cumulative tokens (prompt, completion, cached), latenc
 calculates USD cost from a versioned pricing catalog.
 """
 
-from contextvars import ContextVar
-from dataclasses import asdict, dataclass, field
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional
 import uuid
+from contextvars import ContextVar
+from dataclasses import asdict, dataclass, field
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("neural_swarm.telemetry")
 

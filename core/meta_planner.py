@@ -14,15 +14,12 @@ Security & Safety Guarantees:
 5. Strict Budget Bounds: Caps generated swarm step counts and token allocations to safety ceilings.
 """
 
-from dataclasses import dataclass, field
-import json
 import logging
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Optional, Set, Tuple
 
-from core.budget import BudgetConfig
-from core.factory import SwarmSpec, SwarmSpecValidationError
+from core.factory import SwarmSpec
 from core.llm import LLMProvider
-from core.registry import DynamicRoleSpec, GLOBAL_TOOL_REGISTRY, ToolRegistry
+from core.registry import GLOBAL_TOOL_REGISTRY, ToolRegistry
 from core.security import wrap_untrusted_content
 from core.structured import generate_structured_output
 from core.topology import GLOBAL_TOPOLOGY_REGISTRY, TopologyRegistry

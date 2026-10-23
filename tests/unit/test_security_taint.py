@@ -2,10 +2,8 @@
 tests/unit/test_security_taint.py - Unit tests for FP-02 Untrusted Content Boundary & Taint Tracking.
 """
 
-import pytest
 from core.security import (
     TaintTracker,
-    TrustLevel,
     sanitize_untrusted_text,
     wrap_untrusted_content,
 )

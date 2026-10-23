@@ -10,10 +10,11 @@ Peers communicate directly with one another via `send_peer_message(to_agent, mes
 without needing the coordinator to relay every intermediate hop.
 """
 
+import time
 from collections import deque
 from dataclasses import dataclass, field
-import time
 from typing import Callable, Deque, Dict, List, Optional
+
 from core.budget import BudgetExceededError, BudgetTracker
 from core.bus import EventBus
 from core.config import CONFIG
@@ -62,6 +63,7 @@ class PeerSwarm:
         directive: str = "",
         extra_tools: Optional[Dict[str, Callable[..., str]]] = None,
         extra_schemas: Optional[List[Dict[str, object]]] = None,
+        taint_tracker: Optional[TaintTracker] = None,
     ) -> None:
         self.llm = llm
         self.storage = storage
@@ -72,7 +74,7 @@ class PeerSwarm:
         self.directive = directive.strip()
         self.extra_tools = extra_tools or {}
         self.extra_schemas = extra_schemas or []
-        self.taint_tracker = TaintTracker()
+        self.taint_tracker = taint_tracker or TaintTracker()
         self.nodes: Dict[str, PeerNode] = {}
         self._final_answer: Optional[str] = None
         self.refresh_peers()

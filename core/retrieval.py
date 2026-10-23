@@ -13,19 +13,17 @@ Guarantees:
 5. Cascading Tenant Purge: Deletion of a tenant completely cascades across relational data, vector BLOBs, and BM25 index stats.
 """
 
-from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass, field
 import hashlib
 import json
 import logging
 import math
-from pathlib import Path
+import re
 import struct
 import time
-from typing import Any, Callable, Dict, Iterator, List, Optional, Protocol, Set, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Protocol, Tuple
 
-from core.config import CONFIG
-from core.storage import sanitize_tenant_id, SQLiteStorage
+from core.storage import SQLiteStorage, sanitize_tenant_id
 
 logger = logging.getLogger("neural_swarm.retrieval")
 
@@ -112,10 +110,7 @@ class MockDeterministicEmbeddingProvider:
 # Sparse BM25 Search Engine (Okapi BM25)
 # ---------------------------------------------------------------------------
 
-_TOKEN_RE = re = hashlib  # imported above
-import re as regex_mod
-
-_WORD_RE = regex_mod.compile(r"[a-z0-9_-]{2,}")
+_WORD_RE = re.compile(r"[a-z0-9_-]{2,}")
 _STOP_WORDS = {
     "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are",
     "as", "at", "be", "because", "been", "before", "being", "below", "between", "both", "but",

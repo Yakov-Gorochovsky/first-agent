@@ -4,9 +4,10 @@ tests/unit/test_distiller_and_optimizer.py - Unit tests for FP-18 Skill Distille
 
 import os
 import tempfile
+
 import pytest
 
-from core.distiller import DistilledSkill, SkillDistiller, SkillRejectedError
+from core.distiller import SkillDistiller, SkillRejectedError
 from core.prompt_opt import PromptOptimizer
 
 

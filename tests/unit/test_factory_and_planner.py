@@ -11,22 +11,20 @@ Tests:
 
 import json
 from typing import Any, Dict, List, Optional
+
 import pytest
 
-from core.budget import BudgetConfig, BudgetTracker
+from core.budget import BudgetConfig
 from core.factory import (
-    AgentFactory,
-    SwarmFactory,
     SwarmSpec,
     SwarmSpecValidationError,
 )
 from core.llm import LLMProvider, LLMResponse
 from core.meta_planner import (
-    PrivilegeCeilingError,
     SwarmGenerationValidator,
     TaskDrivenMetaPlanner,
 )
-from core.registry import DynamicRoleSpec, ToolRegistry
+from core.registry import DynamicRoleSpec
 
 
 class MockStructuredLLM(LLMProvider):

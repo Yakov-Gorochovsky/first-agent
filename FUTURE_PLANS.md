@@ -29,6 +29,7 @@ This document is the engineering plan for the Neural Swarm Engine. It is written
 This plan is for a single developer working part-time without a deadline. The goal is steady, verifiable progress, not completeness.
 
 - **Tiers.** Tier 1 is committed work. Tier 2 starts only when the Tier 1 gates pass and a measurement shows a need. Tier 3 starts only on a client requirement, or after Tiers 1 and 2 show headroom. The 20 specifications in section 6 are a backlog, not a commitment.
+- **Integration Gate.** A feature or component is not done or considered shipped merely because it exists as a library with unit tests. It must be wired into an active runtime path (`server.py`, `agent.py`, or `core/mission.py`) and verified by an end-to-end integration test. One wired, measured vertical slice is prioritized over unwired library modules.
 - **One thing at a time.** At most one Tier 1 or Tier 2 feature is in progress at once.
 - **Vertical slices.** Build the smallest end-to-end version first (for FP-00: ten tasks and one metric), then deepen it.
 - **Time boxes.** Each feature gets a time box, by default 2 to 4 weeks of part-time work. At the end the outcome is one of: ship (gate passed), keep behind a flag, or stop and record the result. A well-measured null or negative result is a valid outcome and is committed.
@@ -570,8 +571,9 @@ The following are recorded as complete by the owner. Re-run these checks and kee
 - **Privacy airlock and DLP**: measure precision and recall on a labeled corpus of PII and secrets (including IPv6, obfuscated emails, multi-line keys). The scrubber is a heuristic. Report its recall rather than describing it as complete.
 - **Test suite and CI**: confirm the 39 tests run on every pull request, are required to pass, and report line and branch coverage for authentication, tenant, sandbox, and network modules. Add mutation testing on those modules. The count of tests is not a measure of assurance.
 
-### 8.6 Phase security gates
+### 8.6 Phase security and integration gates
 
+- **Integration Gate (Required for all features)**: A feature is Shipped only after it is wired into a runtime execution path and validated with an integration test suite. As of Revision 3, the vertical slice (`TaskDrivenMetaPlanner` $\rightarrow$ `SwarmFactory` $\rightarrow$ `BaseTopology` $\rightarrow$ `ApprovalGate` $\rightarrow$ `CheckpointStore`) is wired in `core/mission.py` and validated by `tests/integration/test_vertical_slice.py`.
 - **Gate A (before Phase B)**: FP-01 and the FP-02 core pass; the re-verification in 8.5 is complete; FP-00 stages 1 and 2 exist (usage ledger and smoke baseline); FP-03 ledger and budgets are in place.
 - **Gate B (before Phase C)**: FP-11 lite and the FP-12 authorization matrix pass; the FP-13 validator, privilege ceiling, and dual-use policy are verified; the conformance checks are green on at least 3 domain packs and the held-out domain.
 - **Gate C (before Phase D)**: the Tier 2 features that were enabled passed their listed checks; retrieval has verified tenant isolation and a tested deletion cascade; FP-10 and durable FP-11 pass bypass and fault-injection suites.

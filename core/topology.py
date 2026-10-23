@@ -12,20 +12,18 @@ Topologies define how multi-agent teams communicate and reach consensus:
 Dynamic Registry enables loading custom topologies without editing core runtime code.
 """
 
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-import json
 import logging
-from typing import Any, Dict, List, Optional, Type
+from abc import ABC, abstractmethod
+from typing import Dict, List, Optional, Type
 
 from core.budget import BudgetTracker
 from core.bus import EventBus
 from core.llm import LLMProvider
+from core.peer_swarm import PeerSwarm
 from core.registry import DynamicRoleSpec
 from core.security import TaintTracker
 from core.storage import SQLiteStorage, StorageBackend
 from core.swarm import OrchestratorSwarm, WorkerAgent
-from core.peer_swarm import PeerSwarm
 
 logger = logging.getLogger("neural_swarm.topology")
 
@@ -64,28 +62,30 @@ class OrchestratorTopology(BaseTopology):
     """Star Topology: Central orchestrator delegates to specialized workers."""
 
     def execute(self, prompt: str) -> str:
+        bus = self.bus or EventBus()
         swarm = OrchestratorSwarm(
-            tenant_id=self.tenant_id,
             llm=self.llm,
+            storage=self.storage,
             budget=self.budget,
-            bus=self.bus,
+            bus=bus,
             taint_tracker=self.taint_tracker,
         )
-        return swarm.run(prompt)
+        return swarm.run(prompt, tenant_id=self.tenant_id)
 
 
 class PeerTopology(BaseTopology):
     """Mesh Topology: Asynchronous inbox messaging between peers with direct handoffs."""
 
     def execute(self, prompt: str) -> str:
+        bus = self.bus or EventBus()
         swarm = PeerSwarm(
-            tenant_id=self.tenant_id,
             llm=self.llm,
+            storage=self.storage,
             budget=self.budget,
-            bus=self.bus,
+            bus=bus,
             taint_tracker=self.taint_tracker,
         )
-        return swarm.run(prompt)
+        return swarm.run(prompt, tenant_id=self.tenant_id)
 
 
 class PipelineTopology(BaseTopology):

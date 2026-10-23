@@ -5,13 +5,13 @@ tests/unit/test_scratchpad_and_compaction.py - Unit tests for FP-07 Scratchpad &
 import os
 import tempfile
 import time
+
 import pytest
 
 from core.compaction import ContextCompactor
 from core.scratchpad import (
     ScratchpadAccessDeniedError,
     ScratchpadExpiredError,
-    ScratchpadIntegrityError,
     ScratchpadQuotaExceededError,
     ScratchpadStore,
 )

@@ -11,22 +11,20 @@ Guarantees:
 5. Pluggable Topology Binding: Resolves swarms dynamically via TopologyRegistry.
 """
 
-from dataclasses import asdict, dataclass, field
-import json
 import logging
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
 
 from core.budget import BudgetConfig, BudgetTracker
 from core.bus import EventBus
-from core.config import CONFIG, WORKSPACE_DIR
-from core.llm import LLMProvider, OpenAICompatibleProvider
-from core.registry import DynamicRoleSpec, GLOBAL_TOOL_REGISTRY, ToolRegistry
+from core.config import CONFIG
+from core.llm import LLMProvider
+from core.registry import GLOBAL_TOOL_REGISTRY, DynamicRoleSpec, ToolRegistry
 from core.router import ModelPolicyRouter, RoleRoutingConfig, RoutingLLMProvider
 from core.security import TaintTracker
 from core.storage import sanitize_tenant_id, validate_tenant_id
 from core.swarm import WorkerAgent
-from core.topology import BaseTopology, GLOBAL_TOPOLOGY_REGISTRY, TopologyRegistry
+from core.topology import GLOBAL_TOPOLOGY_REGISTRY, BaseTopology, TopologyRegistry
 
 logger = logging.getLogger("neural_swarm.factory")
 

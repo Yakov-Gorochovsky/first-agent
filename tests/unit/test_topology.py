@@ -8,6 +8,7 @@ Tests:
 """
 
 from typing import Any, Dict, List, Optional
+
 import pytest
 
 from core.budget import BudgetConfig, BudgetTracker
@@ -15,7 +16,6 @@ from core.llm import LLMProvider, LLMResponse
 from core.registry import DynamicRoleSpec
 from core.topology import (
     BaseTopology,
-    GLOBAL_TOPOLOGY_REGISTRY,
     PipelineTopology,
     ReviewLoopTopology,
     TopologyRegistry,

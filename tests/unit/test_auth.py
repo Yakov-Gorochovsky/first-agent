@@ -3,23 +3,25 @@ tests/unit/test_auth.py - Unit tests for API key verification and role-based acc
 """
 
 from pathlib import Path
-import json
+
 import pytest
 
-from core.auth import APIKeyRecord, AuthManager
+from core.auth import AuthManager
 
 
 @pytest.mark.unit
 @pytest.mark.security
 def test_default_keys_loaded_and_verified(auth_manager: AuthManager) -> None:
-    """Default admin and client keys must verify correctly with expected scopes."""
-    admin_rec = auth_manager.verify_key("ns-admin-secret-key-12345")
+    """Generated admin key and created client keys must verify correctly with expected scopes."""
+    assert auth_manager.initial_admin_key is not None
+    admin_rec = auth_manager.verify_key(auth_manager.initial_admin_key)
     assert admin_rec is not None
     assert admin_rec.has_scope("admin") is True
     assert admin_rec.has_scope("user") is True
     assert admin_rec.tenant_id == "admin"
 
-    client_rec = auth_manager.verify_key("ns-client-a-secret-key-12345")
+    client_token, _ = auth_manager.create_key("Client A Production", "client_a", ["user"])
+    client_rec = auth_manager.verify_key(client_token)
     assert client_rec is not None
     assert client_rec.has_scope("user") is True
     assert client_rec.has_scope("admin") is False

@@ -2,7 +2,6 @@
 tests/integration/test_peer_inbox.py - Integration tests for PeerSwarm decentralized handoffs and inbox queues.
 """
 
-from pathlib import Path
 import pytest
 
 from core.budget import BudgetTracker

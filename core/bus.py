@@ -6,11 +6,11 @@ to the EventBus. Terminal CLIs, loggers, and SSE Web UIs subscribe to the bus
 without coupling the agent logic to any specific UI.
 """
 
-from collections import deque
-from dataclasses import dataclass, field
 import logging
 import time
-from typing import Any, Callable, Dict, List, Optional
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List
 
 _LOGGER = logging.getLogger("EventBus")
 

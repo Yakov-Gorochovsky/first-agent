@@ -8,13 +8,12 @@ Tests:
 4. Final-turn tool policy experiments: RETAIN_TOOLS, FORBID_TOOLS, REMOVE_TOOLS.
 """
 
-import time
 import pytest
 
 from core.prompt_layout import (
     CacheStablePromptBuilder,
-    canonicalize_tool_schemas,
     FinalTurnToolPolicy,
+    canonicalize_tool_schemas,
 )
 
 

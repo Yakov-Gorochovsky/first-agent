@@ -71,12 +71,13 @@ flowchart TD
 | **[`core/factory.py`](core/factory.py)** | `SwarmSpec`, `AgentFactory`, `SwarmFactory` | Instantiates arbitrary agent swarms from declarative specs with multi-tenant isolation and client mass-assignment protection. |
 | **[`core/approval.py`](core/approval.py)** | `ApprovalGate`, `ApprovalRequest`, `ApprovalDecision` | Single-use cryptographic approval tokens with action/arg SHA-256 hash binding, TTL timeouts, and append-only audit logging. |
 | **[`core/meta_planner.py`](core/meta_planner.py)** | `TaskDrivenMetaPlanner`, `SwarmGenerationValidator` | Decomposes raw missions into optimal swarms with structured repair loops and strict privilege ceilings. |
+| **[`core/mission.py`](core/mission.py)** | `IntegratedMissionRunner`, `MissionExecutionResult` | Unified vertical slice orchestrating Planner -> Factory -> Topology -> ApprovalGate -> CheckpointStore. |
 | **[`core/retrieval.py`](core/retrieval.py)** | `HybridRetrievalStore`, `EmbeddingProvider`, `BM25Partition` | Multi-tenant hybrid retrieval fusing Okapi BM25 and pre-normalized dot-product dense embeddings via Reciprocal Rank Fusion ($k=60$). |
-| **[`core/prompt_layout.py`](core/prompt_layout.py)** | `CacheStablePromptBuilder`, `FinalTurnPolicy` | Three-Tier prompt layout (Immutable Prefix, Semi-Static Body, Dynamic Tail) guaranteeing 100% prefix stability and KV-cache reuse. |
+| **[`core/prompt_layout.py`](core/prompt_layout.py)** | `CacheStablePromptBuilder`, `FinalTurnPolicy` | Three-Tier prompt layout (Immutable Prefix, Semi-Static Body, Dynamic Tail) providing deterministic prefix stability for KV-cache reuse. |
 | **[`core/cleaning.py`](core/cleaning.py)** | `MarkdownHTMLDistiller`, `summarize_code_output` | Strips navigation, footers, scripts, and hidden CSS text; bounds huge stdout dumps to head/tail while preserving stack traces verbatim. |
 | **[`core/handoffs.py`](core/handoffs.py)** | `TypedHandoff`, `HandoffValidator` | Compact, versioned JSON Schemas for inter-agent communication (`task_delegation_v1`, `specialist_finding_v1`, `review_critique_v1`). |
 | **[`core/router.py`](core/router.py)** | `ModelPolicyRouter`, `RoutingLLMProvider`, `ProviderProfile` | Enforces tenant data residency jurisdictions (`local`, `us`, `eu`, `apac`), provider allow-lists, and policy-compliant fallback chains. |
-| **[`core/checkpoint.py`](core/checkpoint.py)** | `CheckpointStore`, `MissionCheckpoint`, `IdempotencyRegistry`, `DurableMissionRunner` | Step-level mission state persistence with HMAC-SHA256 signatures, tenant re-authorization on resume, and zero-duplicate side-effect guarantees. |
+| **[`core/checkpoint.py`](core/checkpoint.py)** | `CheckpointStore`, `MissionCheckpoint`, `IdempotencyRegistry`, `DurableMissionRunner` | Step-level mission state persistence with HMAC-SHA256 signatures, tenant re-authorization on resume, and idempotent side-effect deduplication. |
 | **[`core/scratchpad.py`](core/scratchpad.py)** | `ScratchpadStore`, `ScratchpadPointer`, `ScratchpadItem` | Out-of-band store for bulky payloads using 128-bit random tokens, zero filesystem paths, tenant quotas, and taint preservation. |
 | **[`core/compaction.py`](core/compaction.py)** | `ContextCompactor`, `CompactionResult` | Batched observation compaction into digests with restorable pointers, reducing context by >50% while protecting system prompts. |
 | **[`core/exemplars.py`](core/exemplars.py)** | `ExemplarStore`, `Exemplar` | Curated in-context demonstrations with an administrative approval gate, PII scrubbing, user scoping, and untrusted framing. |
@@ -107,12 +108,12 @@ flowchart TD
 | Cryptographic Action Approvals   | core/approval.py         | test_approval.py          |
 | Over-Privilege Ceiling Check     | core/meta_planner.py     | test_factory_and_planner  |
 | BM25/Vector Tenant Isolation     | core/retrieval.py        | test_retrieval.py         |
-| 100% Prefix Stability Layout     | core/prompt_layout.py    | test_prompt_layout.py     |
+| Cache-Stable Prefix Layout       | core/prompt_layout.py    | test_prompt_layout.py     |
 | Hidden HTML Distillation         | core/cleaning.py         | test_cleaning.py          |
 | M2M Schema Validation & XSS Safe | core/handoffs.py         | test_handoffs.py          |
 | Data Residency Jurisdiction Rule | core/router.py           | test_router.py            |
 | HMAC-SHA256 State Integrity      | core/checkpoint.py       | test_checkpoint.py        |
-| Zero-Duplicate Side Effects      | core/checkpoint.py       | test_checkpoint.py        |
+| Idempotent Side-Effect Recovery  | core/checkpoint.py       | test_checkpoint.py        |
 | 128-Bit Opaque Scratchpad Ref    | core/scratchpad.py       | test_scratchpad_and_...   |
 | Compaction Trust Inheritance     | core/compaction.py       | test_scratchpad_and_...   |
 | Few-Shot Admin Approval Gate     | core/exemplars.py        | test_exemplars_profile... |

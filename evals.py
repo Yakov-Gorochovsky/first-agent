@@ -17,12 +17,13 @@ Includes two tiers of evaluations:
 import argparse
 import json
 import os
-from pathlib import Path
 import queue
 import sys
 import tempfile
 import time
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+
 from dotenv import load_dotenv
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -30,6 +31,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from core.budget import BudgetConfig, BudgetExceededError, BudgetTracker
 from core.bus import EventBus
+from core.config import CONFIG
 from core.llm import LLMResponse, OpenAICompatibleProvider, ToolCallRequest
 from core.peer_swarm import PeerSwarm
 from core.roles import RoleRegistry
@@ -178,15 +180,21 @@ def eval_role_registry_and_bundles() -> str:
 
 
 def eval_universal_tools_sandbox() -> str:
-    """Verify calculator AST safety and run_python subprocess execution."""
+    """Verify calculator AST safety and run_python execution."""
     calc_out = execute_tool("calculator", {"expression": "12 * 12 + sqrt(81)"})
     assert "153" in calc_out
 
     unsafe_out = execute_tool("calculator", {"expression": "__import__('os').system('echo hacked')"})
     assert "Error" in unsafe_out
 
-    py_out = execute_tool("run_python", {"code": "print(sum(i for i in range(1, 11)))"})
-    assert "55" in py_out
+    orig_allow = CONFIG.unsafe_allow_local_exec
+    try:
+        CONFIG.unsafe_allow_local_exec = True
+        py_out = execute_tool("run_python", {"code": "print(sum(i for i in range(1, 11)))"})
+        assert "55" in py_out
+    finally:
+        CONFIG.unsafe_allow_local_exec = orig_allow
+
     return "Calculator AST blocked unsafe __import__ and run_python returned 55."
 
 
@@ -273,77 +281,82 @@ def eval_security_hardening() -> str:
     """Verify SSRF block, subprocess secret scrubbing, exponent DoS protection, and path traversal guardrails."""
     from tools import calculator, fetch_url, run_python, save_note
 
-    # 1. SSRF blocks loopback & cloud metadata IPs
-    ssrf_local = fetch_url("http://127.0.0.1:8000/api/state")
-    ssrf_meta = fetch_url("http://169.254.169.254/latest/meta-data/")
-    assert "SSRF protection blocked" in ssrf_local, ssrf_local
-    assert "SSRF protection blocked" in ssrf_meta, ssrf_meta
-
-    # 2. Subprocess environment secret scrubbing
-    os.environ["TEST_SECRET_API_KEY"] = "super_secret_token_999"
+    orig_allow = CONFIG.unsafe_allow_local_exec
     try:
-        py_out = run_python("import os; print(os.environ.get('TEST_SECRET_API_KEY', 'SCRUBBED_OK'))")
-        assert "SCRUBBED_OK" in py_out and "super_secret_token_999" not in py_out, py_out
+        CONFIG.unsafe_allow_local_exec = True
+        # 1. SSRF blocks loopback & cloud metadata IPs
+        ssrf_local = fetch_url("http://127.0.0.1:8000/api/state")
+        ssrf_meta = fetch_url("http://169.254.169.254/latest/meta-data/")
+        assert "SSRF protection blocked" in ssrf_local, ssrf_local
+        assert "SSRF protection blocked" in ssrf_meta, ssrf_meta
+
+        # 2. Subprocess environment secret scrubbing
+        os.environ["TEST_SECRET_API_KEY"] = "super_secret_token_999"
+        try:
+            py_out = run_python("import os; print(os.environ.get('TEST_SECRET_API_KEY', 'SCRUBBED_OK'))")
+            assert "SCRUBBED_OK" in py_out and "super_secret_token_999" not in py_out, py_out
+        finally:
+            os.environ.pop("TEST_SECRET_API_KEY", None)
+
+        # 3. Calculator exponent and factorial DoS caps & length limits
+        dos_calc = calculator("999999 ** 999999")
+        assert "exceeds safe limit" in dos_calc, dos_calc
+
+        fact_dos = calculator("factorial(10000000)")
+        assert "between 0 and 1000" in fact_dos or "exceeds safe limit" in fact_dos, fact_dos
+
+        len_dos = calculator("1 + " * 200 + "1")
+        assert "expression length exceeds safe limit" in len_dos, len_dos
+
+        # 4. Path traversal, restricted file protection, and multi-tenant workspace isolation
+        from tools import WORKSPACE_DIR, read_note
+
+        env_write = save_note(".env", "malicious")
+        keys_write = save_note("keys.json", "malicious")
+        db_write = save_note("swarm.db", "malicious")
+        traversal_write = save_note("../../outside.txt", "malicious")
+        try:
+            assert "Invalid or restricted filename" in env_write, env_write
+            assert "Restricted system file" in keys_write or "Invalid or restricted filename" in keys_write, keys_write
+            assert "Restricted system file" in db_write or "Invalid or restricted filename" in db_write, db_write
+            assert "workspace/outside.txt" in traversal_write, traversal_write
+
+            # Multi-tenant note isolation
+            save_note("shared.txt", "data_tenant_alpha", tenant_id="tenant_alpha")
+            save_note("shared.txt", "data_tenant_beta", tenant_id="tenant_beta")
+            alpha_content = read_note("shared.txt", tenant_id="tenant_alpha")
+            beta_content = read_note("shared.txt", tenant_id="tenant_beta")
+            assert alpha_content == "data_tenant_alpha", alpha_content
+            assert beta_content == "data_tenant_beta", beta_content
+        finally:
+            (WORKSPACE_DIR / "outside.txt").unlink(missing_ok=True)
+            import shutil
+            shutil.rmtree(WORKSPACE_DIR / "tenants" / "tenant_alpha", ignore_errors=True)
+            shutil.rmtree(WORKSPACE_DIR / "tenants" / "tenant_beta", ignore_errors=True)
+
+        # 5. run_python subprocess network SSRF firewall (HTTP & raw socket)
+        py_http_ssrf = run_python(
+            "import requests\n"
+            "try:\n"
+            "    requests.get('http://127.0.0.1:8080', timeout=1.0)\n"
+            "    print('FAIL_HTTP_ALLOWED')\n"
+            "except Exception as e:\n"
+            "    print('HTTP_BLOCKED:', type(e).__name__)\n"
+        )
+        assert "HTTP_BLOCKED" in py_http_ssrf and "FAIL_HTTP_ALLOWED" not in py_http_ssrf, py_http_ssrf
+
+        py_sock_ssrf = run_python(
+            "import socket\n"
+            "try:\n"
+            "    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+            "    s.connect(('127.0.0.1', 8080))\n"
+            "    print('FAIL_SOCK_ALLOWED')\n"
+            "except PermissionError as e:\n"
+            "    print('SOCK_BLOCKED:', type(e).__name__)\n"
+        )
+        assert "SOCK_BLOCKED" in py_sock_ssrf and "FAIL_SOCK_ALLOWED" not in py_sock_ssrf, py_sock_ssrf
     finally:
-        os.environ.pop("TEST_SECRET_API_KEY", None)
-
-    # 3. Calculator exponent and factorial DoS caps & length limits
-    dos_calc = calculator("999999 ** 999999")
-    assert "exceeds safe limit" in dos_calc, dos_calc
-
-    fact_dos = calculator("factorial(10000000)")
-    assert "between 0 and 1000" in fact_dos or "exceeds safe limit" in fact_dos, fact_dos
-
-    len_dos = calculator("1 + " * 200 + "1")
-    assert "expression length exceeds safe limit" in len_dos, len_dos
-
-    # 4. Path traversal, restricted file protection, and multi-tenant workspace isolation
-    from tools import WORKSPACE_DIR, read_note
-
-    env_write = save_note(".env", "malicious")
-    keys_write = save_note("keys.json", "malicious")
-    db_write = save_note("swarm.db", "malicious")
-    traversal_write = save_note("../../outside.txt", "malicious")
-    try:
-        assert "Invalid or restricted filename" in env_write, env_write
-        assert "Restricted system file" in keys_write or "Invalid or restricted filename" in keys_write, keys_write
-        assert "Restricted system file" in db_write or "Invalid or restricted filename" in db_write, db_write
-        assert "workspace/outside.txt" in traversal_write, traversal_write
-
-        # Multi-tenant note isolation
-        save_note("shared.txt", "data_tenant_alpha", tenant_id="tenant_alpha")
-        save_note("shared.txt", "data_tenant_beta", tenant_id="tenant_beta")
-        alpha_content = read_note("shared.txt", tenant_id="tenant_alpha")
-        beta_content = read_note("shared.txt", tenant_id="tenant_beta")
-        assert alpha_content == "data_tenant_alpha", alpha_content
-        assert beta_content == "data_tenant_beta", beta_content
-    finally:
-        (WORKSPACE_DIR / "outside.txt").unlink(missing_ok=True)
-        import shutil
-        shutil.rmtree(WORKSPACE_DIR / "tenants" / "tenant_alpha", ignore_errors=True)
-        shutil.rmtree(WORKSPACE_DIR / "tenants" / "tenant_beta", ignore_errors=True)
-
-    # 5. run_python subprocess network SSRF firewall (HTTP & raw socket)
-    py_http_ssrf = run_python(
-        "import requests\n"
-        "try:\n"
-        "    requests.get('http://127.0.0.1:8080', timeout=1.0)\n"
-        "    print('FAIL_HTTP_ALLOWED')\n"
-        "except Exception as e:\n"
-        "    print('HTTP_BLOCKED:', type(e).__name__)\n"
-    )
-    assert "HTTP_BLOCKED" in py_http_ssrf and "FAIL_HTTP_ALLOWED" not in py_http_ssrf, py_http_ssrf
-
-    py_sock_ssrf = run_python(
-        "import socket\n"
-        "try:\n"
-        "    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
-        "    s.connect(('127.0.0.1', 8080))\n"
-        "    print('FAIL_SOCK_ALLOWED')\n"
-        "except PermissionError as e:\n"
-        "    print('SOCK_BLOCKED:', type(e).__name__)\n"
-    )
-    assert "SOCK_BLOCKED" in py_sock_ssrf and "FAIL_SOCK_ALLOWED" not in py_sock_ssrf, py_sock_ssrf
+        CONFIG.unsafe_allow_local_exec = orig_allow
 
     return "SSRF blocked (fetch_url & run_python subprocess), env secrets scrubbed, exponent DoS & .env write blocked."
 
@@ -455,8 +468,10 @@ def eval_auth_and_sse_isolation() -> str:
         auth = AuthManager(keys_file=keys_file)
 
         # 1. Verify constant-time credential hashing and verification
-        admin_rec = auth.verify_key("ns-admin-secret-key-12345")
-        assert admin_rec is not None, "Default admin key should be verified"
+        admin_key = auth.initial_admin_key
+        assert admin_key is not None, "Initial admin key should be generated"
+        admin_rec = auth.verify_key(admin_key)
+        assert admin_rec is not None, "Generated admin key should be verified"
         assert admin_rec.has_scope("admin") and admin_rec.has_scope("user")
 
         # Verify invalid or tampered key fails
@@ -464,7 +479,8 @@ def eval_auth_and_sse_isolation() -> str:
         assert auth.verify_key("") is None
 
         # Verify user scope cannot pass admin check
-        client_rec = auth.verify_key("ns-client-a-secret-key-12345")
+        client_key, _ = auth.create_key("Client A", "client_a", ["user"])
+        client_rec = auth.verify_key(client_key)
         assert client_rec is not None
         assert client_rec.has_scope("user") is True
         assert client_rec.has_scope("admin") is False

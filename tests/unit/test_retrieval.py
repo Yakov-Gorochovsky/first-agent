@@ -11,13 +11,14 @@ Tests:
 """
 
 from pathlib import Path
+
 import pytest
 
 from core.retrieval import (
     BM25Partition,
-    dot_product,
     HybridRetrievalStore,
     MockDeterministicEmbeddingProvider,
+    dot_product,
     normalize_vector,
     pack_vector,
     reciprocal_rank_fusion,

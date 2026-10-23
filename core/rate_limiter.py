@@ -7,13 +7,13 @@ Provides:
 - Rolling 24-hour cost governor validating spend against hard dollar limits.
 """
 
-from contextlib import contextmanager
-from dataclasses import dataclass, field
 import json
 import logging
 import threading
 import time
-from typing import Dict, Iterator, Optional, Tuple
+from contextlib import contextmanager
+from typing import Dict, Iterator, Optional
+
 from core.storage import StorageBackend
 
 logger = logging.getLogger("neural_swarm.governance")

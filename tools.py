@@ -13,22 +13,23 @@ Security Controls Built In:
 """
 
 import ast
-from contextlib import contextmanager
 import datetime
-from html.parser import HTMLParser
 import ipaddress
-import json
 import math
 import operator
 import os
-from pathlib import Path
 import re
+import secrets
 import shutil
 import socket
 import subprocess
 import sys
+from contextlib import contextmanager
+from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
+
 import requests
 
 from core.config import CONFIG, WORKSPACE_DIR
@@ -119,7 +120,7 @@ def _resolve_and_validate_public_url(url: str) -> tuple[str, str, str, int]:
 
     valid_ip: Optional[str] = None
     for entry in addr_info:
-        ip_str = entry[4][0]
+        ip_str = str(entry[4][0])
         ip_obj = ipaddress.ip_address(ip_str)
         if (
             ip_obj.is_loopback
@@ -270,7 +271,7 @@ _ALLOWED_MATH_NAMES: Dict[str, Any] = {
     "lcm": math.lcm,
 }
 
-_ALLOWED_CALC_OPERATORS = {
+_ALLOWED_CALC_OPERATORS: Dict[type, Callable[..., Any]] = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
     ast.Mult: operator.mul,
@@ -502,12 +503,16 @@ def run_python(code: str) -> str:
                 "To permit local execution for development, enable UNSAFE_ALLOW_LOCAL_EXEC=true in your .env."
             )
 
+    container_name = f"swarm-exec-{secrets.token_hex(8)}"
     try:
         if use_container:
-            cmd = [
+            assert container_bin is not None
+            cmd: List[str] = [
                 container_bin,
                 "run",
+                "--name", container_name,
                 "--rm",
+                "--user", "1000:1000",
                 "--network", "none",
                 "--read-only",
                 "--cap-drop=ALL",
@@ -548,8 +553,18 @@ def run_python(code: str) -> str:
             stdout, stderr, max_chars=CONFIG.python_max_output_chars
         )
     except subprocess.TimeoutExpired:
+        if use_container and container_bin:
+            try:
+                subprocess.run([container_bin, "rm", "-f", container_name], capture_output=True, timeout=5)
+            except Exception:
+                pass
         return f"Error: Python execution timed out after {CONFIG.python_timeout_sec} seconds."
     except Exception as exc:
+        if use_container and container_bin:
+            try:
+                subprocess.run([container_bin, "rm", "-f", container_name], capture_output=True, timeout=5)
+            except Exception:
+                pass
         return f"Error running Python code: {exc}"
 
 

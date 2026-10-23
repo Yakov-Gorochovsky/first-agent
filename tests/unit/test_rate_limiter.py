@@ -9,6 +9,7 @@ Tests:
 """
 
 import time
+
 import pytest
 
 from core.budget import BudgetConfig, BudgetExceededError, BudgetTracker

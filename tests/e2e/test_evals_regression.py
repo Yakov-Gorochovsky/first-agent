@@ -3,6 +3,7 @@ tests/e2e/test_evals_regression.py - End-to-end regression evaluation test suite
 """
 
 from typing import Callable
+
 import pytest
 
 from evals import DETERMINISTIC_SUITE

@@ -4,9 +4,10 @@ core/budget.py - Token, Step, and Time Budget Enforcement for Agent Swarms.
 Prevents runaway multi-agent loops and tracks token usage across all workers.
 """
 
-from dataclasses import dataclass, field
 import time
+from dataclasses import dataclass, field
 from typing import Dict, Optional
+
 from core.bus import EventBus
 from core.config import CONFIG
 from core.telemetry import calculate_call_cost

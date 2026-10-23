@@ -12,7 +12,6 @@ import pytest
 
 from core.registry import (
     DynamicRoleSpec,
-    GLOBAL_TOOL_REGISTRY,
     ToolMetadata,
     ToolRegistry,
 )

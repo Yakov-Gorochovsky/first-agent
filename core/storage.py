@@ -11,33 +11,42 @@ Implements:
    - Auto-pruning `swarm_traces` table so the `.db` file never bloats.
 """
 
-from contextlib import contextmanager
 import json
-from pathlib import Path
 import re
 import sqlite3
 import time
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Protocol, Tuple, Union
+
 from core.config import CONFIG
 
+TENANT_ID_REGEX = r"^[a-z0-9_-]{1,64}$"
+_TENANT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
-TENANT_ID_REGEX = r"^[A-Za-z0-9_-]{1,64}$"
-_TENANT_ID_PATTERN = re.compile(TENANT_ID_REGEX)
+_RESERVED_DEVICE_NAMES = {
+    "con", "prn", "aux", "nul",
+    "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+    "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+}
 
 
 def validate_tenant_id(tenant_id: str) -> str:
-    """Strictly validate tenant_id against ^[A-Za-z0-9_-]{1,64}$.
+    """Strictly validate and case-fold tenant_id against ^[A-Za-z0-9_-]{1,64}$.
 
-    Rejects non-matching characters (dots, spaces, slashes) to prevent cross-tenant
-    collision vulnerabilities (e.g., 'acme.corp' colliding with 'acme_corp').
+    Rejects non-matching characters (dots, spaces, slashes) and reserved device names (CON, NUL, etc.).
+    Normalizes to lowercase to prevent filesystem collision on case-insensitive filesystems.
     Raises:
-        ValueError: If tenant_id is not a string matching the strict regex pattern.
+        ValueError: If tenant_id is invalid, reserved, or not a string.
     """
     if not isinstance(tenant_id, str) or not _TENANT_ID_PATTERN.match(tenant_id):
         raise ValueError(
             f"Invalid tenant_id {tenant_id!r}. Must match regex {TENANT_ID_REGEX} (1-64 alphanumeric chars, underscores, or hyphens)."
         )
-    return tenant_id
+    normalized = tenant_id.lower()
+    if normalized in _RESERVED_DEVICE_NAMES:
+        raise ValueError(f"Invalid tenant_id {tenant_id!r}: reserved system device name.")
+    return normalized
 
 
 # Backwards-compatible alias for existing imports

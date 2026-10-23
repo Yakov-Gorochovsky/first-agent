@@ -6,11 +6,12 @@ variables from `.env`, eliminating hardcoded magic numbers, URLs, and prompts ac
 the codebase.
 """
 
-from dataclasses import dataclass, field
 import json
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
+
 from dotenv import load_dotenv
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -23,7 +24,6 @@ WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 DEFAULT_ROLES_FILE = CONFIG_DIR / "default_roles.json"
 DEFAULT_SWARMS_FILE = CONFIG_DIR / "default_swarms.json"
-DEFAULT_KEYS_FILE = CONFIG_DIR / "default_keys.json"
 
 
 def _load_raw_settings() -> dict:
@@ -80,7 +80,8 @@ class SwarmConfig:
     python_max_output_chars: int = 4000
     calc_max_exponent: int = 1000
     python_sandbox_mode: str = "auto"
-    unsafe_allow_local_exec: bool = True
+    unsafe_allow_local_exec: bool = False
+    secret_key: Optional[str] = None
 
     # Server settings
     host: str = "127.0.0.1"
@@ -143,7 +144,8 @@ class SwarmConfig:
             python_max_output_chars=int(tools_cfg.get("python_max_output_chars", 4000)),
             calc_max_exponent=int(tools_cfg.get("calc_max_exponent", 1000)),
             python_sandbox_mode=os.getenv("PYTHON_SANDBOX_MODE", str(tools_cfg.get("python_sandbox_mode", "auto"))).lower(),
-            unsafe_allow_local_exec=os.getenv("UNSAFE_ALLOW_LOCAL_EXEC", str(tools_cfg.get("unsafe_allow_local_exec", "true"))).lower() == "true",
+            unsafe_allow_local_exec=os.getenv("UNSAFE_ALLOW_LOCAL_EXEC", str(tools_cfg.get("unsafe_allow_local_exec", "false"))).lower() == "true",
+            secret_key=os.getenv("SECRET_KEY", os.getenv("CHECKPOINT_HMAC_SECRET", None)),
             host=os.getenv("HOST", str(server_cfg.get("host", "127.0.0.1"))),
             port=int(os.getenv("PORT", str(server_cfg.get("port", 8000)))),
             max_body_bytes=int(server_cfg.get("max_body_bytes", 65536)),

@@ -14,15 +14,12 @@ Provides:
    - Conformance: Zero hardcoded persona names in core engines.
 """
 
-from dataclasses import asdict, dataclass, field
-import hashlib
-import json
 import logging
-import re
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional, Set
 
-from core.config import CONFIG
 import tools
+from core.config import CONFIG
 
 logger = logging.getLogger("neural_swarm.registry")
 

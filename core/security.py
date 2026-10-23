@@ -10,10 +10,10 @@ Provides:
    (code execution, filesystem modification, cross-swarm exfiltration).
 """
 
-from enum import Enum
 import json
 import logging
 import re
+from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger("neural_swarm.security")

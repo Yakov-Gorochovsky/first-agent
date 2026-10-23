@@ -18,14 +18,13 @@ Key Capabilities:
    - Administrative approval required to promote to active status.
 """
 
-from contextlib import contextmanager
-from dataclasses import dataclass, field
 import hashlib
-import json
 import logging
 import sqlite3
 import time
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from typing import Callable, Iterator, Optional, Tuple
 
 from core.config import CONFIG
 from core.storage import validate_tenant_id
@@ -173,7 +172,7 @@ class PromptOptimizer:
             if not row:
                 raise KeyError(f"Prompt '{prompt_id}' not found.")
 
-        template, dev_score, role_name = row[0], float(row[1]), row[2]
+        template, dev_score, _role_name = row[0], float(row[1]), row[2]
 
         # Single evaluation on frozen test split
         test_score = test_evaluator(template)

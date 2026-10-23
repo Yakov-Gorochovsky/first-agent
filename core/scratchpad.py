@@ -23,16 +23,14 @@ Key Security & Performance Capabilities:
    - Enforces per-payload byte limits, tenant storage quotas, and TTL expiration.
 """
 
-from contextlib import contextmanager
-from dataclasses import dataclass, field
 import hashlib
-import json
 import logging
-import os
 import secrets
 import sqlite3
 import time
-from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Iterator, Optional, Tuple
 
 from core.config import CONFIG
 from core.storage import validate_tenant_id
@@ -55,7 +53,7 @@ class ScratchpadQuotaExceededError(ValueError):
     pass
 
 
-class ScratchpadIntegrityError(SecurityError if "SecurityError" in globals() else PermissionError):
+class ScratchpadIntegrityError(PermissionError):
     """Raised when the content hash does not match stored content."""
     pass
 
@@ -242,7 +240,7 @@ class ScratchpadStore:
 
         # Defense against ID-to-path manipulation
         if not ref_id or not isinstance(ref_id, str) or len(ref_id) != 32:
-            raise ScratchpadAccessDeniedError(f"Invalid reference ID format.")
+            raise ScratchpadAccessDeniedError("Invalid reference ID format.")
 
         with _connect_scratchpad(self.db_path) as conn:
             cur = conn.cursor()

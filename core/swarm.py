@@ -10,6 +10,7 @@ Connects decoupled interfaces:
 
 import json
 from typing import Any, Callable, Dict, List, Optional
+
 from core.budget import BudgetExceededError, BudgetTracker
 from core.bus import EventBus
 from core.config import CONFIG
@@ -262,7 +263,7 @@ class WorkerAgent:
                 # FP-02: Enforce Taint Tracking Policy before execution
                 allowed, block_reason = self.taint_tracker.can_execute_tool(tc.name, tc.arguments or {})
                 if not allowed:
-                    result = block_reason
+                    result: str = block_reason or "Blocked by taint tracking security policy."
                 else:
                     fn = tools_map.get(tc.name)
                     if not fn:
@@ -347,6 +348,7 @@ class OrchestratorSwarm:
         directive: str = "",
         extra_tools: Optional[Dict[str, Callable[..., str]]] = None,
         extra_schemas: Optional[List[Dict[str, Any]]] = None,
+        taint_tracker: Optional[TaintTracker] = None,
     ) -> None:
         self.llm = llm
         self.storage = storage
@@ -357,7 +359,7 @@ class OrchestratorSwarm:
         self.directive = directive.strip()
         self.extra_tools = extra_tools or {}
         self.extra_schemas = extra_schemas or []
-        self.taint_tracker = TaintTracker()
+        self.taint_tracker = taint_tracker or TaintTracker()
         self.workers: Dict[str, WorkerAgent] = {}
         self.refresh_workers()
 

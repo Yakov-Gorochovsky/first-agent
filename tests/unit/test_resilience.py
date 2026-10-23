@@ -3,7 +3,9 @@ tests/unit/test_resilience.py - Unit tests for LLM Client Resilience & Circuit B
 """
 
 import time
+
 import pytest
+
 from core.resilience import (
     CircuitBreaker,
     CircuitBreakerConfig,

@@ -28,6 +28,14 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
 
+      - name: Run Ruff Linter
+        run: |
+          ruff check core tools.py server.py agent.py evals.py
+
+      - name: Run Mypy Type Checker
+        run: |
+          mypy core tools.py server.py agent.py evals.py
+
       - name: Run Pytest Suite with Coverage
         run: |
           pytest --cov=core --cov=tools --cov=server --cov-report=xml --cov-report=term

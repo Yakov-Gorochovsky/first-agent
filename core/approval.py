@@ -13,13 +13,14 @@ Guarantees:
 5. Append-Only Audit Trail: Every approval request, grant, denial, timeout, and tampering attempt is logged.
 """
 
-from dataclasses import asdict, dataclass, field
 import hashlib
 import json
 import logging
+import secrets
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("neural_swarm.approval")
 
@@ -64,6 +65,7 @@ class ApprovalRecord:
     status: str = "PENDING"  # "PENDING" | "APPROVED" | "DENIED" | "EXPIRED" | "USED"
     approver: Optional[str] = None
     reason: Optional[str] = None
+    approval_token: Optional[str] = None
 
 
 @dataclass
@@ -142,7 +144,7 @@ class ApprovalGate:
         Creates an approval request and optionally blocks until approved or timed out.
         """
         arg_hash = compute_arg_hash(args)
-        request_id = f"appr-{hashlib.sha256(f'{tenant_id}:{action}:{time.time()}'.encode()).hexdigest()[:12]}"
+        request_id = f"appr_{secrets.token_urlsafe(32)}"
         now = time.time()
         timeout_sec = timeout if timeout is not None else self.policy.default_timeout_sec
 
@@ -226,10 +228,13 @@ class ApprovalGate:
                 self._log_audit(record.tenant_id, record.agent_name, record.action, record.arg_hash, "EXPIRED")
                 raise ApprovalExpiredError(f"Request '{request_id}' has already expired.")
 
+            token = f"tok_{secrets.token_urlsafe(32)}"
             record.status = "APPROVED"
             record.approver = approver
             record.reason = reason
+            record.approval_token = token
             self._tokens[request_id] = record
+            self._tokens[token] = record
 
             evt = self._events.get(request_id)
             if evt:

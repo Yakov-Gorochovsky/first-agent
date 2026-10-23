@@ -12,21 +12,19 @@ Implements:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import hashlib
 import hmac
 import json
-from pathlib import Path
+import logging
 import secrets
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import logging
-
-from core.config import CONFIG, DEFAULT_KEYS_FILE
+from core.config import CONFIG
 from core.storage import validate_tenant_id
 
 _LOGGER = logging.getLogger("AuthManager")
-DEFAULT_KEYS_CONFIG_PATH = DEFAULT_KEYS_FILE
 
 
 @dataclass
@@ -57,6 +55,7 @@ class AuthManager:
     def __init__(self, keys_file: Optional[Path] = None) -> None:
         self.keys_file = keys_file or (CONFIG.workspace_dir / "keys.json")
         self._records: List[APIKeyRecord] = []
+        self.initial_admin_key: Optional[str] = None
         self._load()
 
     @staticmethod
@@ -85,16 +84,9 @@ class AuthManager:
             )
         return records
 
-    def _load_default_seed(self) -> List[Dict[str, Any]]:
-        if DEFAULT_KEYS_CONFIG_PATH.exists():
-            try:
-                data = json.loads(DEFAULT_KEYS_CONFIG_PATH.read_text(encoding="utf-8"))
-                if isinstance(data, list) and data:
-                    return data
-            except Exception as exc:
-                _LOGGER.warning("Failed to parse seed keys from %s: %s", DEFAULT_KEYS_CONFIG_PATH, exc)
-
-        generated_admin_key = f"ns-admin-{secrets.token_urlsafe(24)}"
+    def _generate_initial_seed(self) -> List[Dict[str, Any]]:
+        generated_admin_key = f"ns-admin-{secrets.token_urlsafe(32)}"
+        self.initial_admin_key = generated_admin_key
         _LOGGER.warning(
             "INITIALIZED SECURE ADMIN KEY: '%s'. Save this key; only its SHA-256 hash is saved to disk.",
             generated_admin_key,
@@ -110,7 +102,7 @@ class AuthManager:
 
     def _load(self) -> None:
         if not self.keys_file.exists():
-            seeds = self._load_default_seed()
+            seeds = self._generate_initial_seed()
             self._records = self._records_from_raw(seeds)
             self._save()
             return
@@ -124,7 +116,7 @@ class AuthManager:
             _LOGGER.warning("Corrupted keys file %s: %s. Falling back to defaults.", self.keys_file, exc)
 
         # Fallback to defaults if corrupt
-        self._records = self._records_from_raw(self._load_default_seed())
+        self._records = self._records_from_raw(self._generate_initial_seed())
         self._save()
 
     def _save(self) -> None:

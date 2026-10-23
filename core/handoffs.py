@@ -13,11 +13,11 @@ Guarantees:
 5. Untrusted Demarcation: Field contents are treated as untrusted and escaped before dispatch to the UI.
 """
 
-from dataclasses import asdict, dataclass, field
 import html
 import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, Tuple
 
 from core.structured import validate_schema
 

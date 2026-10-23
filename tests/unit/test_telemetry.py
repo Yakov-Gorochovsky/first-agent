@@ -2,11 +2,10 @@
 tests/unit/test_telemetry.py - Unit tests for UsageLedger, Cost Calculation & Telemetry.
 """
 
-import time
 import pytest
+
 from core.storage import SQLiteStorage
 from core.telemetry import (
-    CallUsageRecord,
     UsageLedger,
     calculate_call_cost,
     current_mission_id,
@@ -52,7 +51,7 @@ def test_usage_ledger_record_and_summary():
     assert r1.mission_id == "mission_alpha"
     assert r1.tenant_id == "tenant_test"
 
-    r2 = ledger.record_call(
+    ledger.record_call(
         agent_name="coder",
         provider="openai_compatible",
         model="gemini-2.0-flash",

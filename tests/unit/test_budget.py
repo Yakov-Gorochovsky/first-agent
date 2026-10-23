@@ -3,6 +3,7 @@ tests/unit/test_budget.py - Unit tests for step, token, and wall-clock budget gu
 """
 
 import time
+
 import pytest
 
 from core.budget import BudgetConfig, BudgetExceededError, BudgetTracker

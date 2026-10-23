@@ -13,10 +13,10 @@ vLLM prefix caching, Ollama KV buffer reuse) by partitioning prompts into three 
 Also implements configurable final-turn tool handling policies (RETAIN_TOOLS, FORBID_TOOLS, REMOVE_TOOLS).
 """
 
-from enum import Enum
 import hashlib
 import json
 import logging
+from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("neural_swarm.prompt_layout")
@@ -74,11 +74,11 @@ class CacheStablePromptBuilder:
         clean_inst = base_instructions.strip()
 
         lines = [
-            f"=== ROLE IDENTIFIER ===",
+            "=== ROLE IDENTIFIER ===",
             f"Agent: {clean_name}",
             f"Title: {clean_title}",
             "",
-            f"=== SYSTEM DIRECTIVE ===",
+            "=== SYSTEM DIRECTIVE ===",
             clean_inst,
         ]
 
@@ -86,7 +86,7 @@ class CacheStablePromptBuilder:
             canon_schemas = canonicalize_tool_schemas(tool_schemas)
             lines.extend([
                 "",
-                f"=== DECLARED CAPABILITIES ===",
+                "=== DECLARED CAPABILITIES ===",
                 json.dumps(canon_schemas, indent=2, sort_keys=True),
             ])
 

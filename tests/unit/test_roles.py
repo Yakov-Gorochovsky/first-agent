@@ -3,9 +3,10 @@ tests/unit/test_roles.py - Unit tests for RoleRegistry and capability bundle exp
 """
 
 from pathlib import Path
+
 import pytest
 
-from core.roles import RoleRegistry, RoleSpec
+from core.roles import RoleRegistry
 
 
 @pytest.mark.unit

@@ -22,17 +22,15 @@ Key Capabilities:
    - Purges user or tenant feedback across raw and derived tables.
 """
 
-from contextlib import contextmanager
-from dataclasses import dataclass, field
 import hashlib
-import json
 import logging
-from pathlib import Path
 import sqlite3
 import time
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-from core.config import CONFIG, WORKSPACE_DIR
+from core.config import CONFIG
 from core.storage import PrivacyAirlock, validate_tenant_id
 
 logger = logging.getLogger("neural_swarm.feedback")
