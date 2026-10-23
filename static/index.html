@@ -2313,6 +2313,8 @@
     if (window.__SERVER_VERSION__) applyVersionInfo(window.__SERVER_VERSION__);
     setupEventSource();
     refreshState();
+    // Auto-poll state & version progression every 5 seconds
+    setInterval(refreshState, 5000);
   </script>
 </body>
 </html>
