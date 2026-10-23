@@ -73,7 +73,7 @@ The following modules provide tested capabilities with rigorous unit test suites
 
 The engine implements defense-in-depth controls across all execution paths:
 - **33 Security Findings Remediated & Documented** in [`SECURITY_FINDINGS.md`](SECURITY_FINDINGS.md).
-- **38 Quantitative Metrics & Measured Benchmarks** tracked in [`PROBLEMS_AND_METRICS.md`](PROBLEMS_AND_METRICS.md).
+- **46 Quantitative Metrics & Measured Benchmarks** tracked in [`PROBLEMS_AND_METRICS.md`](PROBLEMS_AND_METRICS.md).
 - **Core Security Controls**:
   - Container execution sandbox with fail-closed local execution default.
   - SSRF & DNS resolution validation blocking loopback and private networks.
