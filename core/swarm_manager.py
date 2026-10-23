@@ -368,7 +368,7 @@ class SwarmManager:
 
         topo = (topology_override or spec.topology).lower()
         llm = (
-            OpenAICompatibleProvider(model=spec.model)
+            OpenAICompatibleProvider(model=spec.model, bus=self.bus)
             if spec.model and spec.model != CONFIG.model_name
             else self.default_llm
         )

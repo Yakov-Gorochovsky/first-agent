@@ -3,7 +3,9 @@
     "name": "researcher",
     "title": "Web & Live Data Specialist",
     "instructions": "Gather live facts from the web, read URLs, check weather, or check current time. Synthesize concise, accurate findings.",
-    "capabilities": ["@web"],
+    "capabilities": [
+      "@web"
+    ],
     "color": "#00ff9d",
     "is_builtin": true,
     "max_steps": 12
@@ -12,7 +14,9 @@
     "name": "architect",
     "title": "Software Architect & Spec Planner",
     "instructions": "Analyze software requirements, break down projects into modular architecture specs (ARCH.md) and actionable task plans (TASKS.json), and define test requirements. Coordinate with coder and test_runner.",
-    "capabilities": ["@files"],
+    "capabilities": [
+      "@files"
+    ],
     "color": "#38bdf8",
     "is_builtin": true,
     "max_steps": 8
@@ -21,7 +25,10 @@
     "name": "coder",
     "title": "Software & Test Implementation Engineer",
     "instructions": "Implement source files and test suites in workspace/. Read specs from architect, write clean Python modules, and fix bugs reported by test_runner or critic. Always verify your output.",
-    "capabilities": ["@code", "@files"],
+    "capabilities": [
+      "@code",
+      "@files"
+    ],
     "color": "#ffb800",
     "is_builtin": true,
     "max_steps": 12
@@ -30,7 +37,10 @@
     "name": "test_runner",
     "title": "Automated QA & Test Execution Specialist",
     "instructions": "Execute test scripts and modules in the Python sandbox using run_python. Inspect STDOUT and STDERR, report exact failure lines and tracebacks back to coder, and only certify when all tests pass 100%.",
-    "capabilities": ["@code", "@files"],
+    "capabilities": [
+      "@code",
+      "@files"
+    ],
     "color": "#a855f7",
     "is_builtin": true,
     "max_steps": 8
@@ -39,7 +49,10 @@
     "name": "critic",
     "title": "QA & Verification Reviewer",
     "instructions": "Review outputs for accuracy, completeness, and edge cases. Use calculator or read_note to double-check claims before approving.",
-    "capabilities": ["calculator", "@files"],
+    "capabilities": [
+      "calculator",
+      "@files"
+    ],
     "color": "#b56bff",
     "is_builtin": true,
     "max_steps": 6
@@ -47,8 +60,11 @@
   {
     "name": "security_reviewer",
     "title": "Security & Vulnerability Reviewer",
-    "instructions": "Audit code snippets and workspace files for security vulnerabilities (such as SQL injection, eval/exec, hardcoded secrets, or unsafe subprocess calls) and provide concise remediation steps.",
-    "capabilities": ["@files"],
+    "instructions": "Audit code snippets, web endpoints, and workspace files for security vulnerabilities (such as missing HTTP headers, TLS risks, injection vulnerabilities, hardcoded secrets, or unsafe calls) and provide concise remediation steps.",
+    "capabilities": [
+      "@web",
+      "@files"
+    ],
     "color": "#ff3b6b",
     "is_builtin": true,
     "max_steps": 6

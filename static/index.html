@@ -2101,6 +2101,20 @@
           document.getElementById('answerDrawer').classList.add('visible');
         }
         refreshState();
+      } else if (etype === 'retry_backoff') {
+        const delaySec = Math.round(d.delay_sec || 0);
+        document.getElementById('swarmStatusPill').textContent = `RATE LIMIT COOLDOWN · WAITING ${delaySec}s`;
+        appendLog('arena_attack', `[${sId}] RATE LIMIT COOLDOWN`, `Provider rate limit reached (attempt ${d.attempt}). Backing off for ${delaySec}s before retrying...`);
+        refreshState();
+      } else if (etype === 'mission_error') {
+        activeNode = null;
+        inboxCounts = {};
+        document.getElementById('activeNodePill').textContent = 'NODE: IDLE';
+        document.getElementById('swarmStatusPill').textContent = 'STANDBY · MISSION ERROR';
+        appendLog('arena_attack', `[${sId}] MISSION ERROR`, d.error || 'Execution encountered an error');
+        document.getElementById('answerText').textContent = `[Mission Error]: ${d.error || 'Execution failed'}`;
+        document.getElementById('answerDrawer').classList.add('visible');
+        refreshState();
       } else if (etype === 'swarm_complete' || etype === 'mission_end') {
         if (etype === 'mission_end') {
           activeNode = null;

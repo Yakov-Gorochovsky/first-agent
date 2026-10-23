@@ -10,6 +10,7 @@ Provides:
 import json
 import logging
 import random
+import re
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -95,6 +96,9 @@ class CircuitBreaker:
 
     def on_failure(self, exc: Exception) -> None:
         """Record downstream execution failure."""
+        if extract_retry_delay(exc) is not None:
+            # Rate limits are handled by backoff cooldown, do not trip the service breaker
+            return
         self.last_failure_time = time.time()
         self.failure_count += 1
 
@@ -123,11 +127,48 @@ class CircuitBreaker:
 
 @dataclass
 class RetryConfig:
-    max_retries: int = 3
-    initial_delay: float = 0.5
+    max_retries: int = 5
+    initial_delay: float = 1.0
     backoff_factor: float = 2.0
-    max_delay: float = 10.0
+    max_delay: float = 45.0
     jitter: bool = True
+
+
+def extract_retry_delay(exc: Exception) -> Optional[float]:
+    """
+    Extract recommended retry delay (in seconds) from RateLimitError, HTTP 429 response,
+    headers, or error message body.
+    """
+    # 1. Check HTTP response headers (e.g. Retry-After)
+    response = getattr(exc, "response", None)
+    if response is not None:
+        headers = getattr(response, "headers", None)
+        if headers:
+            retry_after = headers.get("retry-after") or headers.get("Retry-After")
+            if retry_after:
+                try:
+                    return float(retry_after)
+                except ValueError:
+                    pass
+
+    # 2. Check error message / body for 'retryDelay' or 'Please retry in X.Xs'
+    exc_str = str(exc)
+    m = re.search(
+        r"(?:retry(?:Delay|_delay)?|retry in)[:\s'\"\\]*([0-9]+(?:\.[0-9]+)?)s?",
+        exc_str,
+        re.IGNORECASE,
+    )
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            pass
+
+    # 3. If it is a 429 RateLimitError or contains "429" / "rate_limit" / "RESOURCE_EXHAUSTED"
+    if "429" in exc_str or "rate limit" in exc_str.lower() or "resource_exhausted" in exc_str.lower():
+        return 15.0
+
+    return None
 
 
 def retry_with_backoff(
@@ -138,7 +179,7 @@ def retry_with_backoff(
     on_retry: Optional[Callable[[int, Exception, float], None]] = None,
 ) -> T:
     """
-    Execute a callable with exponential backoff, jitter, and optional circuit breaker.
+    Execute a callable with exponential backoff, jitter, rate-limit awareness, and optional circuit breaker.
     """
     cfg = retry_config or RetryConfig()
     delay = cfg.initial_delay
@@ -165,10 +206,14 @@ def retry_with_backoff(
                 )
                 raise exc
 
-            # Calculate sleep delay with full jitter
-            actual_delay = delay
-            if cfg.jitter:
+            # Calculate sleep delay: prioritize provider-instructed retryDelay on rate limits
+            suggested_delay = extract_retry_delay(exc)
+            if suggested_delay is not None:
+                actual_delay = max(suggested_delay + 1.0, 1.0)
+            elif cfg.jitter:
                 actual_delay = random.uniform(0, delay)
+            else:
+                actual_delay = delay
 
             if on_retry:
                 on_retry(attempt, exc, actual_delay)

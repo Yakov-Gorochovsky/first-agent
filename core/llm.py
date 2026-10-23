@@ -119,17 +119,35 @@ class OpenAICompatibleProvider:
         ledger: Optional[UsageLedger] = None,
         circuit_breaker: Optional[CircuitBreaker] = None,
         retry_config: Optional[RetryConfig] = None,
+        bus: Optional[Any] = None,
     ) -> None:
         self.client = OpenAI(
             base_url=base_url or CONFIG.api_base_url,
             api_key=api_key or CONFIG.api_key,
+            timeout=45.0,
         )
         self.model = model or CONFIG.model_name
         self.native_tools_supported: Optional[bool] = None
         self.fast_qwen_mode = CONFIG.fast_thinking if fast_qwen_mode is None else fast_qwen_mode
         self.ledger = ledger or UsageLedger()
         self.circuit_breaker = circuit_breaker or CircuitBreaker(name=f"llm_{self.model}")
-        self.retry_config = retry_config or RetryConfig(max_retries=3, initial_delay=0.5, backoff_factor=2.0)
+        self.retry_config = retry_config or RetryConfig(max_retries=5, initial_delay=1.0, backoff_factor=2.0)
+        self.bus = bus
+        self.tenant_id = "default"
+
+    def _on_retry(self, attempt: int, exc: Exception, delay: float) -> None:
+        if self.bus:
+            try:
+                self.bus.emit(
+                    "retry_backoff",
+                    agent_name="system",
+                    tenant_id=getattr(self, "tenant_id", "default"),
+                    attempt=attempt,
+                    delay_sec=round(delay, 2),
+                    error=str(exc)[:200],
+                )
+            except Exception:
+                pass
 
     def _is_local_ollama(self) -> bool:
         base = str(getattr(self.client, "base_url", "")).lower()
@@ -315,9 +333,11 @@ class OpenAICompatibleProvider:
                         messages=cast(Any, prepared_messages),
                         tools=cast(Any, tools),
                         temperature=CONFIG.react_temperature,
+                        timeout=45.0,
                     ),
                     retry_config=self.retry_config,
                     circuit_breaker=self.circuit_breaker,
+                    on_retry=self._on_retry,
                 )
                 self.native_tools_supported = True
                 msg = resp.choices[0].message
@@ -387,9 +407,11 @@ class OpenAICompatibleProvider:
                 messages=cast(Any, react_messages),
                 temperature=CONFIG.react_temperature,
                 stop=["Observation:"],
+                timeout=45.0,
             ),
             retry_config=self.retry_config,
             circuit_breaker=self.circuit_breaker,
+            on_retry=self._on_retry,
         )
         msg = resp.choices[0].message
         content = strip_think_tags(msg.content or "")

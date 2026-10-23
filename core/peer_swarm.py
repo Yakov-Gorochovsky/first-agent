@@ -384,6 +384,9 @@ class PeerSwarm:
                     conversation_history=history,
                 )
 
+                # Pacing delay between multi-agent peer turns to prevent burst rate limits
+                time.sleep(1.0)
+
                 if self._final_answer is not None:
                     break
 

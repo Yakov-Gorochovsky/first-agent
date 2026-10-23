@@ -52,7 +52,7 @@ cost_governor = TenantCostGovernor(
     max_concurrency_per_tenant=1,
     max_daily_usd_per_tenant=15.0,
 )
-llm = OpenAICompatibleProvider()
+llm = OpenAICompatibleProvider(bus=bus)
 swarm_manager = SwarmManager(
     storage=storage, bus=bus, role_registry=role_registry, default_llm=llm
 )
