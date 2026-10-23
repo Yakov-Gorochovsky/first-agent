@@ -15,6 +15,7 @@ from core.bus import EventBus
 from core.config import CONFIG
 from core.llm import LLMProvider
 from core.roles import RoleRegistry, RoleSpec
+from core.security import TaintTracker
 from core.storage import StorageBackend
 from tools import AVAILABLE_TOOLS, TOOL_SCHEMAS
 
@@ -57,6 +58,7 @@ class WorkerAgent:
         extra_schemas: Optional[List[Dict[str, Any]]] = None,
         yield_on_tools: Optional[List[str]] = None,
         max_steps: Optional[int] = None,
+        taint_tracker: Optional[TaintTracker] = None,
     ) -> None:
         self.name = name
         self.role = role
@@ -70,6 +72,7 @@ class WorkerAgent:
         self.extra_schemas = extra_schemas or []
         self.yield_on_tools = set(yield_on_tools or [])
         self.max_steps = max_steps
+        self.taint_tracker = taint_tracker or TaintTracker()
 
     def _get_tools_and_schemas(self, tenant_id: str) -> tuple[Dict[str, Callable[..., str]], List[Dict[str, Any]]]:
         """Bind tenant-scoped memory tools + global skill learning tool + selected tools."""
@@ -256,14 +259,20 @@ class WorkerAgent:
                     tenant_id, self.name, "tool_call", {"tool": tc.name, "args": tc.arguments}
                 )
 
-                fn = tools_map.get(tc.name)
-                if not fn:
-                    result = f"Error: Unknown tool '{tc.name}'. Available: {list(tools_map)}"
+                # FP-02: Enforce Taint Tracking Policy before execution
+                allowed, block_reason = self.taint_tracker.can_execute_tool(tc.name, tc.arguments or {})
+                if not allowed:
+                    result = block_reason
                 else:
-                    try:
-                        result = str(fn(**(tc.arguments or {})))
-                    except Exception as exc:
-                        result = f"Error running '{tc.name}': {exc}"
+                    fn = tools_map.get(tc.name)
+                    if not fn:
+                        result = f"Error: Unknown tool '{tc.name}'. Available: {list(tools_map)}"
+                    else:
+                        try:
+                            raw_result = str(fn(**(tc.arguments or {})))
+                            result = self.taint_tracker.observe_tool_result(tc.name, raw_result)
+                        except Exception as exc:
+                            result = f"Error running '{tc.name}': {exc}"
 
                 collected_observations.append(f"[{tc.name}]: {result[:600]}")
 
@@ -348,6 +357,7 @@ class OrchestratorSwarm:
         self.directive = directive.strip()
         self.extra_tools = extra_tools or {}
         self.extra_schemas = extra_schemas or []
+        self.taint_tracker = TaintTracker()
         self.workers: Dict[str, WorkerAgent] = {}
         self.refresh_workers()
 
@@ -370,6 +380,7 @@ class OrchestratorSwarm:
             bus=self.bus,
             tool_names=spec.tool_names,
             max_steps=spec.effective_max_steps,
+            taint_tracker=self.taint_tracker,
         )
 
     def refresh_workers(self) -> None:
@@ -383,6 +394,7 @@ class OrchestratorSwarm:
         """Run the Orchestrator -> Workers flow for a given tenant."""
         self.budget.reset()
         self.budget.tenant_id = tenant_id
+        self.taint_tracker = TaintTracker(mission_id=f"orch_{tenant_id}")
         self.refresh_workers()
 
         def delegate_to_worker(worker_name: str, task: str) -> str:

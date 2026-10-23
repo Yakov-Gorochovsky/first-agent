@@ -9,6 +9,7 @@ import time
 from typing import Dict, Optional
 from core.bus import EventBus
 from core.config import CONFIG
+from core.telemetry import calculate_call_cost
 
 
 class BudgetExceededError(RuntimeError):
@@ -21,6 +22,9 @@ class BudgetConfig:
     max_steps_per_agent: int = field(default_factory=lambda: CONFIG.max_steps_per_agent)
     max_total_tokens: int = field(default_factory=lambda: CONFIG.max_total_tokens)
     max_wall_seconds: float = field(default_factory=lambda: CONFIG.max_wall_seconds)
+    max_mission_cost_usd: float = 2.0
+    max_daily_tenant_cost_usd: float = 15.0
+    hard_max_completion_tokens: int = 1024
     auto_continue: bool = True
     max_auto_continuations: int = 5
 
@@ -35,6 +39,7 @@ class BudgetTracker:
     total_tokens: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    current_cost_usd: float = 0.0
     agent_steps: Dict[str, int] = field(default_factory=dict)
     agent_limits: Dict[str, int] = field(default_factory=dict)
     start_time: float = field(default_factory=time.time)
@@ -44,6 +49,7 @@ class BudgetTracker:
         self.total_tokens = 0
         self.prompt_tokens = 0
         self.completion_tokens = 0
+        self.current_cost_usd = 0.0
         self.agent_steps.clear()
         self.agent_limits.clear()
         self.start_time = time.time()
@@ -87,11 +93,34 @@ class BudgetTracker:
         self.total_steps += 1
         self.agent_steps[agent_name] = current_agent_steps + 1
 
-    def record_tokens(self, agent_name: str, prompt_toks: int, completion_toks: int) -> None:
-        """Record token consumption from an LLM completion and emit telemetry."""
+    def get_bounded_completion_tokens(self, requested: Optional[int] = None) -> int:
+        """Return hard-bounded completion token cap to guarantee overshoot is limited to 1 call."""
+        if requested is not None and requested > 0:
+            return min(requested, self.config.hard_max_completion_tokens)
+        return self.config.hard_max_completion_tokens
+
+    def record_tokens(
+        self,
+        agent_name: str,
+        prompt_toks: int,
+        completion_toks: int,
+        model_name: str = "ollama",
+        cached_prompt_toks: int = 0,
+    ) -> None:
+        """Record token consumption from an LLM completion, compute USD cost, and emit telemetry."""
         self.prompt_tokens += prompt_toks
         self.completion_tokens += completion_toks
         self.total_tokens += prompt_toks + completion_toks
+
+        incremental_cost = calculate_call_cost(
+            model_name, prompt_toks, completion_toks, cached_prompt_toks
+        )
+        self.current_cost_usd = round(self.current_cost_usd + incremental_cost, 6)
+
+        if self.current_cost_usd > self.config.max_mission_cost_usd:
+            raise BudgetExceededError(
+                f"Mission cost budget exceeded (${self.current_cost_usd:.4f} > ${self.config.max_mission_cost_usd:.2f})."
+            )
 
         if self.bus:
             self.bus.emit(
@@ -102,6 +131,8 @@ class BudgetTracker:
                 max_swarm_steps=self.config.max_swarm_steps,
                 total_tokens=self.total_tokens,
                 max_total_tokens=self.config.max_total_tokens,
+                current_cost_usd=self.current_cost_usd,
+                max_mission_cost_usd=self.config.max_mission_cost_usd,
                 elapsed_seconds=self.elapsed_seconds,
             )
 
@@ -109,6 +140,7 @@ class BudgetTracker:
         return {
             "total_steps": f"{self.total_steps}/{self.config.max_swarm_steps}",
             "total_tokens": f"{self.total_tokens}/{self.config.max_total_tokens}",
+            "cost_usd": f"${self.current_cost_usd:.4f}/${self.config.max_mission_cost_usd:.2f}",
             "agent_steps": {
                 k: f"{v}/{self.agent_limits.get(k, self.config.max_steps_per_agent)}"
                 for k, v in self.agent_steps.items()

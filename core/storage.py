@@ -17,7 +17,7 @@ from pathlib import Path
 import re
 import sqlite3
 import time
-from typing import Any, Dict, Iterator, List, Optional, Protocol, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Protocol, Tuple, Union
 from core.config import CONFIG
 
 
@@ -69,6 +69,10 @@ class PrivacyAirlock:
             cleaned = pattern.sub(replacement, cleaned)
         return cleaned
 
+    @classmethod
+    def scrub_text(cls, text: str) -> str:
+        return cls.sanitize(text)
+
 
 class StorageBackend(Protocol):
     """Abstract interface for swarm persistence (SQLite, PostgreSQL, etc.)."""
@@ -81,6 +85,8 @@ class StorageBackend(Protocol):
     def get_session_turns(self, tenant_id: str, limit: Optional[int] = None) -> List[Dict[str, str]]: ...
     def clear_session(self, tenant_id: str) -> None: ...
     def log_trace(self, tenant_id: str, agent_name: str, event_type: str, payload: Dict[str, Any]) -> None: ...
+    def save_usage_record(self, record: Any) -> None: ...
+    def get_usage_records(self, tenant_id: str, limit: Optional[int] = None) -> List[Dict[str, Any]]: ...
 
 
 class SQLiteStorage:
@@ -88,11 +94,12 @@ class SQLiteStorage:
 
     def __init__(
         self,
-        db_path: Optional[Path] = None,
+        db_path: Optional[Union[str, Path]] = None,
         max_trace_rows: Optional[int] = None,
         max_session_turns: Optional[int] = None,
     ) -> None:
-        self.db_path = db_path or CONFIG.db_path
+        raw_path = db_path or CONFIG.db_path
+        self.db_path = Path(raw_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.max_trace_rows = max_trace_rows if max_trace_rows is not None else CONFIG.max_trace_rows
         self.max_session_turns = max_session_turns if max_session_turns is not None else CONFIG.max_session_turns
@@ -150,6 +157,24 @@ class SQLiteStorage:
 
                 CREATE INDEX IF NOT EXISTS idx_tenant_sessions ON tenant_sessions(tenant_id, id DESC);
                 CREATE INDEX IF NOT EXISTS idx_swarm_traces_id ON swarm_traces(id DESC);
+
+                CREATE TABLE IF NOT EXISTS usage_ledger (
+                    call_id TEXT PRIMARY KEY,
+                    mission_id TEXT NOT NULL,
+                    step_id TEXT NOT NULL,
+                    tenant_id TEXT NOT NULL,
+                    agent_name TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    prompt_tokens INTEGER NOT NULL,
+                    completion_tokens INTEGER NOT NULL,
+                    cached_prompt_tokens INTEGER NOT NULL,
+                    latency_ms REAL NOT NULL,
+                    cost_usd REAL NOT NULL,
+                    created_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_usage_ledger_tenant ON usage_ledger(tenant_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_usage_ledger_mission ON usage_ledger(mission_id);
                 """
             )
 
@@ -273,3 +298,54 @@ class SQLiteStorage:
                 """,
                 (self.max_trace_rows,),
             )
+
+    def save_usage_record(self, record: Any) -> None:
+        """Persist a token/latency/cost ledger record."""
+        rec_dict = record.to_dict() if hasattr(record, "to_dict") else dict(record)
+        safe_tenant = sanitize_tenant_id(rec_dict["tenant_id"])
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO usage_ledger (
+                    call_id, mission_id, step_id, tenant_id, agent_name,
+                    provider, model, prompt_tokens, completion_tokens,
+                    cached_prompt_tokens, latency_ms, cost_usd, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    rec_dict["call_id"],
+                    rec_dict["mission_id"],
+                    rec_dict["step_id"],
+                    safe_tenant,
+                    rec_dict["agent_name"],
+                    rec_dict["provider"],
+                    rec_dict["model"],
+                    int(rec_dict["prompt_tokens"]),
+                    int(rec_dict["completion_tokens"]),
+                    int(rec_dict.get("cached_prompt_tokens", 0)),
+                    float(rec_dict["latency_ms"]),
+                    float(rec_dict["cost_usd"]),
+                    float(rec_dict.get("created_at", time.time())),
+                ),
+            )
+
+    def get_usage_records(
+        self, tenant_id: str, limit: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """Retrieve token and cost ledger records for a tenant."""
+        safe_tenant = sanitize_tenant_id(tenant_id)
+        eff_limit = limit if limit is not None else 100
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT call_id, mission_id, step_id, tenant_id, agent_name,
+                       provider, model, prompt_tokens, completion_tokens,
+                       cached_prompt_tokens, latency_ms, cost_usd, created_at
+                FROM usage_ledger
+                WHERE tenant_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (safe_tenant, eff_limit),
+            ).fetchall()
+            return [dict(row) for row in rows]

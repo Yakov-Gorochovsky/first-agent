@@ -398,12 +398,10 @@ def fetch_url(url: str) -> str:
                 allow_redirects=False,
             )
         resp.raise_for_status()
-        text = _html_to_text(resp.text)
+        from core.cleaning import clean_html_to_markdown
+        text = clean_html_to_markdown(resp.text, max_chars=CONFIG.fetch_max_chars)
         if not text:
             return f"Fetched {safe_url}, but no readable text was found."
-        max_chars = CONFIG.fetch_max_chars
-        if len(text) > max_chars:
-            return text[:max_chars] + f"\n... [Truncated {len(text) - max_chars} chars]"
         return text
     except Exception as exc:
         return f"Error fetching URL '{url}': {exc}"
@@ -412,6 +410,24 @@ def fetch_url(url: str) -> str:
 _SUBPROCESS_SANDBOX_BOOTSTRAP = '''
 import socket
 import ipaddress
+import sys
+import os
+import subprocess
+
+# Defense 1: Block child process spawning / interpreter breakouts
+def _blocked_exec(*args, **kwargs):
+    raise PermissionError("Process spawning (subprocess/exec/system) is blocked by sandbox policy.")
+
+subprocess.Popen = _blocked_exec
+subprocess.run = _blocked_exec
+subprocess.call = _blocked_exec
+subprocess.check_call = _blocked_exec
+subprocess.check_output = _blocked_exec
+os.system = _blocked_exec
+os.popen = _blocked_exec
+for _attr in ["execv", "execve", "execl", "execle", "execlp", "execlpe", "execvp", "execvpe", "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp", "spawnvpe"]:
+    if hasattr(os, _attr):
+        setattr(os, _attr, _blocked_exec)
 
 _orig_connect = socket.socket.connect
 _orig_connect_ex = socket.socket.connect_ex
@@ -494,10 +510,13 @@ def run_python(code: str) -> str:
                 "--rm",
                 "--network", "none",
                 "--read-only",
+                "--cap-drop=ALL",
+                "--security-opt=no-new-privileges",
+                "--tmpfs", "/workspace:rw,size=64m",
+                "--tmpfs", "/tmp:rw,size=32m",
                 "--memory", "256m",
                 "--cpus", "1.0",
                 "--pids-limit", "64",
-                "-v", f"{WORKSPACE_DIR.resolve()}:/workspace:rw",
                 "-w", "/workspace",
                 "python:3.11-slim",
                 "python", "-c", code,
@@ -524,17 +543,10 @@ def run_python(code: str) -> str:
 
         stdout = completed.stdout.strip()
         stderr = completed.stderr.strip()
-        parts = []
-        if stdout:
-            parts.append(f"STDOUT:\n{stdout}")
-        if stderr:
-            parts.append(f"STDERR:\n{stderr}")
-        if not parts:
-            parts.append(f"Code executed successfully with exit code {completed.returncode} (no output).")
-        elif completed.returncode != 0:
-            parts.append(f"(Exit code: {completed.returncode})")
-        output = "\n".join(parts)
-        return output[: CONFIG.python_max_output_chars]
+        from core.cleaning import summarize_code_output
+        return summarize_code_output(
+            stdout, stderr, max_chars=CONFIG.python_max_output_chars
+        )
     except subprocess.TimeoutExpired:
         return f"Error: Python execution timed out after {CONFIG.python_timeout_sec} seconds."
     except Exception as exc:

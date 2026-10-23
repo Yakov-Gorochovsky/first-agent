@@ -27,6 +27,12 @@ from core.auth import APIKeyRecord, AuthManager
 from core.bus import EventBus, SwarmEvent
 from core.config import CONFIG
 from core.llm import OpenAICompatibleProvider
+from core.rate_limiter import (
+    ConcurrencyLimitExceededError,
+    DailyBudgetExceededError,
+    RateLimitExceededError,
+    TenantCostGovernor,
+)
 from core.roles import CAPABILITY_BUNDLES, RoleRegistry
 from core.storage import SQLiteStorage, sanitize_tenant_id, validate_tenant_id
 from core.swarm_manager import SwarmManager
@@ -38,6 +44,13 @@ bus = EventBus()
 storage = SQLiteStorage()
 role_registry = RoleRegistry()
 budget = BudgetTracker(config=BudgetConfig(), bus=bus)
+cost_governor = TenantCostGovernor(
+    storage=storage,
+    default_rpm=float(CONFIG.max_steps_per_agent * 10),
+    default_burst=10.0,
+    max_concurrency_per_tenant=1,
+    max_daily_usd_per_tenant=15.0,
+)
 llm = OpenAICompatibleProvider()
 swarm_manager = SwarmManager(
     storage=storage, bus=bus, role_registry=role_registry, default_llm=llm
@@ -583,9 +596,31 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
             else:
                 tenant_id = auth.tenant_id
 
-            run_lock = _get_tenant_run_lock(tenant_id)
-            if not run_lock.acquire(blocking=False):
-                self._send_json({"error": f"A mission is already running for tenant '{tenant_id}'."}, 409)
+            # FP-03: Rate Limiting & Daily Spend Cap Governance
+            try:
+                cost_governor.check_rate_limit(tenant_id)
+            except RateLimitExceededError as rle:
+                self._send_json({"error": str(rle), "retry_after": rle.retry_after}, 429)
+                return
+
+            try:
+                cost_governor.check_daily_spend(tenant_id)
+            except DailyBudgetExceededError as dbe:
+                self._send_json(
+                    {
+                        "error": str(dbe),
+                        "current_spend": dbe.current_spend,
+                        "max_spend": dbe.max_spend,
+                    },
+                    429,
+                )
+                return
+
+            try:
+                tracker = cost_governor.track_concurrency(tenant_id)
+                tracker.__enter__()
+            except ConcurrencyLimitExceededError as cle:
+                self._send_json({"error": str(cle)}, 409)
                 return
 
             def _worker() -> None:
@@ -623,7 +658,7 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
                         error=str(exc),
                     )
                 finally:
-                    run_lock.release()
+                    tracker.__exit__(None, None, None)
 
             threading.Thread(target=_worker, daemon=True).start()
             self._send_json({"status": "started", "tenant_id": tenant_id, "mode": mode})

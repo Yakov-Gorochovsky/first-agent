@@ -1,105 +1,124 @@
 # Architecture & Engineering Handbook (Neural Swarm)
 
-A concise reference covering the core design patterns, decoupled interfaces, configuration system, and security architecture of Neural Swarm (`first-agent`).
+A comprehensive architectural reference covering the core design patterns, decoupled interfaces, data models, memory layers, and security mechanisms of Neural Swarm (`first-agent`).
 
 ---
 
 ## 1. Core Mental Model: "Brain" vs. "Harness"
 
-1. **The Brain (LLM Weights — `qwen3:8b`, `llama3`, Gemini, Groq)**: Stateless text/tool predictor. Cannot execute code, browse the web, persist state, or loop on its own.
-2. **The Harness (This Codebase)**: The runtime wrapped around the model providing **memory, tools, budgets, multi-agent communication, and a `Think -> Act -> Observe` loop**.
+1. **The Brain (LLM Backends — Ollama, Groq, Gemini, OpenAI, Claude)**:
+   Stateless probabilistic token generators. They possess zero intrinsic abilities to run code, crawl the web, enforce tenant boundaries, persist state across crashes, or govern financial budgets.
+2. **The Harness (This Codebase)**:
+   The hardened operating environment wrapped around the models that manages **memory partitioning, sandboxed tools, budget governance, cryptographic checkpoints, multi-agent topologies, and self-improving distillation loops**.
 
 ---
 
-## 2. Key Architectural Decisions
-
-### 1. Hexagonal Architecture (Loose Coupling via `Protocol`)
-All swarm engines depend only on abstract interfaces in `core/`, never concrete implementations:
-- **[`LLMProvider`](core/llm.py)**: `llm.generate(messages, tools)` — swap Ollama, Groq, Gemini, Hugging Face, or `ScriptedMockLLM` with zero changes to swarm code.
-- **[`StorageBackend`](core/storage.py)**: `save_tenant_memory`, `add_global_skill`, `append_session_turn`, `log_trace` — swap SQLite for Postgres in one class.
-- **[`EventBus`](core/bus.py)**: Decoupled Pub/Sub bus (`bus.subscribe` / `bus.emit`). Swarms emit events without knowing whether the CLI, SSE Web Server, or Eval Runner is listening.
-
-### 2. Zero Hardcoding: Layered Configuration ([`config/settings.json`](config/settings.json) + [`core/config.py`](core/config.py))
-Every timeout, budget limit, database path, capability bundle (`@web`, `@code`, `@files`, `@memory`), and coordinator/orchestrator prompt template lives in [`config/settings.json`](config/settings.json), with seed specialist roles in [`config/default_roles.json`](config/default_roles.json). Environment variables in `.env` override JSON defaults via [`SwarmConfig`](core/config.py).
-
-### 3. Dual-Mode Tool Calling + Qwen3 Fast Mode ([`core/llm.py`](core/llm.py))
-- **Auto-Fallback**: `OpenAICompatibleProvider` attempts native OpenAI `tools=` calling first and automatically falls back to **ReAct JSON prompting** if a model rejects tool schemas.
-- **`/no_think` Optimization**: Prepends `/no_think` for `qwen3` models when `fast_thinking=true`, cutting local multi-agent routing latency by 5–10x.
-
-### 4. Two Swarm Topologies ([`core/swarm.py`](core/swarm.py) vs. [`core/peer_swarm.py`](core/peer_swarm.py))
+## 2. Comprehensive Subsystem Architecture
 
 ```mermaid
-flowchart LR
-    subgraph Step2["Step 2: Orchestrator -> Workers (core/swarm.py)"]
-        O["Orchestrator"] <-->|"delegate_to_worker()"| W["Workers"]
+flowchart TD
+    subgraph Ingress["Client & Ingress Layer"]
+        API["HTTP & SSE Server (server.py)"]
+        CLI["Interactive CLI (agent.py)"]
+        AUTH["AuthManager (core/auth.py)"]
+        GOV["TenantCostGovernor & Limiter (core/rate_limiter.py)"]
     end
 
-    subgraph Step3["Step 3: Peer Inbox Network (core/peer_swarm.py)"]
-        C["Coordinator [Inbox]"] -->|"send_peer_message()"| R["Researcher [Inbox]"]
-        R -->|"send_peer_message()"| D["Coder [Inbox]"]
-        D -->|"send_peer_message()"| Q["Critic [Inbox]"]
+    subgraph Planning["Swarm Factory & Meta-Planning"]
+        PLN["TaskDrivenMetaPlanner (core/meta_planner.py)"]
+        VAL["SwarmGenerationValidator (core/meta_planner.py)"]
+        FAC["Agent & Swarm Factory (core/factory.py)"]
+        REG["Capability & Tool Registry (core/registry.py)"]
+        TOP["TopologyRegistry (core/topology.py)"]
     end
+
+    subgraph Execution["Swarm Execution & Runtime"]
+        WRK["WorkerAgent Loop (core/swarm.py)"]
+        RTR["ModelPolicyRouter (core/router.py)"]
+        CB["CircuitBreaker & Resilience (core/resilience.py)"]
+        APP["ApprovalGate (core/approval.py)"]
+        HND["TypedHandoff M2M (core/handoffs.py)"]
+        BUS["EventBus Telemetry (core/bus.py)"]
+    end
+
+    subgraph StateAndMemory["Durable State, Memory & Efficiency"]
+        CHK["CheckpointStore & Idempotency (core/checkpoint.py)"]
+        RET["Hybrid BM25 + Vector Retrieval (core/retrieval.py)"]
+        SCR["Call-by-Reference Scratchpad (core/scratchpad.py)"]
+        CMP["ContextCompactor (core/compaction.py)"]
+        EXM["ExemplarStore (core/exemplars.py)"]
+        PRF["ProfileStore (core/profiles.py)"]
+        FDB["FeedbackStore (core/feedback.py)"]
+        DST["SkillDistiller (core/distiller.py)"]
+        OPT["PromptOptimizer (core/prompt_opt.py)"]
+    end
+
+    Ingress --> Planning --> Execution --> StateAndMemory
 ```
 
-- **Step 2 (`OrchestratorSwarm`)**: Central hub delegates tasks and synthesizes results.
-- **Step 3 (`PeerSwarm`)**: Decentralized peer network where each specialist owns a FIFO `deque[PeerMessage]` inbox and hands off work directly to peers (`yield_on_tools=["send_peer_message", "finish_swarm"]`).
-
-### 5. Declarative `RoleRegistry` & Capability Bundles ([`core/roles.py`](core/roles.py))
-Roles are data-driven (`RoleSpec`) and use capability tags (`@web`, `@code`, `@files`, `@memory`, `@all`) instead of hardcoded tool lists. New roles can be created via `config/default_roles.json`, the Web UI (`+ New Role`), the CLI (`/add-role`), or autonomously mid-run by the AI (`spawn_specialist`).
-
 ---
 
-## 3. Security Architecture & Threat Mitigations
+## 3. Module & Subsystem Reference
 
-| Layer | Threat / Vector | Mitigation Implemented |
+| Module | Core Classes & Interfaces | Architectural Responsibility |
 | :--- | :--- | :--- |
-| **Network (`fetch_url`)** | Server-Side Request Forgery (SSRF) and TOCTOU DNS Rebinding to localhost, internal LAN, or cloud metadata (`169.254.169.254`) | `_resolve_and_validate_public_url()` paired with `_pinned_getaddrinfo()` in [`tools.py`](tools.py) pins socket resolution to the validated public IP, disables redirects, and blocks loopback/private/link-local/reserved IPs. |
-| **Subprocess (`run_python`)** | Container escape, system execution, or exfiltration of `API_KEY` or cloud tokens via `os.environ` | Container sandboxing (Docker/Podman with `--network none`, `--read-only`, non-root, scrubbed env) or fail-closed logic unless `CONFIG.unsafe_allow_local_exec` is True. `_get_sandbox_env()` in [`tools.py`](tools.py) strips all env vars matching `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `AUTH`, or `CREDENTIAL`. |
-| **Math (`calculator`)** | Arbitrary code execution (`eval`), stack recursion, or CPU/RAM Denial-of-Service (`factorial(10000000)`, `999999 ** 999999`) | Whitelisted `ast` node evaluator in [`tools.py`](tools.py) + `_safe_pow()` enforcing `calc_max_exponent` (`1000`), bounded combinatorics (`_safe_factorial`, `_safe_comb`, `_safe_perm` for $n \le 1000$), and 300-character expression limit. |
-| **Filesystem (`save_note`/`read_note`)** | Path traversal (`../../`), multi-tenant file collision, or overwriting system state (`keys.json`, `swarm.db`) | Scoped to `workspace/tenants/{tenant_id}/`, verifies `Path.resolve().relative_to(WORKSPACE_DIR.resolve())`, and explicitly blocks system metadata files (`keys.json`, `swarm.db*`, `swarms.json`, `roles.json`, `memory.json`, `.env*`). |
-| **Multi-Tenant DB (`SQLiteStorage`)** | Cross-tenant memory leakage, SQL injection, or PII leakage into shared skills | Parameterized SQL queries with composite indexes, strict regex `validate_tenant_id()` validation (`^[A-Za-z0-9_-]{1,64}$`), rolling row pruning, and [`PrivacyAirlock.sanitize()`](core/storage.py) scrubbing `<EMAIL>`, `<URL>`, `<IP>`, `<SECRET>`, `<PATH>`, and `<NUM>`. |
-| **API Authentication & Scoped RBAC (`core/auth.py`, `server.py`)** | Unauthenticated API access, token brute-force timing attacks, horizontal privilege escalation, concurrent race conditions | `AuthManager` with SHA-256 hash checks via `hmac.compare_digest`, scoped access (`admin` vs `user`), cryptographically random fallback key generation, per-tenant run locking (`_tenant_run_locks`), and non-loopback host binding refusal unless auth is active. |
-| **Telemetry Streaming (`server.py`)** | Cross-tenant SSE stream telemetry eavesdropping | `SSEClientConnection` and `_broadcast_event` partition live event dispatch strictly by `tenant_id` (admin credentials receive all events). |
-| **Web Server & UI (`server.py`, `index.html`)** | DOM XSS from untrusted web/tool output, clickjacking, or memory exhaustion via giant POST bodies | `escapeHtml()` & `safeColor()` in [`static/index.html`](static/index.html); `max_body_bytes` (`64 KB`) cap, `X-Content-Type-Options: nosniff`, and `X-Frame-Options: DENY` in [`server.py`](server.py). |
-| **Swarm Runtime (`BudgetTracker`)** | Runaway agent loops or unbounded token spend | [`BudgetTracker`](core/budget.py) enforces `max_swarm_steps`, `max_steps_per_agent`, `max_total_tokens`, and `max_wall_seconds` before every LLM call, with real-time budget synchronization in [`SwarmManager.get_last_budget()`](core/swarm_manager.py). |
+| **[`core/resilience.py`](core/resilience.py)** | `CircuitBreaker`, `RetryConfig`, `retry_with_backoff` | 3-state circuit breaker (CLOSED, OPEN, HALF_OPEN) with randomized exponential jitter preventing cascading provider outages. |
+| **[`core/telemetry.py`](core/telemetry.py)** | `UsageLedger`, `calculate_call_cost`, `PRICING_TABLE_V1` | Tracks exact per-call prompt/completion/cached tokens, latency ms, and calculates true USD cost backed by SQLite. |
+| **[`core/security.py`](core/security.py)** | `TaintTracker`, `sanitize_untrusted_text`, `wrap_untrusted_content` | Enforces untrusted boundary delimiters, strips zero-width/tag injection characters, and blocks high-risk tools after web ingestion. |
+| **[`core/rate_limiter.py`](core/rate_limiter.py)** | `TokenBucket`, `TenantCostGovernor` | Thread-safe token bucket rate limiting, active concurrency tracking, and rolling 24-hour USD spend caps per tenant. |
+| **[`core/registry.py`](core/registry.py)** | `ToolMetadata`, `ToolRegistry`, `DynamicRoleSpec` | Pure data-driven capability catalog declaring `risk_class`, `side_effects`, and `data_classification` with zero hardcoded personas. |
+| **[`core/topology.py`](core/topology.py)** | `BaseTopology`, `OrchestratorTopology`, `PeerTopology`, `PipelineTopology`, `ReviewLoopTopology` | Pluggable multi-agent coordination architectures replacing procedural branching with clean, decoupled topology drivers. |
+| **[`core/factory.py`](core/factory.py)** | `SwarmSpec`, `AgentFactory`, `SwarmFactory` | Instantiates arbitrary agent swarms from declarative specs with multi-tenant isolation and client mass-assignment protection. |
+| **[`core/approval.py`](core/approval.py)** | `ApprovalGate`, `ApprovalRequest`, `ApprovalDecision` | Single-use cryptographic approval tokens with action/arg SHA-256 hash binding, TTL timeouts, and append-only audit logging. |
+| **[`core/meta_planner.py`](core/meta_planner.py)** | `TaskDrivenMetaPlanner`, `SwarmGenerationValidator` | Decomposes raw missions into optimal swarms with structured repair loops and strict privilege ceilings. |
+| **[`core/retrieval.py`](core/retrieval.py)** | `HybridRetrievalStore`, `EmbeddingProvider`, `BM25Partition` | Multi-tenant hybrid retrieval fusing Okapi BM25 and pre-normalized dot-product dense embeddings via Reciprocal Rank Fusion ($k=60$). |
+| **[`core/prompt_layout.py`](core/prompt_layout.py)** | `CacheStablePromptBuilder`, `FinalTurnPolicy` | Three-Tier prompt layout (Immutable Prefix, Semi-Static Body, Dynamic Tail) guaranteeing 100% prefix stability and KV-cache reuse. |
+| **[`core/cleaning.py`](core/cleaning.py)** | `MarkdownHTMLDistiller`, `summarize_code_output` | Strips navigation, footers, scripts, and hidden CSS text; bounds huge stdout dumps to head/tail while preserving stack traces verbatim. |
+| **[`core/handoffs.py`](core/handoffs.py)** | `TypedHandoff`, `HandoffValidator` | Compact, versioned JSON Schemas for inter-agent communication (`task_delegation_v1`, `specialist_finding_v1`, `review_critique_v1`). |
+| **[`core/router.py`](core/router.py)** | `ModelPolicyRouter`, `RoutingLLMProvider`, `ProviderProfile` | Enforces tenant data residency jurisdictions (`local`, `us`, `eu`, `apac`), provider allow-lists, and policy-compliant fallback chains. |
+| **[`core/checkpoint.py`](core/checkpoint.py)** | `CheckpointStore`, `MissionCheckpoint`, `IdempotencyRegistry`, `DurableMissionRunner` | Step-level mission state persistence with HMAC-SHA256 signatures, tenant re-authorization on resume, and zero-duplicate side-effect guarantees. |
+| **[`core/scratchpad.py`](core/scratchpad.py)** | `ScratchpadStore`, `ScratchpadPointer`, `ScratchpadItem` | Out-of-band store for bulky payloads using 128-bit random tokens, zero filesystem paths, tenant quotas, and taint preservation. |
+| **[`core/compaction.py`](core/compaction.py)** | `ContextCompactor`, `CompactionResult` | Batched observation compaction into digests with restorable pointers, reducing context by >50% while protecting system prompts. |
+| **[`core/exemplars.py`](core/exemplars.py)** | `ExemplarStore`, `Exemplar` | Curated in-context demonstrations with an administrative approval gate, PII scrubbing, user scoping, and untrusted framing. |
+| **[`core/profiles.py`](core/profiles.py)** | `ProfileStore`, `UserProfile` | User preferences with schema allow-lists, length caps, HTML escaping, and code-level security primacy. |
+| **[`core/feedback.py`](core/feedback.py)** | `FeedbackStore`, `PointwiseFeedback`, `PreferencePair` | Pointwise ratings (+1/-1) and pairwise preference sets with mandatory training consent verification and PII scrubbing. |
+| **[`core/distiller.py`](core/distiller.py)** | `SkillDistiller`, `DistilledSkill` | Post-mission background skill extraction requiring explicit success signals, planted injection rejection, and strict capability matching. |
+| **[`core/prompt_opt.py`](core/prompt_opt.py)** | `PromptOptimizer`, `PromptArtifact` | Versioned prompt optimization over `dev` splits with single-pass evaluation gating on frozen `test` splits and spend caps. |
+| **[`tools.py`](tools.py)** | `run_python`, `fetch_url`, `calculator`, `save_note`, `read_note`, etc. | Hardened, sandboxed tool primitives with AST validation, SSRF DNS pinning, and tenant directory partitioning. |
+| **[`benchmarks/`](benchmarks/)** | `runner.py`, `smoke_tasks.json`, `reports/baseline-v0.json` | Calibrated smoke benchmark suite spanning 4 domain packs with deterministic verification. |
 
 ---
 
-## 4. Module Reference
+## 4. Security Invariants Matrix
 
-| File | Responsibility |
-| :--- | :--- |
-| [`config/settings.json`](config/settings.json) | Central JSON configuration for LLM, budgets, storage, tools, server, capability bundles, and system prompts |
-| [`config/default_roles.json`](config/default_roles.json) | Default seed specialist roles (`architect`, `coder`, `test_runner`, `critic`, `researcher`, `security_reviewer`) |
-| [`config/default_keys.json`](config/default_keys.json) | Default seed hashed API keys for role-scoped authentication (`admin` and tenant keys) |
-| [`core/config.py`](core/config.py) | `SwarmConfig` loader merging `config/settings.json` with `.env` overrides |
-| [`core/auth.py`](core/auth.py) | `AuthManager` with constant-time verification (`hmac.compare_digest`), scope validation, and key hashing |
-| [`core/bus.py`](core/bus.py) | `EventBus` & `SwarmEvent` pub/sub telemetry |
-| [`core/budget.py`](core/budget.py) | `BudgetConfig`, `BudgetTracker`, `BudgetExceededError` |
-| [`core/storage.py`](core/storage.py) | `StorageBackend`, `SQLiteStorage` (WAL mode + auto-pruning), `PrivacyAirlock` |
-| [`core/llm.py`](core/llm.py) | `LLMProvider`, `OpenAICompatibleProvider` (native tools + ReAct fallback + Qwen `/no_think`) |
-| [`core/roles.py`](core/roles.py) | `RoleSpec`, `RoleRegistry`, capability bundle resolver, `spawn_specialist` tool factory |
-| [`core/swarm.py`](core/swarm.py) | `WorkerAgent` execution loop & Step 2 `OrchestratorSwarm` |
-| [`core/peer_swarm.py`](core/peer_swarm.py) | Step 3 `PeerSwarm` decentralized FIFO inbox network |
-| [`core/swarm_manager.py`](core/swarm_manager.py) | Multi-swarm deployment, cross-swarm bridge (`send_external_swarm_message`), and egress DLP filtering |
-| [`tools.py`](tools.py) | Hardened atomic & universal tools + OpenAI JSON schemas |
-| [`agent.py`](agent.py) | Interactive multi-tenant CLI supporting both `peer` and `orchestrator` topologies |
-| [`server.py`](server.py) | Zero-dependency HTTP + Live SSE streaming backend with scoped API-key authentication |
-| [`static/index.html`](static/index.html) | Web-based Event Dashboard UI with HTML5 Canvas swarm graph visualizer and auth management |
-| [`evals.py`](evals.py) | Step 5 deterministic evaluation, regression & security audit suite (11 checks) |
-| [`frameworks_comparison.py`](frameworks_comparison.py) | Step 6 side-by-side LangGraph (`StateGraph`) & OpenAI Agents SDK (`SDKRunner`) equivalence |
-
----
-
-## 5. Step 6: Framework Equivalence Mapping ([`frameworks_comparison.py`](frameworks_comparison.py))
-
-| Concept | Custom Implementation | Framework Equivalent |
-| :--- | :--- | :--- |
-| **Single-Agent Tool Loop** | [`WorkerAgent.execute_task()`](core/swarm.py) | LangChain `AgentExecutor` / Claude Agent SDK |
-| **Hub-and-Spoke Delegation** | [`OrchestratorSwarm`](core/swarm.py) (`delegate_to_worker`) | Anthropic Subagents / CrewAI Hierarchical |
-| **Stateful Graph Routing** | [`PeerSwarm`](core/peer_swarm.py) + [`StateGraph`](frameworks_comparison.py) | **LangGraph** (`StateGraph`, `add_node`, `add_conditional_edges`)* |
-| **Decentralized Handoffs** | `yield_on_tools=["send_peer_message"]` + [`SDKRunner`](frameworks_comparison.py) | **OpenAI Agents SDK** (`Agent(handoffs=[...])`, `Runner.run_sync`)* |
-| **Persistence & Memory** | [`SQLiteStorage`](core/storage.py) + [`PrivacyAirlock`](core/storage.py) | LangGraph `SqliteSaver` + `BaseStore` |
-| **Observability** | [`EventBus`](core/bus.py) + [`server.py`](server.py) SSE Stream | LangSmith / Langfuse / Arize Phoenix |
-
-*\*Note on Framework Scope: The lightweight `StateGraph` (~45 LOC) and `SDKRunner` (~35 LOC) in `frameworks_comparison.py` illustrate state-machine dispatch and agent handoffs. Production LangGraph adds durable checkpointer time-travel, parallel superstep reducers, and human-in-the-loop interrupts; the OpenAI Agents SDK supports non-OpenAI models via LiteLLM or OpenAI-compatible gateways.*
+```
++-----------------------------------------------------------------------------------------+
+| Security Control                 | Enforcing Module         | Verification Test Suite   |
++----------------------------------+--------------------------+---------------------------+
+| Container Execution Sandboxing   | tools.py                 | test_tools.py             |
+| SSRF & TOCTOU DNS Pinning        | tools.py                 | test_tools.py             |
+| AST Math Safe Evaluation         | tools.py                 | test_tools.py             |
+| Multi-Tenant Directory Boundary  | tools.py                 | test_tools.py             |
+| Multi-Tenant DB Partitioning     | core/storage.py          | test_storage.py           |
+| Cross-Swarm PII Airlock          | core/storage.py          | test_privacy_airlock.py   |
+| API Constant-Time Auth & RBAC    | core/auth.py             | test_auth.py              |
+| Untrusted Delimiters & Taint     | core/security.py         | test_security_taint.py    |
+| Financial Bounds & Token Spends  | core/rate_limiter.py     | test_rate_limiter.py      |
+| Cryptographic Action Approvals   | core/approval.py         | test_approval.py          |
+| Over-Privilege Ceiling Check     | core/meta_planner.py     | test_factory_and_planner  |
+| BM25/Vector Tenant Isolation     | core/retrieval.py        | test_retrieval.py         |
+| 100% Prefix Stability Layout     | core/prompt_layout.py    | test_prompt_layout.py     |
+| Hidden HTML Distillation         | core/cleaning.py         | test_cleaning.py          |
+| M2M Schema Validation & XSS Safe | core/handoffs.py         | test_handoffs.py          |
+| Data Residency Jurisdiction Rule | core/router.py           | test_router.py            |
+| HMAC-SHA256 State Integrity      | core/checkpoint.py       | test_checkpoint.py        |
+| Zero-Duplicate Side Effects      | core/checkpoint.py       | test_checkpoint.py        |
+| 128-Bit Opaque Scratchpad Ref    | core/scratchpad.py       | test_scratchpad_and_...   |
+| Compaction Trust Inheritance     | core/compaction.py       | test_scratchpad_and_...   |
+| Few-Shot Admin Approval Gate     | core/exemplars.py        | test_exemplars_profile... |
+| Code-Level Invariant Primacy     | core/profiles.py         | test_exemplars_profile... |
+| Contractual Training Consent     | core/feedback.py         | test_exemplars_profile... |
+| Zero Signature-Leak Distillation | core/distiller.py        | test_distiller_and_...    |
+| Frozen Test Split Quarantine     | core/prompt_opt.py       | test_distiller_and_...    |
++-----------------------------------------------------------------------------------------+
+```

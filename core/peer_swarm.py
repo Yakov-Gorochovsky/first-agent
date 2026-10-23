@@ -19,6 +19,7 @@ from core.bus import EventBus
 from core.config import CONFIG
 from core.llm import LLMProvider
 from core.roles import RoleRegistry, RoleSpec
+from core.security import TaintTracker
 from core.storage import StorageBackend
 from core.swarm import WorkerAgent
 
@@ -71,6 +72,7 @@ class PeerSwarm:
         self.directive = directive.strip()
         self.extra_tools = extra_tools or {}
         self.extra_schemas = extra_schemas or []
+        self.taint_tracker = TaintTracker()
         self.nodes: Dict[str, PeerNode] = {}
         self._final_answer: Optional[str] = None
         self.refresh_peers()
@@ -148,6 +150,7 @@ class PeerSwarm:
             extra_schemas=coord_schemas,
             yield_on_tools=["send_peer_message", "finish_swarm"],
             max_steps=CONFIG.max_coordinator_steps,
+            taint_tracker=self.taint_tracker,
         )
         coord_node = PeerNode(coord_worker)
         if "coordinator" in old_inboxes:
@@ -192,6 +195,7 @@ class PeerSwarm:
             extra_schemas=comm_schemas,
             yield_on_tools=["send_peer_message", "finish_swarm"],
             max_steps=spec.effective_max_steps,
+            taint_tracker=self.taint_tracker,
         )
         node = PeerNode(worker)
         if existing_inbox:
@@ -281,6 +285,7 @@ class PeerSwarm:
         self.budget.reset()
         self.budget.tenant_id = tenant_id
         self._final_answer = None
+        self.taint_tracker = TaintTracker(mission_id=f"peer_{tenant_id}")
         self.refresh_peers()
         for node in self.nodes.values():
             node.inbox.clear()

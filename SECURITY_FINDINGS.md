@@ -197,3 +197,216 @@ The following security findings were verified via code audit and local test repr
   1. **Cryptographically Secure Fallback ([`core/auth.py`](core/auth.py))**: Generates an ephemeral cryptographically random key (`ns-admin-` + `secrets.token_urlsafe(24)`) and logs a high-visibility warning whenever falling back.
   2. **Error Logging ([`core/auth.py`](core/auth.py))**: Added logging for JSON decode errors and unparseable key records.
 
+### Finding 15 (Remediated — P0): Subprocess Breakout & Container Workspace Mount Exposure (FP-01)
+- **Severity**: Critical
+- **Status**: **FIXED** (Remediated October 23, 2026; verified in `tests/unit/test_tools.py::test_run_python_process_breakout_blocked`)
+- **Root Cause**: 
+  1. The container sandbox previously bind-mounted the host `WORKSPACE_DIR` into `/workspace:rw`, exposing host tenant filesystem storage to potential container symlink traversal attacks.
+  2. In local fallback execution mode, the in-process socket hook (`_SUBPROCESS_SANDBOX_BOOTSTRAP`) could be bypassed by code spawning a secondary child process (`subprocess.run` / `os.system`), which inherited standard unhooked sockets.
+- **Remediation Implemented**:
+  1. **Ephemeral tmpfs Container Isolation ([`tools.py`](tools.py))**: Container execution now runs with `--tmpfs /workspace:rw,size=64m`, `--tmpfs /tmp:rw,size=32m`, `--cap-drop=ALL`, and `--security-opt=no-new-privileges`, completely eliminating host filesystem bind-mounts.
+  2. **Process Spawning Disablement ([`tools.py`](tools.py))**: `_SUBPROCESS_SANDBOX_BOOTSTRAP` blocks `subprocess.Popen`, `subprocess.run`, `subprocess.call`, `os.system`, `os.popen`, and all `os.exec*` / `os.spawn*` variants with `PermissionError`.
+  3. **Automated Verification**: Added unit tests in `test_tools.py` verifying child-process breakout rejection and fail-closed security when container runtimes are unavailable.
+
+### Finding 16 (Remediated — P0): Indirect Prompt Injection & Multi-Tool Privilege Pivots (FP-02)
+- **Severity**: Critical
+- **Status**: **FIXED** (Remediated October 23, 2026; verified in `tests/unit/test_security_taint.py`)
+- **Root Cause**:
+  1. Web and file tool outputs were ingested directly into conversation history without structural trust demarcation, enabling adversarial webpages to inject system overrides and trigger unauthorized actions (e.g., executing arbitrary Python code or writing files).
+  2. Hidden prompt-injection techniques (Unicode invisible tag characters U+E0000..U+E007F, zero-width joiners, and hidden HTML comments) bypassed naive token inspection.
+- **Remediation Implemented**:
+  1. **Unicode Tag & Invisible Normalization ([`core/security.py`](core/security.py))**: Implemented `sanitize_untrusted_text()` stripping all Unicode tags, zero-width characters, and HTML comments before content enters model prompts.
+  2. **Structural Boundary Wrapping ([`core/security.py`](core/security.py))**: Untrusted ingestion tools (`web_search`, `fetch_url`) are automatically wrapped in `<UNTRUSTED_CONTENT source="..." trust="untrusted">` with explicit instruction hierarchy notices.
+  3. **Multi-Agent Taint Tracking Engine ([`core/security.py`](core/security.py), [`core/swarm.py`](core/swarm.py), [`core/peer_swarm.py`](core/peer_swarm.py))**: Once external untrusted data is ingested into a session, the mission context is marked as tainted (`is_tainted = True`). High-risk tools (`run_python`, `save_note`, `send_external_swarm_message`, `share_global_skill`) are immediately blocked from executing following untrusted ingestion.
+  4. **UI Inert Rendering Verification ([`static/index.html`](static/index.html))**: Verified that all telemetry and trace items are escaped via `escapeHtml()`, rendering outputs as inert text and preventing markdown-image exfiltration attacks.
+
+### Finding 17 (Remediated — P1): Unmetered Multi-Tenant Rate Floods & Unbounded Financial Spend (FP-03)
+- **Severity**: High
+- **Status**: **FIXED** (Remediated October 23, 2026; verified in `tests/unit/test_rate_limiter.py`)
+- **Root Cause**:
+  1. The API `/api/run` did not enforce rate limiting (RPM/burst) or rolling 24-hour cost ceilings per tenant, allowing an adversarial or malfunctioning client to flood the server, starve other tenants (noisy neighbor effect), and exhaust downstream LLM financial budgets.
+  2. Completion token bounds were not strictly clamped to a hard ceiling, leaving room for single-turn token runaway.
+- **Remediation Implemented**:
+  1. **Thread-Safe Token-Bucket Rate Limiter ([`core/rate_limiter.py`](core/rate_limiter.py))**: Implemented `TokenBucket` providing burst tolerance and steady token refill per tenant. Rejects excess bursts with HTTP 429 and `Retry-After`.
+  2. **Active Concurrency Metering ([`core/rate_limiter.py`](core/rate_limiter.py))**: Built `track_concurrency` context manager preventing parallel mission runaways per tenant (configured to 1–3 concurrent missions).
+  3. **Rolling 24-Hour Cost Governor ([`core/rate_limiter.py`](core/rate_limiter.py))**: Queries SQLite `usage_ledger` to calculate aggregate USD spend in the last 86,400 seconds. Halts requests with HTTP 429 once the tenant daily budget ceiling is reached.
+  4. **Mission Dollar Budget & Bounded Completion Tokens ([`core/budget.py`](core/budget.py))**: `BudgetTracker` computes cumulative USD spend using the versioned pricing catalog, trips when exceeding `max_mission_cost_usd`, and clamps completion tokens to `hard_max_completion_tokens`.
+
+### Finding 18 (Remediated — P0): Human Approval Bypass Vectors in High-Risk Tools (FP-11 Lite)
+- **Severity**: Critical
+- **Status**: **FIXED** (Remediated October 23, 2026; verified in `tests/unit/test_approval.py`)
+- **Root Cause**:
+  1. Autonomous agents could previously trigger destructive or sensitive actions (file writes, arbitrary subprocess execution) without mandatory operator verification.
+  2. Naive approval systems are vulnerable to argument tampering (mutating arguments after receiving approval), token replay attacks, expired authorization usage, or approval by unauthenticated actors.
+- **Remediation Implemented**:
+  1. **Cryptographic Action & Argument Hash Binding ([`core/approval.py`](core/approval.py))**: Approvals bind action name and a SHA-256 hash of serialized raw arguments. Modifying arguments triggers `ApprovalTamperingError`.
+  2. **Single-Use Burn & Anti-Replay ([`core/approval.py`](core/approval.py))**: Approval tokens are marked `USED` and burned upon execution; replay attempts raise `ApprovalReplayError`.
+  3. **TTL Expiration & Fail-Closed Timeouts ([`core/approval.py`](core/approval.py))**: Pending requests time out to `DENIED` status after the configured duration; expired tokens cannot be redeemed.
+  4. **Append-Only Security Audit Trail ([`core/approval.py`](core/approval.py))**: Records every approval request, decision, timeout, tampering attempt, and approver identity.
+
+### Finding 19 (Remediated — P1): Client Mass Assignment & Tenant Impersonation in Swarm Specifications (FP-12)
+- **Severity**: High
+- **Status**: **FIXED** (Remediated October 23, 2026; verified in `tests/unit/test_factory_and_planner.py::test_swarm_spec_tenant_mass_assignment_protection`)
+- **Root Cause**:
+  1. Client-supplied swarm specifications could include a foreign `tenant_id` in JSON payloads, allowing attackers to deploy swarms into a victim tenant's namespace (horizontal privilege escalation).
+  2. Core engines were coupled to hardcoded software-engineering roles instead of acting as a generic data-driven runtime.
+- **Remediation Implemented**:
+  1. **Enforced Tenant Binding ([`core/factory.py`](core/factory.py))**: `SwarmSpec.from_dict()` ignores client-supplied `tenant_id` and strictly binds to the authenticated caller's credential context.
+  2. **Declarative Capabilities & Pluggable Topologies ([`core/registry.py`](core/registry.py), [`core/topology.py`](core/topology.py))**: Extracted tool metadata and topologies into modular registries, eliminating hardcoded role personas in core orchestration.
+
+### Finding 20 (Remediated — P0): Autonomous Over-Privilege Escalation in Generated Swarms (FP-13)
+- **Severity**: Critical
+- **Status**: **FIXED** (Remediated October 23, 2026; verified in `tests/unit/test_factory_and_planner.py::test_privilege_ceiling_blocks_over_privileged_roles`)
+- **Root Cause**:
+  1. In autonomous task-driven swarm planning, an LLM could allocate arbitrary high-risk capabilities (e.g. `@code`, `@admin`) to generated agents even when the requesting tenant lacks permissions.
+  2. Prompt-injection attacks inside the task prompt could manipulate the meta-planner into creating backdoor agent roles.
+- **Remediation Implemented**:
+  1. **Deterministic Privilege Ceiling Validator ([`core/meta_planner.py`](core/meta_planner.py))**: Programmatic validator verifies that every capability requested by generated roles is within the caller's allowed permission set before any swarm can be instantiated.
+  2. **Untrusted Mission Text Boundary Delimitation ([`core/meta_planner.py`](core/meta_planner.py))**: User task prompts are sanitized and wrapped in structural untrusted boundary tags with anti-injection notices before reaching the meta-planner model.
+  3. **Strict Bounds Enforcement ([`core/meta_planner.py`](core/meta_planner.py))**: Limits generated swarms to a maximum of 6 roles and caps step/token budgets.
+
+### Finding 21 (Remediated — P1): Cross-Tenant Embedding Leakage & Model Version Mixing (FP-14)
+- **Severity**: High
+- **Status**: **FIXED** (Remediated October 23, 2026; verified in `tests/unit/test_retrieval.py::test_hybrid_retrieval_and_cross_tenant_isolation`)
+- **Root Cause**:
+  1. Shared vector stores can expose confidential enterprise documents across tenants if queries fail to enforce strict tenant scoping at the SQL/index layer.
+  2. Comparing vectors across differing embedding models or versions results in corrupted distance metrics and semantic hallucination.
+  3. External cloud embedding calls can leak sensitive tenant intellectual property without explicit data-residency consent.
+- **Remediation Implemented**:
+  1. **Enforced Tenant Partitioning ([`core/retrieval.py`](core/retrieval.py))**: `tenant_vectors` schema enforces `(tenant_id, item_id)` primary key, and queries filter on `tenant_id` at the lowest storage layer. Verified 0 cross-tenant leaks across probe queries.
+  2. **Model & Version Homogeneity ([`core/retrieval.py`](core/retrieval.py))**: Vector queries filter strictly on matching `embedding_model` and `embedding_version`.
+  3. **Local Default & Graceful BM25 Fallback ([`core/retrieval.py`](core/retrieval.py))**: Defaults to local embedding generation. If dense embedding generation fails or drops, automatically fails over to Okapi BM25 sparse retrieval.
+  4. **Tested Cascading Erasure ([`core/retrieval.py`](core/retrieval.py))**: `purge_tenant_data()` deletes relational records, vector BLOBs, and in-memory BM25 index structures concurrently.
+
+### Finding 22 (Remediated — P2): Prefix Cache Side-Channel & Dynamic Key Permutations (FP-06)
+- **Severity**: Medium
+- **Status**: **FIXED** (Remediated October 23, 2026; verified in `tests/unit/test_prompt_layout.py::test_canonical_schema_sorting_resists_shuffling`)
+- **Root Cause**:
+  1. Leaking dynamic runtime elements (timestamps, user UUIDs, session counters) into system prompt headers forces full re-computation of KV cache buffers across every step.
+  2. In shared model deployments, poorly partitioned prompt prefixes can create timing side channels or key ordering discrepancies across serialization routines.
+- **Remediation Implemented**:
+  1. **Strict Three-Tier Prompt Separation ([`core/prompt_layout.py`](core/prompt_layout.py))**: Strict demarcation between Tier 1 (Immutable Prefix), Tier 2 (Semi-Static Body), and Tier 3 (Dynamic Tail). All session-specific and temporal data is strictly quarantined in the dynamic tail.
+  2. **Canonical Schema Key Sorting ([`core/prompt_layout.py`](core/prompt_layout.py))**: Implemented `canonicalize_tool_schemas()` ensuring dictionary keys and tool declarations are sorted deterministically before prompt rendering.
+  3. **Verified 100% Prefix Stability ([`core/prompt_layout.py`](core/prompt_layout.py))**: `compute_prefix_hash()` confirms identical SHA-256 digests across all turns of an active mission.
+
+### Finding 23 (Remediated — P1): Hidden CSS Injection & Memory Exhaustion via Large Subprocess Output (FP-05)
+- **Severity**: High
+- **Status**: **FIXED** (Remediated October 23, 2026; verified in `tests/unit/test_cleaning.py::test_clean_html_to_markdown_strips_boilerplate_and_hidden`)
+- **Root Cause**:
+  1. Adversarial web pages embed indirect prompt injection in hidden DOM elements (`display:none`, `visibility:hidden`, `aria-hidden="true"`, or CSS classes). Naive text extractors ingested these strings straight into the model prompt.
+  2. Large subprocess outputs (e.g., recursive print loops, multi-megabyte numpy arrays or traces) blew agent context limits and starved system memory.
+- **Remediation Implemented**:
+  1. **Structural HTML Distiller ([`core/cleaning.py`](core/cleaning.py))**: Implemented `MarkdownHTMLDistiller` that checks inline styles, attributes, and tags to purge hidden text, navigation, scripts, and footers.
+  2. **Bounded Output Summaries ([`core/cleaning.py`](core/cleaning.py))**: `summarize_code_output()` bounds large stdout streams by extracting head/tail segments while explicitly reporting omitted line counts.
+  3. **Error Preservation Guarantee ([`core/cleaning.py`](core/cleaning.py))**: Stderr and exception stack traces are never summarized or omitted, ensuring debugging integrity.
+
+### Finding 24 (Remediated — P2): Deserialization Vulnerabilities & Rendering Injection in Machine Handoffs (FP-08)
+- **Severity**: Medium
+- **Status**: **FIXED** (Remediated October 23, 2026; verified in `tests/unit/test_handoffs.py::test_handoff_display_escaping`)
+- **Root Cause**:
+  1. Parsing unvalidated inter-agent messages could allow YAML unsafe deserialization or arbitrary object instantiation if using general loaders.
+  2. Rendering structured handoff fields in the user interface dashboard without strict escaping could expose the browser to Cross-Site Scripting (XSS).
+- **Remediation Implemented**:
+  1. **Strict Standard JSON Wire Protocol ([`core/handoffs.py`](core/handoffs.py))**: Replaced arbitrary format parsing with strict standard `json.loads` and versioned JSON Schema validation. Rejects any non-conforming payload.
+  2. **Mandatory UI HTML Escaping ([`core/handoffs.py`](core/handoffs.py))**: `TypedHandoff.to_display_text()` automatically escapes all sender, recipient, and payload string properties using `html.escape()`.
+  3. **Receipt Validation & Bounded Retries ([`core/handoffs.py`](core/handoffs.py))**: Validates incoming handoffs at recipient boundary with detailed schema feedback, preventing corrupted state from entering agent inboxes.
+
+### Finding 25 (Remediated — P1): Data Residency Breach & Provider Policy Evasion (FP-04)
+- **Severity**: High
+- **Status**: **FIXED** (Remediated October 23, 2026; verified in `tests/unit/test_router.py::test_fallback_chain_strictly_respects_tenant_policy`)
+- **Root Cause**:
+  1. Multi-tenant agent runtimes serving regulated industries (healthcare, defense, EU banking) could inadvertently transmit client prompts to foreign LLM backends violating GDPR or sovereignty requirements.
+  2. When an approved local or EU LLM fails, uncontrolled fallback chains could silently cascade to unapproved cloud models (e.g. OpenAI or Gemini in US jurisdiction).
+- **Remediation Implemented**:
+  1. **Enforced Tenant Data Residency ([`core/router.py`](core/router.py))**: `ModelPolicyRouter` enforces tenant-level allow-lists for jurisdictions (`local`, `us`, `eu`, `apac`) and provider IDs.
+  2. **Local-Only Inference Guardrail ([`core/router.py`](core/router.py))**: Enforces `allow_cloud_inference=False` for air-gapped tenants, raising `PolicyViolationError` if any cloud provider is requested.
+  3. **Strict Policy-Filtered Fallback ([`core/router.py`](core/router.py))**: Fallback chains are pre-filtered against tenant policy before execution. Fallback candidates violating tenant rules are purged, guaranteeing 0 policy violations during failover.
+
+### Finding 26 (Remediated — P1): State Injection via Tampered Checkpoints & Side-Effect Replay (FP-10)
+- **Severity**: High
+- **Status**: **FIXED** (Remediated October 23, 2026; verified in `tests/unit/test_checkpoint.py::test_checkpoint_tamper_detection`)
+- **Root Cause**:
+  1. Resuming crashed or paused swarms from unauthenticated disk state enables attackers with database access to modify budget counters, alter accumulated reasoning, or inject malicious instructions.
+  2. Repeating a mission after a crash re-executes side-effecting operations (file modifications, code executions, external network writes), causing unintended duplicate mutations.
+- **Remediation Implemented**:
+  1. **HMAC-SHA256 Cryptographic Integrity ([`core/checkpoint.py`](core/checkpoint.py))**: Checkpoint payloads are deterministically serialized and signed with an HMAC-SHA256 signature. Modifying any byte raises `CheckpointTamperedError`.
+  2. **Re-Authorization on Resume ([`core/checkpoint.py`](core/checkpoint.py))**: Mission resumption executes an explicit tenant authorization check (`auth_validator`) to prevent revoked or disabled tenants from continuing executions.
+  3. **Durable Idempotency Registry ([`core/checkpoint.py`](core/checkpoint.py))**: Tracks executed tool calls keyed by `sha256(tenant_id:mission_id:tool_name:args)`. Re-execution returns cached results, ensuring exactly 0 duplicate side effects across fault recovery.
+
+### Finding 27 (Remediated — P1): Insecure Direct Object Reference & Path Traversal in Scratchpad Pointers (FP-07)
+- **Severity**: High
+- **Status**: **FIXED** (Remediated October 23, 2026; verified in `tests/unit/test_scratchpad_and_compaction.py::test_scratchpad_cross_tenant_isolation_and_guessed_ids`)
+- **Root Cause**:
+  1. If scratchpad reference tokens map directly to filesystem paths or predictable IDs, attackers could use directory traversal (`../../etc/passwd`) or guessable identifiers to exfiltrate other tenants' out-of-band payloads.
+- **Remediation Implemented**:
+  1. **128-Bit Cryptographic Tokens ([`core/scratchpad.py`](core/scratchpad.py))**: Generates tokens using `secrets.token_hex(16)`.
+  2. **Zero Filesystem Path Mapping ([`core/scratchpad.py`](core/scratchpad.py))**: Stored strictly in SQLite BLOB tables with parameterized queries.
+  3. **Strict Multi-Tenant Scoping & Constant Rejection ([`core/scratchpad.py`](core/scratchpad.py))**: Cross-tenant dereference or invalid ID format raises `ScratchpadAccessDeniedError` uniformly, preventing existence oracle probing.
+
+### Finding 28 (Remediated — P2): Prompt Injection Laundering via Observation Compaction (FP-09)
+- **Severity**: Medium
+- **Status**: **FIXED** (Remediated October 23, 2026; verified in `tests/unit/test_scratchpad_and_compaction.py::test_compaction_trust_inheritance`)
+- **Root Cause**:
+  1. Compacting untrusted tool observations into summaries could launder prompt injection if the resulting summary was treated as trusted assistant or internal content.
+- **Remediation Implemented**:
+  1. **Trust Inheritance ([`core/compaction.py`](core/compaction.py))**: Compacted observation digests inherit the lowest trust level of their source (`tool_untrusted`).
+  2. **Immutable Protected Zones ([`core/compaction.py`](core/compaction.py))**: System prompts, policy rules, and approval records are strictly exempt from compaction.
+
+### Finding 29 (Remediated — P1): Poisoned Few-Shot Exemplars & Cross-User Privacy Breach (FP-15)
+- **Severity**: High
+- **Status**: **FIXED** (Remediated October 23, 2026; verified in `tests/unit/test_exemplars_profiles_feedback.py::test_exemplar_lifecycle_and_approval_gate`)
+- **Root Cause**:
+  1. Autonomous exemplar injection without human oversight allows adversarial prompts to become persistent few-shot examples that infect future missions.
+  2. One user's task demonstrations could leak private client data to another user.
+- **Remediation Implemented**:
+  1. **Administrative Approval Gate ([`core/exemplars.py`](core/exemplars.py))**: Only `approved` exemplars can be retrieved; `candidate` and `disabled` exemplars are quarantined.
+  2. **User & Tenant Scoping ([`core/exemplars.py`](core/exemplars.py))**: Exemplars are private to the authoring user unless explicitly authorized for tenant-wide sharing.
+  3. **Delimited Untrusted Framing ([`core/exemplars.py`](core/exemplars.py))**: Injected with explicit instructions directing the model not to execute directions inside demonstrations.
+
+### Finding 30 (Remediated — P2): Safety Invariant Override via Advisory User Preference Profiles (FP-16)
+- **Severity**: Medium
+- **Status**: **FIXED** (Remediated October 23, 2026; verified in `tests/unit/test_exemplars_profiles_feedback.py::test_user_profile_schema_validation_and_minimization`)
+- **Root Cause**:
+  1. Malicious user profile entries (e.g., `bypass_sandbox: true`) could attempt to override core security policies if safety checks relied on prompt instructions.
+- **Remediation Implemented**:
+  1. **Strict Data Minimization Catalog ([`core/profiles.py`](core/profiles.py))**: Rejects any keys outside approved formatting catalog (`ALLOWED_PREFERENCE_KEYS`).
+  2. **Code-Level Policy Primacy ([`core/profiles.py`](core/profiles.py))**: Core safety, budget, and sandboxing invariants are enforced exclusively in code; profile strings are advisory formatting only.
+  3. **Strict HTML Escaping ([`core/profiles.py`](core/profiles.py))**: Escapes all keys and values before prompt rendering.
+
+### Finding 31 (Remediated — P1): Contractual Data Leakage in Model Training Feedback Datasets (FP-17)
+- **Severity**: High
+- **Status**: **FIXED** (Remediated October 23, 2026; verified in `tests/unit/test_exemplars_profiles_feedback.py::test_feedback_training_consent_gate_and_purging`)
+- **Root Cause**:
+  1. Incorporating customer feedback into model training datasets without explicit contractual consent breaches client confidentiality and GDPR/CCPA regulations.
+- **Remediation Implemented**:
+  1. **Mandatory Consent Gate ([`core/feedback.py`](core/feedback.py))**: `consent_for_training` is False by default; training export queries strictly require verified consent.
+  2. **Pre-Storage PII Scrubbing ([`core/feedback.py`](core/feedback.py))**: All feedback critiques and prompts pass through `PrivacyAirlock.sanitize()`.
+
+### Finding 32 (Remediated — P1): Self-Modifying Instruction Hijack & Signature-Leak Privilege Escalation (FP-18)
+- **Severity**: Critical
+- **Status**: **FIXED** (Remediated October 23, 2026; verified in `tests/unit/test_distiller_and_optimizer.py::test_distiller_signature_leak_test`)
+- **Root Cause**:
+  1. A post-mission skill distiller observing untrusted agent traces can be tricked by planted prompt injection into writing malicious persistent skills.
+  2. Injected skills could elevate low-privilege roles by granting instructions to execute high-risk tools.
+- **Remediation Implemented**:
+  1. **Capability-Signature Keying ([`core/distiller.py`](core/distiller.py))**: Skills are keyed by exact capability requirements, never by role names. A skill is NEVER injected into a role lacking any required capability (0 signature leaks).
+  2. **Planted-Injection Filtering ([`core/distiller.py`](core/distiller.py))**: Rejects candidate skills containing system directives, URLs, credentials, or undeclared tool mentions.
+  3. **Emergency Kill-Switch & Rollback ([`core/distiller.py`](core/distiller.py))**: Provides instantaneous one-step rollback and global kill-switch disabling all learned guidance.
+
+### Finding 33 (Remediated — P2): Reward Hacking & Test Split Contamination in Prompt Optimization (FP-19)
+- **Severity**: Medium
+- **Status**: **FIXED** (Remediated October 23, 2026; verified in `tests/unit/test_distiller_and_optimizer.py::test_prompt_optimizer_dev_exploration_and_frozen_test_gating`)
+- **Root Cause**:
+  1. Optimizing prompts directly against the evaluation test split causes train/test contamination and false quality claims. Runaway optimization loops can also incur massive model inference costs.
+- **Remediation Implemented**:
+  1. **Strict Dev/Test Quarantine ([`core/prompt_opt.py`](core/prompt_opt.py))**: Exploration and mutation occur solely against the `dev` split. The frozen `test` split is evaluated exactly once as a gating check.
+  2. **Hard Spend Caps ([`core/prompt_opt.py`](core/prompt_opt.py))**: Enforces strict USD spend caps on optimization runs.
+
+
+
+
+
+
+
+
+

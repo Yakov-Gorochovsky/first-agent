@@ -97,3 +97,28 @@ def test_notes_multi_tenant_isolation_and_restricted_files() -> None:
         shutil.rmtree(WORKSPACE_DIR / "tenants" / tenant_a, ignore_errors=True)
         shutil.rmtree(WORKSPACE_DIR / "tenants" / tenant_b, ignore_errors=True)
         (WORKSPACE_DIR / "outside.txt").unlink(missing_ok=True)
+
+
+def test_run_python_process_breakout_blocked():
+    """Verify FP-01: child interpreter / process spawning from within sandbox is blocked."""
+    code = "import subprocess; subprocess.run(['echo', 'escaped'])"
+    res = run_python(code)
+    assert "PermissionError" in res or "blocked by sandbox policy" in res
+
+    code_os = "import os; os.system('echo escaped')"
+    res_os = run_python(code_os)
+    assert "PermissionError" in res_os or "blocked by sandbox policy" in res_os
+
+
+def test_run_python_fail_closed_mode(monkeypatch):
+    """Verify FP-01: fails closed if container is absent and unsafe local execution is disabled."""
+    import shutil
+    import core.config
+
+    monkeypatch.setattr(shutil, "which", lambda cmd: None)
+    monkeypatch.setattr(core.config.CONFIG, "unsafe_allow_local_exec", False)
+    monkeypatch.setattr(core.config.CONFIG, "python_sandbox_mode", "auto")
+
+    res = run_python("print('should fail closed')")
+    assert "SecurityError" in res
+    assert "Subprocess execution failed closed" in res

@@ -11,9 +11,12 @@ without changing a single line of agent or swarm code.
 from dataclasses import dataclass, field
 import json
 import re
+import time
 from typing import Any, Dict, List, Optional, Protocol
 from openai import BadRequestError, OpenAI
 from core.config import CONFIG
+from core.resilience import CircuitBreaker, RetryConfig, retry_with_backoff
+from core.telemetry import UsageLedger, calculate_call_cost
 
 _THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
@@ -36,6 +39,9 @@ class LLMResponse:
     tool_calls: List[ToolCallRequest] = field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cached_prompt_tokens: int = 0
+    latency_ms: float = 0.0
+    cost_usd: float = 0.0
     raw_message: Optional[Any] = None
     used_react_fallback: bool = False
 
@@ -108,6 +114,9 @@ class OpenAICompatibleProvider:
         api_key: Optional[str] = None,
         model: Optional[str] = None,
         fast_qwen_mode: Optional[bool] = None,
+        ledger: Optional[UsageLedger] = None,
+        circuit_breaker: Optional[CircuitBreaker] = None,
+        retry_config: Optional[RetryConfig] = None,
     ) -> None:
         self.client = OpenAI(
             base_url=base_url or CONFIG.api_base_url,
@@ -116,6 +125,9 @@ class OpenAICompatibleProvider:
         self.model = model or CONFIG.model_name
         self.native_tools_supported: Optional[bool] = None
         self.fast_qwen_mode = CONFIG.fast_thinking if fast_qwen_mode is None else fast_qwen_mode
+        self.ledger = ledger or UsageLedger()
+        self.circuit_breaker = circuit_breaker or CircuitBreaker(name=f"llm_{self.model}")
+        self.retry_config = retry_config or RetryConfig(max_retries=3, initial_delay=0.5, backoff_factor=2.0)
 
     def _is_local_ollama(self) -> bool:
         base = str(getattr(self.client, "base_url", "")).lower()
@@ -179,8 +191,19 @@ class OpenAICompatibleProvider:
         if tools:
             payload["tools"] = tools
 
-        resp = requests.post(self._ollama_native_chat_url(), json=payload, timeout=120)
-        resp.raise_for_status()
+        start_time = time.perf_counter()
+
+        def _do_ollama_post(p: Dict[str, Any]) -> requests.Response:
+            r = requests.post(self._ollama_native_chat_url(), json=p, timeout=120)
+            r.raise_for_status()
+            return r
+
+        resp = retry_with_backoff(
+            lambda: _do_ollama_post(payload),
+            retry_config=self.retry_config,
+            retryable_exceptions=(requests.RequestException,),
+            circuit_breaker=self.circuit_breaker,
+        )
         data = resp.json()
         msg = data.get("message", {})
         p_toks = int(data.get("prompt_eval_count", 0) or 0)
@@ -196,12 +219,18 @@ class OpenAICompatibleProvider:
                     "content": "Summarize your findings clearly and concisely based on the above results.",
                 }
             ]
-            resp = requests.post(self._ollama_native_chat_url(), json=retry_payload, timeout=120)
-            resp.raise_for_status()
+            resp = retry_with_backoff(
+                lambda: _do_ollama_post(retry_payload),
+                retry_config=self.retry_config,
+                retryable_exceptions=(requests.RequestException,),
+                circuit_breaker=self.circuit_breaker,
+            )
             data = resp.json()
             msg = data.get("message", {})
             p_toks += int(data.get("prompt_eval_count", 0) or 0)
             c_toks += int(data.get("eval_count", 0) or 0)
+
+        lat_ms = (time.perf_counter() - start_time) * 1000.0
 
         parsed_calls: List[ToolCallRequest] = []
         raw_tool_calls = msg.get("tool_calls") or []
@@ -227,11 +256,24 @@ class OpenAICompatibleProvider:
         if not parsed_calls and tools and content:
             parsed_calls = parse_react_tool_calls(content)
 
+        cost = calculate_call_cost(self.model, p_toks, c_toks)
+        self.ledger.record_call(
+            agent_name="ollama_agent",
+            provider="ollama",
+            model=self.model,
+            prompt_tokens=p_toks,
+            completion_tokens=c_toks,
+            latency_ms=lat_ms,
+        )
+
         return LLMResponse(
             content=content,
             tool_calls=parsed_calls,
             prompt_tokens=p_toks,
             completion_tokens=c_toks,
+            cached_prompt_tokens=0,
+            latency_ms=round(lat_ms, 2),
+            cost_usd=cost,
             raw_message=msg,
             used_react_fallback=False,
         )
@@ -261,19 +303,39 @@ class OpenAICompatibleProvider:
 
         prepared_messages = self._prepare_messages(messages)
 
+        start_time = time.perf_counter()
+
         if tools and self.native_tools_supported is not False:
             try:
-                resp = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=prepared_messages,
-                    tools=tools,
-                    temperature=CONFIG.react_temperature,
+                resp = retry_with_backoff(
+                    lambda: self.client.chat.completions.create(
+                        model=self.model,
+                        messages=prepared_messages,
+                        tools=tools,
+                        temperature=CONFIG.react_temperature,
+                    ),
+                    retry_config=self.retry_config,
+                    circuit_breaker=self.circuit_breaker,
                 )
                 self.native_tools_supported = True
                 msg = resp.choices[0].message
                 usage = getattr(resp, "usage", None)
                 p_toks = getattr(usage, "prompt_tokens", 0) or 0
                 c_toks = getattr(usage, "completion_tokens", 0) or 0
+                prompt_details = getattr(usage, "prompt_tokens_details", None)
+                cached_toks = getattr(prompt_details, "cached_tokens", 0) or 0
+                lat_ms = (time.perf_counter() - start_time) * 1000.0
+                cost = calculate_call_cost(self.model, p_toks, c_toks, cached_toks)
+
+                self.ledger.record_call(
+                    agent_name="openai_agent",
+                    provider="openai_compatible",
+                    model=self.model,
+                    prompt_tokens=p_toks,
+                    completion_tokens=c_toks,
+                    cached_prompt_tokens=cached_toks,
+                    latency_ms=lat_ms,
+                )
 
                 parsed_calls: List[ToolCallRequest] = []
                 if msg.tool_calls:
@@ -295,6 +357,9 @@ class OpenAICompatibleProvider:
                     tool_calls=parsed_calls,
                     prompt_tokens=p_toks,
                     completion_tokens=c_toks,
+                    cached_prompt_tokens=cached_toks,
+                    latency_ms=round(lat_ms, 2),
+                    cost_usd=cost,
                     raw_message=msg,
                     used_react_fallback=False,
                 )
@@ -311,17 +376,35 @@ class OpenAICompatibleProvider:
                 react_messages[0]["content"] + format_react_tool_instructions(tools)
             )
 
-        resp = self.client.chat.completions.create(
-            model=self.model,
-            messages=react_messages,
-            temperature=CONFIG.react_temperature,
-            stop=["Observation:"],
+        resp = retry_with_backoff(
+            lambda: self.client.chat.completions.create(
+                model=self.model,
+                messages=react_messages,
+                temperature=CONFIG.react_temperature,
+                stop=["Observation:"],
+            ),
+            retry_config=self.retry_config,
+            circuit_breaker=self.circuit_breaker,
         )
         msg = resp.choices[0].message
         content = strip_think_tags(msg.content or "")
         usage = getattr(resp, "usage", None)
         p_toks = getattr(usage, "prompt_tokens", 0) or 0
         c_toks = getattr(usage, "completion_tokens", 0) or 0
+        prompt_details = getattr(usage, "prompt_tokens_details", None)
+        cached_toks = getattr(prompt_details, "cached_tokens", 0) or 0
+        lat_ms = (time.perf_counter() - start_time) * 1000.0
+        cost = calculate_call_cost(self.model, p_toks, c_toks, cached_toks)
+
+        self.ledger.record_call(
+            agent_name="openai_agent",
+            provider="openai_compatible",
+            model=self.model,
+            prompt_tokens=p_toks,
+            completion_tokens=c_toks,
+            cached_prompt_tokens=cached_toks,
+            latency_ms=lat_ms,
+        )
 
         parsed_calls = parse_react_tool_calls(content) if tools else []
         return LLMResponse(
@@ -329,6 +412,9 @@ class OpenAICompatibleProvider:
             tool_calls=parsed_calls,
             prompt_tokens=p_toks,
             completion_tokens=c_toks,
+            cached_prompt_tokens=cached_toks,
+            latency_ms=round(lat_ms, 2),
+            cost_usd=cost,
             raw_message=msg,
             used_react_fallback=True,
         )
