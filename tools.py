@@ -419,9 +419,15 @@ def fetch_url(url: str) -> str:
             )
         from core.cleaning import clean_html_to_markdown
         text = clean_html_to_markdown(resp.text, max_chars=CONFIG.fetch_max_chars)
-        if not text:
-            return f"Fetched {safe_url}, but no readable text was found."
-        return text
+        status_line = f"HTTP {getattr(resp, 'status_code', 200)} {getattr(resp, 'reason', '')}".strip()
+        headers_lines = [f"{k}: {v}" for k, v in getattr(resp, "headers", {}).items()]
+        headers_block = "\n".join(headers_lines[:30])
+        content_preview = text if text else "No readable text content found."
+        return (
+            f"[HTTP RESPONSE: {status_line}]\n"
+            f"[RESPONSE HEADERS]\n{headers_block}\n\n"
+            f"[PAGE CONTENT]\n{content_preview}"
+        )
     except Exception as exc:
         return f"Error fetching URL '{url}': {exc}"
 

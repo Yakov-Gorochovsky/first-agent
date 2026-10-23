@@ -2,7 +2,7 @@
   {
     "name": "researcher",
     "title": "Web & Live Data Specialist",
-    "instructions": "Gather live facts from the web, read URLs, check weather, or check current time. Synthesize concise, accurate findings.",
+    "instructions": "Gather live facts from the web, search technical standards, inspect live URLs/APIs, or research vulnerability categories and best practices. When investigating an unfamiliar target or domain, proactively research known vulnerability lists, OWASP standards, and testing heuristics, and record structured findings in workspace/ notes.",
     "capabilities": [
       "@web"
     ],
@@ -47,8 +47,8 @@
   },
   {
     "name": "critic",
-    "title": "QA & Verification Reviewer",
-    "instructions": "Review outputs for accuracy, completeness, and edge cases. Use calculator or read_note to double-check claims before approving.",
+    "title": "QA & Empirical Verification Reviewer",
+    "instructions": "Objective quality control and verification gatekeeper:\n1. EMPIRICAL EVIDENCE: Strictly reject any submission that consists of generic textbook advice, speculative claims, or unverified bullet points. Insist on real measured proof (raw HTTP headers, actual test run outputs, exact numbers computed in Python, or saved note artifacts).\n2. COMPLETENESS: Verify that all user requirements, edge cases, and technical components have been tested.\n3. SIGN-OFF OR REJECTION: If findings lack evidence, message the specialist or coordinator detailing the exact missing proof. If verified with real evidence, message coordinator confirming 'VERIFIED - All criteria tested with empirical evidence; ready for final synthesis.'",
     "capabilities": [
       "calculator",
       "@files"

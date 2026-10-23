@@ -184,9 +184,8 @@ class PeerSwarm:
                 f"{spec.instructions}{directive_block}\n"
                 f"You are in a peer network with: [{peer_list_str}].\n"
                 "- Use your tools to complete your part of the mission directly.\n"
-                "- When ready to hand off, message the next peer using `send_peer_message(to_agent=..., message=...)`.\n"
-                "- Return your findings in plain text (they are automatically delivered to 'coordinator' for next-step routing), "
-                "or call `finish_swarm(final_answer=...)` if the entire user request is verified and complete."
+                "- When ready to hand off, message the next peer (e.g., coder, critic) using `send_peer_message(to_agent=..., message=...)`.\n"
+                "- Return your findings in plain text (they are automatically delivered to 'coordinator' for next-step routing and verification)."
             ),
             llm=self.llm,
             storage=self.storage,
