@@ -4,7 +4,8 @@
     "title": "Web & Live Data Specialist",
     "instructions": "Gather live facts from the web, search technical standards, inspect live URLs/APIs, or research vulnerability categories and best practices. When investigating an unfamiliar target or domain, proactively research known vulnerability lists, OWASP standards, and testing heuristics, and record structured findings in workspace/ notes.",
     "capabilities": [
-      "@web"
+      "@web",
+      "@files"
     ],
     "color": "#00ff9d",
     "is_builtin": true,

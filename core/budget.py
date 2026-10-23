@@ -94,6 +94,18 @@ class BudgetTracker:
         self.total_steps += 1
         self.agent_steps[agent_name] = current_agent_steps + 1
 
+    def refund_step(self, agent_name: str) -> None:
+        """Exempt a transient/empty retry from consuming the agent's main step budget."""
+        if self.total_steps > 0:
+            self.total_steps -= 1
+        if self.agent_steps.get(agent_name, 0) > 0:
+            self.agent_steps[agent_name] -= 1
+
+    def is_agent_exhausted(self, agent_name: str) -> bool:
+        """Return True if the agent has reached or exceeded its assigned step cap."""
+        cap = self.agent_limits.get(agent_name, self.config.max_steps_per_agent)
+        return self.agent_steps.get(agent_name, 0) >= cap
+
     def get_bounded_completion_tokens(self, requested: Optional[int] = None) -> int:
         """Return hard-bounded completion token cap to guarantee overshoot is limited to 1 call."""
         if requested is not None and requested > 0:

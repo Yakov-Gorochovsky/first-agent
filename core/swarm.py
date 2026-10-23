@@ -107,15 +107,15 @@ class WorkerAgent:
         # Namespace workspace note tools per tenant
         if "save_note" in self.tool_names and "save_note" in tools_map:
             orig_save = tools_map["save_note"]
-            tools_map["save_note"] = lambda filename, content: orig_save(filename, content, tenant_id=tenant_id)
+            tools_map["save_note"] = lambda filename, content, **kw: orig_save(filename, content, tenant_id=tenant_id)
 
         if "read_note" in self.tool_names and "read_note" in tools_map:
             orig_read = tools_map["read_note"]
-            tools_map["read_note"] = lambda filename: orig_read(filename, tenant_id=tenant_id)
+            tools_map["read_note"] = lambda filename, **kw: orig_read(filename, tenant_id=tenant_id)
 
         if "list_notes" in self.tool_names and "list_notes" in tools_map:
             orig_list = tools_map["list_notes"]
-            tools_map["list_notes"] = lambda: orig_list(tenant_id=tenant_id)
+            tools_map["list_notes"] = lambda **kw: orig_list(tenant_id=tenant_id)
 
         # Add cross-swarm PrivacyAirlock skill-sharing tool
         def _share_global_skill(category: str, problem: str, solution: str) -> str:
@@ -190,6 +190,8 @@ class WorkerAgent:
         self.bus.emit("agent_start", agent_name=self.name, tenant_id=tenant_id, task=task_prompt)
         last_error_tool: Optional[tuple[str, str]] = None
         collected_observations: List[str] = []
+        empty_resource_retries: Dict[str, int] = {}
+        MAX_EMPTY_RETRIES = 2
         local_turn = 0
 
         while True:
@@ -274,6 +276,31 @@ class WorkerAgent:
                             result = self.taint_tracker.observe_tool_result(tc.name, raw_result)
                         except Exception as exc:
                             result = f"Error running '{tc.name}': {exc}"
+
+                # Per-resource empty check & retry budget (exempt retries from agent step count)
+                is_empty_resource = (
+                    "is currently empty" in result
+                    or "does not exist" in result
+                    or "No matches found" in result
+                )
+                if is_empty_resource and tc.name in ("list_notes", "read_note", "recall_memories"):
+                    args_key = f"{tc.name}:{json.dumps(tc.arguments or {}, sort_keys=True)}"
+                    current_count = empty_resource_retries.get(args_key, 0) + 1
+                    empty_resource_retries[args_key] = current_count
+
+                    if current_count <= MAX_EMPTY_RETRIES:
+                        self.budget.refund_step(self.name)
+                        result += (
+                            f"\n[NOTE: Retry {current_count}/{MAX_EMPTY_RETRIES} for empty resource. "
+                            f"Step budget was not consumed. If this resource has not been created yet, "
+                            f"proceed with other tools, in-memory context, or create the file first.]"
+                        )
+                    else:
+                        result = (
+                            f"[RESOURCE_EMPTY_EXHAUSTED]: Tool '{tc.name}' returned empty/not found {current_count - 1} times. "
+                            f"Further queries for this specific resource are blocked. Do NOT query this again. "
+                            f"Synthesize using in-memory observations or proceed with the workflow."
+                        )
 
                 collected_observations.append(f"[{tc.name}]: {result[:600]}")
 

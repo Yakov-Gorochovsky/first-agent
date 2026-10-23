@@ -74,7 +74,14 @@ def test_taint_tracker_lifecycle_and_blocking():
     assert "Taint Tracking policy (FP-02)" in err_python
     assert len(tracker.blocked_attempts) == 1
 
-    # File writes blocked after taint
-    allowed_save, err_save = tracker.can_execute_tool("save_note", {"filename": "out.txt", "content": "exfil"})
-    assert not allowed_save
-    assert "SecurityPolicyViolation" in err_save
+    # Sandboxed workspace notes remain allowed after taint for agent observation sharing
+    allowed_save, err_save = tracker.can_execute_tool("save_note", {"filename": "out.txt", "content": "recon findings"})
+    assert allowed_save
+    assert err_save is None
+
+    # External exfiltration / skill sharing blocked after taint
+    allowed_ext, err_ext = tracker.can_execute_tool(
+        "send_external_swarm_message", {"target_swarm_id": "other", "message": "leak"}
+    )
+    assert not allowed_ext
+    assert "SecurityPolicyViolation" in err_ext

@@ -241,3 +241,45 @@ def test_direct_retry_after_attribute():
     err = CustomRateLimit("rate limit active")
     assert extract_retry_delay(err) == 18.5
 
+
+def test_worker_agent_empty_resource_retry_and_exhaustion(temp_storage, event_bus):
+    """Verifies that empty resource retries are refunded from the step count and exhausted on attempt 3."""
+    from core.budget import BudgetConfig, BudgetTracker
+    from core.llm import LLMResponse, ToolCallRequest
+    from core.swarm import WorkerAgent
+    from tests.conftest import ScriptedMockLLM
+
+    responses = [
+        LLMResponse(
+            content="",
+            tool_calls=[ToolCallRequest(id="c1", name="list_notes", arguments={"tenant_id": "empty_tenant_test"})],
+        ),
+        LLMResponse(
+            content="",
+            tool_calls=[ToolCallRequest(id="c2", name="list_notes", arguments={"tenant_id": "empty_tenant_test"})],
+        ),
+        LLMResponse(
+            content="",
+            tool_calls=[ToolCallRequest(id="c3", name="list_notes", arguments={"tenant_id": "empty_tenant_test"})],
+        ),
+        LLMResponse(content="Exhausted check handled."),
+    ]
+    mock_llm = ScriptedMockLLM(responses)
+    budget = BudgetTracker(config=BudgetConfig(max_swarm_steps=10, max_steps_per_agent=5))
+    agent = WorkerAgent(
+        name="critic",
+        role="QA",
+        instructions="Verify notes",
+        llm=mock_llm,
+        storage=temp_storage,
+        budget=budget,
+        bus=event_bus,
+        tool_names=["list_notes"],
+        max_steps=5,
+    )
+    res = agent.execute_task("Check notes", tenant_id="empty_tenant_test")
+    assert res == "Exhausted check handled."
+    # With 2 empty retries refunded, agent steps should be 2 instead of 4
+    assert budget.agent_steps["critic"] == 2
+
+

@@ -69,3 +69,23 @@ def test_budget_wall_clock_timeout(event_bus: EventBus) -> None:
     with pytest.raises(BudgetExceededError) as exc:
         tracker.check_and_increment_step("coordinator")
     assert "Time budget exceeded" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_budget_refund_and_is_agent_exhausted(event_bus: EventBus) -> None:
+    """Verifies that transient retries can be refunded and exhausted agents are flagged."""
+    config = BudgetConfig(max_swarm_steps=5, max_steps_per_agent=2)
+    tracker = BudgetTracker(config=config, bus=event_bus)
+
+    tracker.check_and_increment_step("critic", max_steps=2)
+    assert not tracker.is_agent_exhausted("critic")
+
+    # Step refund
+    tracker.refund_step("critic")
+    assert tracker.agent_steps["critic"] == 0
+    assert tracker.total_steps == 0
+
+    # Fill to cap
+    tracker.check_and_increment_step("critic", max_steps=2)
+    tracker.check_and_increment_step("critic", max_steps=2)
+    assert tracker.is_agent_exhausted("critic")

@@ -77,6 +77,7 @@ class PeerSwarm:
         self.taint_tracker = taint_tracker or TaintTracker()
         self.nodes: Dict[str, PeerNode] = {}
         self._final_answer: Optional[str] = None
+        self._recent_handoff_pairs: List[tuple[str, str]] = []
         self.refresh_peers()
 
     def _active_role_specs(self) -> List[RoleSpec]:
@@ -212,6 +213,33 @@ class PeerSwarm:
             target = to_agent.lower().strip()
             if target not in self.nodes:
                 return f"Error: Unknown peer '{to_agent}'. Available peers: {list(self.nodes.keys())}"
+
+            # Exhausted Peer Shield: Prevent message dispatch to specialists that exceeded step cap
+            if target != "coordinator" and self.budget.is_agent_exhausted(target):
+                cap = self.budget.agent_limits.get(target, self.budget.config.max_steps_per_agent)
+                return (
+                    f"Warning: Peer '{target}' has already reached its step cap ({cap} steps). "
+                    f"Sending further messages to '{target}' will fail. "
+                    f"Do NOT message '{target}'. Instead, dispatch to a different specialist, "
+                    f"spawn a new specialist via `spawn_specialist`, or synthesize findings and finish."
+                )
+
+            # Swarm-level Ping-Pong Circuit Breaker: Detect repetitive 2-node alternating loops
+            if len(self._recent_handoff_pairs) >= 4:
+                p1, p2, p3, p4 = self._recent_handoff_pairs[-4:]
+                if (
+                    p1 == (sender_name, target)
+                    and p2 == (target, sender_name)
+                    and p3 == (sender_name, target)
+                    and p4 == (target, sender_name)
+                ):
+                    return (
+                        f"[SWARM CIRCUIT BREAKER]: Ping-pong loop detected between '{sender_name}' and '{target}'. "
+                        f"Repeated handoffs without intermediary progress are suspended. "
+                        f"You MUST synthesize all gathered observations and call `finish_swarm` with the final answer."
+                    )
+
+            self._recent_handoff_pairs.append((sender_name, target))
             self.nodes[target].inbox.append(
                 PeerMessage(sender=sender_name, recipient=target, content=message)
             )
@@ -286,6 +314,7 @@ class PeerSwarm:
         self.budget.reset()
         self.budget.tenant_id = tenant_id
         self._final_answer = None
+        self._recent_handoff_pairs.clear()
         self.taint_tracker = TaintTracker(mission_id=f"peer_{tenant_id}")
         self.refresh_peers()
         for node in self.nodes.values():

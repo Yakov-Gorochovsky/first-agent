@@ -83,19 +83,19 @@ class TaintTracker:
         "fetch_url",
     }
 
-    # Tools that modify state, execute code, or can exfiltrate data
+    # Tools that execute arbitrary code or exfiltrate data externally
     HIGH_RISK_TOOLS: Set[str] = {
         "run_python",
-        "save_note",
         "send_external_swarm_message",
         "share_global_skill",
     }
 
-    # Safe read-only / deterministic tools permitted even when tainted
+    # Safe read-only / deterministic / sandboxed workspace note tools permitted even when tainted
     SAFE_TOOLS: Set[str] = {
         "calculator",
         "get_current_time",
         "get_weather",
+        "save_note",
         "read_note",
         "list_notes",
         "remember_fact",
