@@ -1028,7 +1028,9 @@
   </div>
 
   <script>
-    lucide.createIcons();
+    if (window.lucide && typeof lucide.createIcons === 'function') {
+      try { lucide.createIcons(); } catch (err) { console.warn('Lucide icon init:', err); }
+    }
 
     const canvas = document.getElementById('networkCanvas');
     const ctx = canvas.getContext('2d');
