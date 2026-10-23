@@ -73,3 +73,19 @@ def test_sse_cross_tenant_isolation() -> None:
             for conn in (conn_alpha, conn_beta, conn_admin):
                 if conn in _sse_clients:
                     _sse_clients.remove(conn)
+
+
+@pytest.mark.integration
+def test_version_endpoint_metadata() -> None:
+    """The /api/version route returns a complete VersionInfo payload."""
+    from core.version import get_version_info
+
+    ver = get_version_info()
+    data = ver.to_dict()
+    assert "semver" in data
+    assert "revision" in data
+    assert "commit" in data
+    assert "display_version" in data
+    assert "server_instance_id" in data
+    assert isinstance(data["is_dirty"], bool)
+

@@ -37,6 +37,7 @@ from core.rate_limiter import (
 from core.roles import CAPABILITY_BUNDLES, RoleRegistry
 from core.storage import SQLiteStorage, validate_tenant_id
 from core.swarm_manager import SwarmManager
+from core.version import get_version_info
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -358,7 +359,13 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
                 or getattr(auth_manager, "initial_admin_key", "")
                 or ""
             )
-            bootstrap_script = f"<script>window.__BOOTSTRAP_API_KEY__ = {json.dumps(active_key)};</script>"
+            ver_info = get_version_info().to_dict()
+            bootstrap_script = (
+                f"<script>\n"
+                f"  window.__BOOTSTRAP_API_KEY__ = {json.dumps(active_key)};\n"
+                f"  window.__SERVER_VERSION__ = {json.dumps(ver_info)};\n"
+                f"</script>"
+            )
             html = html.replace("<head>", f"<head>\n  {bootstrap_script}", 1)
             content = html.encode("utf-8")
             self.send_response(HTTPStatus.OK)
@@ -370,6 +377,10 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Expires", "0")
             self.end_headers()
             self.wfile.write(content)
+            return
+
+        if path == "/api/version":
+            self._send_json(get_version_info().to_dict())
             return
 
         if path == "/api/state":
@@ -393,6 +404,7 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
             self._send_json(
                 {
                     "tenant_id": tenant_id,
+                    "version": get_version_info().to_dict(),
                     "model": CONFIG.model_name,
                     "endpoint": CONFIG.api_base_url,
                     "swarms": swarm_manager.list_dicts(),

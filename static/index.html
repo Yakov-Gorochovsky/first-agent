@@ -765,6 +765,7 @@
       <div class="brand-name">
         NEURAL SWARM
         <span class="badge-mono" id="modelBadge">Connecting...</span>
+        <span class="badge-mono" id="versionBadge" style="cursor: pointer; background: rgba(56, 189, 248, 0.12); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); font-size: 10px; margin-left: 6px;" title="Click for deployment and version details" onclick="openVersionModal()">v...</span>
       </div>
     </div>
 
@@ -928,6 +929,50 @@
       <i data-lucide="play"></i> Dispatch
     </button>
   </footer>
+
+  <!-- VERSION DETAILS MODAL -->
+  <div class="modal-backdrop" id="versionModal">
+    <div class="modal-dialog" style="max-width: 480px;">
+      <div class="modal-title">
+        <span><i data-lucide="tag" style="width:14px;height:14px;display:inline-block;vertical-align:-2px;"></i> Deployment & Version Progression</span>
+        <button class="icon-btn" onclick="closeVersionModal()"><i data-lucide="x"></i></button>
+      </div>
+      <div style="font-size: 12px; line-height: 1.7; padding: 4px 0;">
+        <div style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.06);">
+          <span style="color:var(--text-muted);">Release / SemVer</span>
+          <span id="verModalSemver" style="font-family:var(--font-mono); font-weight:600; color:#38bdf8;">--</span>
+        </div>
+        <div style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.06);">
+          <span style="color:var(--text-muted);">Git Revision (Total Commits)</span>
+          <span id="verModalRevision" style="font-family:var(--font-mono); color:#10b981;">--</span>
+        </div>
+        <div style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.06);">
+          <span style="color:var(--text-muted);">Git Commit Hash</span>
+          <span id="verModalCommit" style="font-family:var(--font-mono); color:#a78bfa;">--</span>
+        </div>
+        <div style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.06);">
+          <span style="color:var(--text-muted);">Branch</span>
+          <span id="verModalBranch" style="font-family:var(--font-mono);">--</span>
+        </div>
+        <div style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.06);">
+          <span style="color:var(--text-muted);">Working Tree State</span>
+          <span id="verModalDirty" style="font-family:var(--font-mono);">--</span>
+        </div>
+        <div style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.06);">
+          <span style="color:var(--text-muted);">Server Instance ID</span>
+          <span id="verModalInstance" style="font-family:var(--font-mono); font-size:10px; color:var(--text-muted);">--</span>
+        </div>
+        <div style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.06);">
+          <span style="color:var(--text-muted);">Server Uptime</span>
+          <span id="verModalUptime" style="font-family:var(--font-mono);">--</span>
+        </div>
+        <div style="margin-top:12px; padding:10px; background:rgba(0,0,0,0.3); border-radius:6px; border:1px solid rgba(255,255,255,0.05);">
+          <div style="color:var(--text-muted); font-size:10px; margin-bottom:4px; font-weight:600;">LATEST APPLIED COMMIT:</div>
+          <div id="verModalMsg" style="font-family:var(--font-mono); font-size:11px; color:#e2e8f0; word-break:break-word;">--</div>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- DEPLOY SWARM MODAL -->
   <div class="modal-backdrop" id="swarmModal">
@@ -1823,6 +1868,9 @@
       document.getElementById('modelBadge').textContent = `${data.model}`;
       document.getElementById('swarmCountBadge').textContent = `${swarms.length}`;
       document.getElementById('roleCountBadge').textContent = `${roles.length}`;
+      if (data.version) {
+        applyVersionInfo(data.version);
+      }
 
       rebuildGraphFromSwarms(swarms, roles);
 
@@ -1910,6 +1958,54 @@
           `)
           .join('');
       }
+    }
+
+    let currentServerVersion = window.__SERVER_VERSION__ || null;
+
+    function applyVersionInfo(ver) {
+      if (!ver) return;
+      const vBadge = document.getElementById('versionBadge');
+      if (vBadge) {
+        vBadge.textContent = ver.display_version || `v${ver.semver}`;
+        vBadge.title = `Commit ${ver.commit} (rev ${ver.revision}) · Click for build info`;
+        if (ver.is_dirty) {
+          vBadge.style.color = '#f59e0b';
+          vBadge.style.borderColor = 'rgba(245, 158, 11, 0.4)';
+          vBadge.style.background = 'rgba(245, 158, 11, 0.12)';
+        } else {
+          vBadge.style.color = '#38bdf8';
+          vBadge.style.borderColor = 'rgba(56, 189, 248, 0.3)';
+          vBadge.style.background = 'rgba(56, 189, 248, 0.12)';
+        }
+      }
+
+      // Check if server version progressed since initial load
+      if (currentServerVersion && ver.server_instance_id && currentServerVersion.server_instance_id !== ver.server_instance_id) {
+        if (currentServerVersion.display_version !== ver.display_version) {
+          appendLog('peer_message', '[SYSTEM] VERSION PROGRESSION', `Server reloaded: updated from ${currentServerVersion.display_version} to ${ver.display_version}`);
+        } else {
+          appendLog('peer_message', '[SYSTEM] SERVER RESTARTED', `Server process restarted (Instance: ${ver.server_instance_id})`);
+        }
+      }
+      currentServerVersion = ver;
+    }
+
+    function openVersionModal() {
+      const ver = currentServerVersion || window.__SERVER_VERSION__ || {};
+      document.getElementById('verModalSemver').textContent = ver.semver ? `v${ver.semver}` : '0.5.0';
+      document.getElementById('verModalRevision').textContent = ver.revision ? `Rev ${ver.revision} commits` : 'N/A';
+      document.getElementById('verModalCommit').textContent = ver.commit || 'unknown';
+      document.getElementById('verModalBranch').textContent = ver.branch || 'main';
+      document.getElementById('verModalDirty').textContent = ver.is_dirty ? 'YES (Uncommitted changes present)' : 'Clean (All committed)';
+      document.getElementById('verModalDirty').style.color = ver.is_dirty ? '#f59e0b' : '#10b981';
+      document.getElementById('verModalInstance').textContent = ver.server_instance_id || '--';
+      document.getElementById('verModalUptime').textContent = `${Math.round(ver.uptime_seconds || 0)}s`;
+      document.getElementById('verModalMsg').textContent = ver.commit_message || 'None';
+      document.getElementById('versionModal').classList.add('open');
+    }
+
+    function closeVersionModal() {
+      document.getElementById('versionModal').classList.remove('open');
     }
 
     function openSwarmModal() {
@@ -2214,6 +2310,7 @@
     });
 
     syncApiKeyUI();
+    if (window.__SERVER_VERSION__) applyVersionInfo(window.__SERVER_VERSION__);
     setupEventSource();
     refreshState();
   </script>
