@@ -205,6 +205,7 @@ class WorkerAgent:
         collected_observations: List[str] = []
         empty_resource_retries: Dict[str, int] = {}
         MAX_EMPTY_RETRIES = 2
+        run_python_calls = 0
         local_turn = 0
 
         while True:
@@ -391,6 +392,14 @@ class WorkerAgent:
                             f"[RESOURCE_EMPTY_EXHAUSTED]: Tool '{tc.name}' returned empty/not found {current_count - 1} times. "
                             f"Further queries for this specific resource are blocked. Do NOT query this again. "
                             f"Synthesize using in-memory observations or proceed with the workflow."
+                        )
+
+                if tc.name == "run_python":
+                    run_python_calls += 1
+                    if run_python_calls >= 2:
+                        result += (
+                            f"\n[NOTE: You have already executed `run_python` {run_python_calls} times in this task. "
+                            "Do NOT re-run repetitive scripts; save your findings with `save_note` and return your synthesis now.]"
                         )
 
                 collected_observations.append(f"[{tc.name}]: {result[:600]}")

@@ -112,8 +112,8 @@ def clean_html_to_markdown(html_content: str, max_chars: Optional[int] = None) -
 def summarize_code_output(
     stdout: str,
     stderr: str,
-    max_lines: int = 40,
-    max_chars: int = 2500,
+    max_lines: int = 200,
+    max_chars: int = 4000,
 ) -> str:
     """
     Produce a clean, bounded representation of subprocess code execution.

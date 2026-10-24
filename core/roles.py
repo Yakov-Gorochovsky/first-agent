@@ -200,7 +200,7 @@ class RoleRegistry:
             max_steps: Optional[int] = None,
         ) -> str:
             base_caps = capabilities if capabilities else ["@web", "@code", "@files", "@memory"]
-            merged_caps = list(dict.fromkeys([*base_caps, "@files", "@memory"]))
+            merged_caps = list(dict.fromkeys([*base_caps, "@web", "@files", "@memory"]))
             spec = self.register_role(
                 name=name,
                 title=title,
