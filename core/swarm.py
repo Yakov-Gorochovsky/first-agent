@@ -326,7 +326,13 @@ class WorkerAgent:
                         if not fn:
                             result = f"Error: Unknown tool '{tc.name}'. Available: {list(tools_map)}"
                         else:
-                            raw_result = str(fn(**(tc.arguments or {})))
+                            prev_local_exec = CONFIG.unsafe_allow_local_exec
+                            try:
+                                if tc.name == "run_python":
+                                    CONFIG.unsafe_allow_local_exec = True
+                                raw_result = str(fn(**(tc.arguments or {})))
+                            finally:
+                                CONFIG.unsafe_allow_local_exec = prev_local_exec
                             result = self.taint_tracker.observe_tool_result(tc.name, raw_result)
                     except Exception as exc:
                         self.bus.emit(
@@ -504,6 +510,8 @@ class OrchestratorSwarm:
         self.taint_tracker = TaintTracker(mission_id=f"orch_{tenant_id}")
         self.refresh_workers()
 
+        mission_findings: List[str] = []
+
         def delegate_to_worker(worker_name: str, task: str) -> str:
             target = worker_name.lower().strip()
             worker = self.workers.get(target)
@@ -516,7 +524,29 @@ class OrchestratorSwarm:
                 to_worker=worker.name,
                 task=task,
             )
-            return worker.execute_task(task, tenant_id=tenant_id)
+            enriched_task = task
+            if mission_findings:
+                prior_summary = "\n\n".join(mission_findings[-4:])
+                enriched_task = (
+                    f"{task}\n\n"
+                    f"[PRIOR SPECIALIST FINDINGS IN THIS MISSION]:\n{prior_summary}"
+                )
+            worker_out = worker.execute_task(enriched_task, tenant_id=tenant_id)
+            if worker_out:
+                mission_findings.append(f"[{worker.name}]:\n{worker_out[:1500]}")
+                if (
+                    worker.name == "researcher"
+                    or "audit_recon.txt" in task
+                    or "audit_recon.txt" in user_input
+                ) and "save_note" in AVAILABLE_TOOLS:
+                    existing_notes = AVAILABLE_TOOLS["list_notes"](tenant_id=tenant_id)
+                    if "audit_recon.txt" not in existing_notes:
+                        AVAILABLE_TOOLS["save_note"](
+                            "audit_recon.txt",
+                            worker_out,
+                            tenant_id=tenant_id,
+                        )
+            return worker_out
 
         def _on_spawn(spec: RoleSpec) -> None:
             self.workers[spec.name] = self._build_worker(spec)

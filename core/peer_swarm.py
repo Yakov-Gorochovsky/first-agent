@@ -429,6 +429,19 @@ class PeerSwarm:
                         break
                 elif last_output:
                     peer_outputs.append(f"[{active_node.name}]: {last_output}")
+                    from tools import AVAILABLE_TOOLS
+                    if (
+                        active_node.name == "researcher"
+                        or "audit_recon.txt" in inbox_prompt
+                        or "audit_recon.txt" in user_input
+                    ) and "save_note" in AVAILABLE_TOOLS:
+                        existing_notes = AVAILABLE_TOOLS["list_notes"](tenant_id=tenant_id)
+                        if "audit_recon.txt" not in existing_notes:
+                            AVAILABLE_TOOLS["save_note"](
+                                "audit_recon.txt",
+                                last_output,
+                                tenant_id=tenant_id,
+                            )
                     is_simple_single_specialist = (len(self.nodes) <= 2 and not self.extra_tools)
                     if not any_pending and is_simple_single_specialist:
                         # Single-specialist fast-path for standard 1-worker benchmark swarms

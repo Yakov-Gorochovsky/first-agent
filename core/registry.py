@@ -281,6 +281,9 @@ class DynamicRoleSpec:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "DynamicRoleSpec":
+        limits = dict(data.get("limits", {}))
+        if "max_steps" in data and "max_steps" not in limits:
+            limits["max_steps"] = data["max_steps"]
         return cls(
             name=str(data.get("name", "specialist")).strip().lower(),
             purpose=str(data.get("purpose", "")).strip(),
@@ -289,7 +292,7 @@ class DynamicRoleSpec:
             tool_list=list(data.get("tool_list", [])),
             model_policy=dict(data.get("model_policy", {})),
             skill_tags=list(data.get("skill_tags", [])),
-            limits=dict(data.get("limits", {})),
+            limits=limits,
             tenant_id=str(data.get("tenant_id", "default")),
             color=str(data.get("color", "#00f0ff")),
         )

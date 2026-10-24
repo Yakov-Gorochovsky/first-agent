@@ -51,11 +51,11 @@ class SwarmConfig:
     verbose: bool = True
 
     # Budget settings
-    max_swarm_steps: int = 32
-    max_coordinator_steps: int = 12
-    max_steps_per_agent: int = 6
-    max_total_tokens: int = 36000
-    max_wall_seconds: float = 600.0
+    max_swarm_steps: int = 64
+    max_coordinator_steps: int = 24
+    max_steps_per_agent: int = 16
+    max_total_tokens: int = 120000
+    max_wall_seconds: float = 900.0
 
     # Storage settings
     workspace_dir: Path = field(default_factory=lambda: WORKSPACE_DIR)
@@ -106,12 +106,12 @@ class SwarmConfig:
         bundles_cfg = raw.get("capability_bundles", {})
         prompts_cfg = raw.get("prompts", {})
 
-        max_steps_env = int(os.getenv("MAX_STEPS", str(budget_cfg.get("max_steps_per_agent", 6))))
+        max_steps_env = int(os.getenv("MAX_STEPS", str(budget_cfg.get("max_steps_per_agent", 16))))
         max_coord_env = int(
-            os.getenv("MAX_COORDINATOR_STEPS", str(budget_cfg.get("max_coordinator_steps", 12)))
+            os.getenv("MAX_COORDINATOR_STEPS", str(budget_cfg.get("max_coordinator_steps", 24)))
         )
         max_swarm_env = int(
-            os.getenv("MAX_SWARM_STEPS", str(budget_cfg.get("max_swarm_steps", 32)))
+            os.getenv("MAX_SWARM_STEPS", str(budget_cfg.get("max_swarm_steps", 64)))
         )
 
         db_filename = os.getenv("DB_FILENAME", str(storage_cfg.get("db_filename", "swarm.db")))
@@ -126,8 +126,8 @@ class SwarmConfig:
             max_swarm_steps=max_swarm_env,
             max_coordinator_steps=max_coord_env,
             max_steps_per_agent=max_steps_env,
-            max_total_tokens=int(os.getenv("MAX_TOTAL_TOKENS", str(budget_cfg.get("max_total_tokens", 24000)))),
-            max_wall_seconds=float(os.getenv("MAX_WALL_SECONDS", str(budget_cfg.get("max_wall_seconds", 600.0)))),
+            max_total_tokens=int(os.getenv("MAX_TOTAL_TOKENS", str(budget_cfg.get("max_total_tokens", 120000)))),
+            max_wall_seconds=float(os.getenv("MAX_WALL_SECONDS", str(budget_cfg.get("max_wall_seconds", 900.0)))),
             db_path=WORKSPACE_DIR / db_filename,
             roles_path=WORKSPACE_DIR / "roles.json",
             default_roles_path=DEFAULT_ROLES_FILE,

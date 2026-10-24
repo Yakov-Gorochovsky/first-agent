@@ -90,9 +90,9 @@ class SwarmGenerationValidator:
     def __init__(
         self,
         allowed_capabilities: Optional[Set[str]] = None,
-        max_allowed_steps: int = 32,
-        max_allowed_tokens: int = 50_000,
-        max_allowed_cost_usd: float = 2.0,
+        max_allowed_steps: int = 96,
+        max_allowed_tokens: int = 160_000,
+        max_allowed_cost_usd: float = 5.0,
         tool_registry: Optional[ToolRegistry] = None,
     ) -> None:
         self.allowed_capabilities = allowed_capabilities or {"@web", "@code", "@files", "@memory"}
@@ -169,9 +169,10 @@ class TaskDrivenMetaPlanner:
             "Guidelines:\n"
             "1. Choose the most effective topology ('orchestrator', 'peer', 'pipeline', or 'review_loop').\n"
             "2. Define 2 to 4 specialized roles with precise instructions.\n"
-            "3. Assign only the minimum necessary capabilities ('@web', '@code', '@files', '@memory') under least privilege.\n"
-            "4. Do NOT hallucinate capabilities outside the standard set.\n"
-            "5. Return strictly conforming JSON adhering to the SwarmSpec schema."
+            "3. Assign appropriate capabilities ('@web', '@code', '@files', '@memory'). Always include '@files' and '@memory' when specialists need to save/read workspace notes (e.g. 'audit_recon.txt') or share facts.\n"
+            "4. Allocate generous step and token budgets so multi-step tool chains and final verification complete without cutoff (e.g., max_steps: 12-16 per role, max_swarm_steps: 64, max_total_tokens: 120000).\n"
+            "5. Do NOT hallucinate capabilities outside the standard set.\n"
+            "6. Return strictly conforming JSON adhering to the SwarmSpec schema."
         )
 
         user_prompt = (

@@ -128,6 +128,19 @@ class IntegratedMissionRunner:
         if topology_override and topology_override.lower().strip() not in ("", "auto"):
             planned_spec.topology = topology_override.lower().strip()
 
+        if not str(getattr(self.llm, "model", "")).startswith("mock"):
+            planned_spec.budgets.max_swarm_steps = min(
+                max(planned_spec.budgets.max_swarm_steps, CONFIG.max_swarm_steps), 128
+            )
+            planned_spec.budgets.max_steps_per_agent = max(
+                planned_spec.budgets.max_steps_per_agent, CONFIG.max_steps_per_agent
+            )
+            planned_spec.budgets.max_total_tokens = min(
+                max(planned_spec.budgets.max_total_tokens, CONFIG.max_total_tokens), 200_000
+            )
+            for r in planned_spec.roles:
+                r.limits["max_steps"] = max(r.max_steps, CONFIG.max_steps_per_agent)
+
         step_counter += 1
         cp_plan = MissionCheckpoint(
             mission_id=effective_mission_id,

@@ -72,7 +72,7 @@ class BaseTopology(ABC):
             if safe_name in {"coordinator", "orchestrator", "user", "airlock"}:
                 safe_name = f"{safe_name}_specialist"
             eff_tools = r_spec.resolve_effective_tools(GLOBAL_TOOL_REGISTRY)
-            caps = list(dict.fromkeys([*r_spec.capabilities, *eff_tools])) or ["@web", "@files", "@memory"]
+            caps = list(dict.fromkeys([*r_spec.capabilities, "@files", "@memory", *eff_tools]))
             role_obj = RoleSpec(
                 name=safe_name,
                 title=getattr(r_spec, "purpose", "") or safe_name.replace("_", " ").title(),

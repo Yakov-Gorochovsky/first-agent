@@ -10,7 +10,7 @@
     ],
     "color": "#00ff9d",
     "is_builtin": true,
-    "max_steps": 12
+    "max_steps": 16
   },
   {
     "name": "architect",
@@ -22,7 +22,7 @@
     ],
     "color": "#38bdf8",
     "is_builtin": true,
-    "max_steps": 8
+    "max_steps": 12
   },
   {
     "name": "coder",
@@ -35,7 +35,7 @@
     ],
     "color": "#ffb800",
     "is_builtin": true,
-    "max_steps": 12
+    "max_steps": 16
   },
   {
     "name": "test_runner",
@@ -43,11 +43,12 @@
     "instructions": "Execute test scripts and modules in the Python sandbox using run_python. Inspect STDOUT and STDERR, report exact failure lines and tracebacks back to coder, and only certify when all tests pass 100%.",
     "capabilities": [
       "@code",
-      "@files"
+      "@files",
+      "@memory"
     ],
     "color": "#a855f7",
     "is_builtin": true,
-    "max_steps": 8
+    "max_steps": 12
   },
   {
     "name": "critic",
@@ -60,7 +61,7 @@
     ],
     "color": "#b56bff",
     "is_builtin": true,
-    "max_steps": 6
+    "max_steps": 10
   },
   {
     "name": "security_reviewer",
@@ -73,6 +74,6 @@
     ],
     "color": "#ff3b6b",
     "is_builtin": true,
-    "max_steps": 6
+    "max_steps": 12
   }
 ]
