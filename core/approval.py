@@ -349,9 +349,24 @@ class ApprovalGate:
                 approver=record.approver,
             )
 
-    def get_audit_trail(self, limit: int = 100) -> List[Dict[str, Any]]:
+    def list_pending(self, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Return all active PENDING approval requests (optionally filtered by tenant_id)."""
+        now = time.time()
         with self._lock:
-            return [asdict(e) for e in self._audit_log[-limit:]]
+            pending: List[Dict[str, Any]] = []
+            for rec in self._requests.values():
+                if rec.status == "PENDING" and now <= rec.expires_at:
+                    if tenant_id is None or rec.tenant_id == tenant_id:
+                        pending.append(asdict(rec))
+            return pending
+
+    def get_audit_trail(self, limit: int = 100, tenant_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        with self._lock:
+            entries = [
+                e for e in self._audit_log
+                if tenant_id is None or e.tenant_id == tenant_id
+            ]
+            return [asdict(e) for e in entries[-limit:]]
 
 
-GLOBAL_APPROVAL_GATE = ApprovalGate()
+GLOBAL_APPROVAL_GATE = ApprovalGate(policy=ApprovalPolicy(default_timeout_sec=120.0))

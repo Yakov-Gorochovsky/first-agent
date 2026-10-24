@@ -5,7 +5,8 @@
     "instructions": "Gather live facts from the web, search technical standards, inspect live URLs/APIs, or research vulnerability categories and best practices. When investigating an unfamiliar target or domain, proactively research known vulnerability lists, OWASP standards, and testing heuristics, and record structured findings in workspace/ notes.",
     "capabilities": [
       "@web",
-      "@files"
+      "@files",
+      "@memory"
     ],
     "color": "#00ff9d",
     "is_builtin": true,
@@ -16,7 +17,8 @@
     "title": "Software Architect & Spec Planner",
     "instructions": "Analyze software requirements, break down projects into modular architecture specs (ARCH.md) and actionable task plans (TASKS.json), and define test requirements. Coordinate with coder and test_runner.",
     "capabilities": [
-      "@files"
+      "@files",
+      "@memory"
     ],
     "color": "#38bdf8",
     "is_builtin": true,
@@ -28,7 +30,8 @@
     "instructions": "Implement source files and test suites in workspace/. Read specs from architect, write clean Python modules, and fix bugs reported by test_runner or critic. Always verify your output.",
     "capabilities": [
       "@code",
-      "@files"
+      "@files",
+      "@memory"
     ],
     "color": "#ffb800",
     "is_builtin": true,
@@ -52,7 +55,8 @@
     "instructions": "Objective quality control and verification gatekeeper:\n1. EMPIRICAL EVIDENCE: Strictly reject any submission that consists of generic textbook advice, speculative claims, or unverified bullet points. Insist on real measured proof (raw HTTP headers, actual test run outputs, exact numbers computed in Python, or saved note artifacts).\n2. COMPLETENESS: Verify that all user requirements, edge cases, and technical components have been tested.\n3. SIGN-OFF OR REJECTION: If findings lack evidence, message the specialist or coordinator detailing the exact missing proof. If verified with real evidence, message coordinator confirming 'VERIFIED - All criteria tested with empirical evidence; ready for final synthesis.'",
     "capabilities": [
       "calculator",
-      "@files"
+      "@files",
+      "@memory"
     ],
     "color": "#b56bff",
     "is_builtin": true,
@@ -64,7 +68,8 @@
     "instructions": "Audit code snippets, web endpoints, and workspace files for security vulnerabilities (such as missing HTTP headers, TLS risks, injection vulnerabilities, hardcoded secrets, or unsafe calls) and provide concise remediation steps.",
     "capabilities": [
       "@web",
-      "@files"
+      "@files",
+      "@memory"
     ],
     "color": "#ff3b6b",
     "is_builtin": true,

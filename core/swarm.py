@@ -11,6 +11,7 @@ Connects decoupled interfaces:
 import json
 from typing import Any, Callable, Dict, List, Optional
 
+from core.approval import ApprovalDeniedError, ApprovalGate
 from core.budget import BudgetExceededError, BudgetTracker
 from core.bus import EventBus
 from core.config import CONFIG
@@ -60,6 +61,7 @@ class WorkerAgent:
         yield_on_tools: Optional[List[str]] = None,
         max_steps: Optional[int] = None,
         taint_tracker: Optional[TaintTracker] = None,
+        approval_gate: Optional[ApprovalGate] = None,
     ) -> None:
         self.name = name
         self.role = role
@@ -74,6 +76,7 @@ class WorkerAgent:
         self.yield_on_tools = set(yield_on_tools or [])
         self.max_steps = max_steps
         self.taint_tracker = taint_tracker or TaintTracker()
+        self.approval_gate = approval_gate
 
     def _get_tools_and_schemas(self, tenant_id: str) -> tuple[Dict[str, Callable[..., str]], List[Dict[str, Any]]]:
         """Bind tenant-scoped memory tools + global skill learning tool + selected tools."""
@@ -197,9 +200,14 @@ class WorkerAgent:
         while True:
             local_turn += 1
             tools_map, schemas = self._get_tools_and_schemas(tenant_id)
-            # If a specialist worker already ran 2 rounds of tools (e.g. web_search), force synthesis on round 3
+            # Force synthesis only when the specialist approaches its actual configured max_steps
             active_schemas: Optional[List[Dict[str, Any]]] = schemas
-            if self.name not in ("coordinator", "orchestrator") and local_turn >= 3 and collected_observations:
+            effective_max = (
+                self.max_steps
+                if (self.max_steps is not None and self.max_steps > 0)
+                else self.budget.config.max_steps_per_agent
+            )
+            if self.name not in ("coordinator", "orchestrator") and local_turn >= effective_max and collected_observations:
                 active_schemas = None
 
             try:
@@ -262,10 +270,77 @@ class WorkerAgent:
                     tenant_id, self.name, "tool_call", {"tool": tc.name, "args": tc.arguments}
                 )
 
-                # FP-02: Enforce Taint Tracking Policy before execution
+                # FP-02 & FP-11: Enforce Taint Tracking Policy & Human Approval Gate before execution
                 allowed, block_reason = self.taint_tracker.can_execute_tool(tc.name, tc.arguments or {})
-                if not allowed:
-                    result: str = block_reason or "Blocked by taint tracking security policy."
+                needs_human_approval = (
+                    not allowed
+                    or (
+                        self.approval_gate is not None
+                        and tc.name in self.taint_tracker.HIGH_RISK_TOOLS
+                        and self.approval_gate.policy.high_risk == "approve"
+                    )
+                )
+
+                if needs_human_approval and self.approval_gate is not None:
+                    reason_text = block_reason or f"High-risk tool '{tc.name}' requires human operator authorization."
+                    rec = self.approval_gate.request_approval(
+                        tenant_id=tenant_id,
+                        agent_name=self.name,
+                        action=tc.name,
+                        args=tc.arguments or {},
+                    )
+                    self.bus.emit(
+                        "approval_required",
+                        agent_name=self.name,
+                        tenant_id=tenant_id,
+                        request_id=rec.request_id,
+                        tool=tc.name,
+                        arguments=tc.arguments or {},
+                        arg_hash=rec.arg_hash,
+                        reason=reason_text,
+                        expires_at=rec.expires_at,
+                    )
+                    self.storage.log_trace(
+                        tenant_id,
+                        self.name,
+                        "approval_required",
+                        {"request_id": rec.request_id, "tool": tc.name, "arg_hash": rec.arg_hash},
+                    )
+                    try:
+                        approved_rec = self.approval_gate.wait_for_decision(rec.request_id)
+                        self.approval_gate.verify_and_burn_token(
+                            request_id=rec.request_id,
+                            expected_action=tc.name,
+                            submitted_args=tc.arguments or {},
+                        )
+                        self.bus.emit(
+                            "approval_resolved",
+                            agent_name=self.name,
+                            tenant_id=tenant_id,
+                            request_id=rec.request_id,
+                            tool=tc.name,
+                            status="APPROVED",
+                            approver=approved_rec.approver,
+                        )
+                        fn = tools_map.get(tc.name)
+                        if not fn:
+                            result = f"Error: Unknown tool '{tc.name}'. Available: {list(tools_map)}"
+                        else:
+                            raw_result = str(fn(**(tc.arguments or {})))
+                            result = self.taint_tracker.observe_tool_result(tc.name, raw_result)
+                    except Exception as exc:
+                        self.bus.emit(
+                            "approval_resolved",
+                            agent_name=self.name,
+                            tenant_id=tenant_id,
+                            request_id=rec.request_id,
+                            tool=tc.name,
+                            status="DENIED",
+                            reason=str(exc),
+                        )
+                        result = f"ApprovalDenied: {exc}"
+                elif not allowed:
+                    result = block_reason or "Blocked by taint tracking security policy."
                 else:
                     fn = tools_map.get(tc.name)
                     if not fn:
@@ -376,6 +451,7 @@ class OrchestratorSwarm:
         extra_tools: Optional[Dict[str, Callable[..., str]]] = None,
         extra_schemas: Optional[List[Dict[str, Any]]] = None,
         taint_tracker: Optional[TaintTracker] = None,
+        approval_gate: Optional[ApprovalGate] = None,
     ) -> None:
         self.llm = llm
         self.storage = storage
@@ -387,6 +463,7 @@ class OrchestratorSwarm:
         self.extra_tools = extra_tools or {}
         self.extra_schemas = extra_schemas or []
         self.taint_tracker = taint_tracker or TaintTracker()
+        self.approval_gate = approval_gate
         self.workers: Dict[str, WorkerAgent] = {}
         self.refresh_workers()
 
@@ -410,6 +487,7 @@ class OrchestratorSwarm:
             tool_names=spec.tool_names,
             max_steps=spec.effective_max_steps,
             taint_tracker=self.taint_tracker,
+            approval_gate=self.approval_gate,
         )
 
     def refresh_workers(self) -> None:

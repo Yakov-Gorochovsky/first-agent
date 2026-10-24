@@ -165,3 +165,38 @@ def test_privilege_ceiling_blocks_over_privileged_roles() -> None:
     assert valid is False
     assert "Privilege Ceiling Violation" in err
     assert "@code" in err
+
+
+@pytest.mark.unit
+def test_native_function_calling_structured_output() -> None:
+    """generate_structured_output extracts payload directly from native tool_calls when supported by provider."""
+    from core.llm import ToolCallRequest
+    from core.structured import generate_structured_output
+
+    class NativeToolCallLLM(LLMProvider):
+        model = "gemini-flash-native"
+
+        def generate(self, messages=None, tools=None, **kwargs):
+            assert tools is not None and len(tools) == 1
+            assert tools[0]["function"]["name"] == "emit_structured_output"
+            return LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCallRequest(
+                        id="call_struct_1",
+                        name="emit_structured_output",
+                        arguments={"title": "Native Schema Swarm", "topology": "peer"},
+                    )
+                ],
+                prompt_tokens=30,
+                completion_tokens=15,
+            )
+
+    res = generate_structured_output(
+        llm=NativeToolCallLLM(),
+        prompt="Plan a team",
+        schema={"type": "object", "required": ["title", "topology"]},
+        custom_validator=lambda d: (True, ""),
+    )
+    assert res["title"] == "Native Schema Swarm"
+    assert res["topology"] == "peer"

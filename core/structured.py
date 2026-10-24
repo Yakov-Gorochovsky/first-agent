@@ -124,22 +124,46 @@ def generate_structured_output(
     """
     current_prompt = (
         f"{prompt}\n\n"
-        f"CRITICAL: Output must be a single valid JSON object strictly matching this schema:\n"
+        f"CRITICAL: Call `emit_structured_output` or output a single valid JSON object strictly matching this schema:\n"
         f"{json.dumps(schema, indent=2)}\n"
         f"Do NOT include conversational filler."
     )
+
+    structured_tool: Dict[str, Any] = {
+        "type": "function",
+        "function": {
+            "name": "emit_structured_output",
+            "description": "Emit a strictly conforming JSON object matching the required schema.",
+            "parameters": schema,
+        },
+    }
 
     history: List[Dict[str, str]] = []
 
     for attempt in range(max_retries):
         messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": current_prompt}]
         try:
-            resp = llm.generate(messages=messages)
+            resp = llm.generate(messages=messages, tools=[structured_tool])
         except TypeError:
-            # Fallback for custom prompt-based providers
-            resp = getattr(llm, "generate")(prompt=current_prompt, system_prompt=system_prompt, history=history)
+            try:
+                resp = llm.generate(messages=messages)
+            except TypeError:
+                # Fallback for custom prompt-based providers
+                resp = getattr(llm, "generate")(prompt=current_prompt, system_prompt=system_prompt, history=history)
+        except Exception:
+            # If the provider rejects a complex nested JSON schema in tool parameters (e.g. BadRequestError),
+            # fall back to direct JSON generation with schema validation & repair loop.
+            resp = llm.generate(messages=messages)
 
-        extracted = extract_json_payload(resp.content)
+        extracted: Optional[Dict[str, Any]] = None
+        if getattr(resp, "tool_calls", None):
+            for tc in resp.tool_calls:
+                if isinstance(tc.arguments, dict) and tc.arguments:
+                    extracted = tc.arguments
+                    break
+
+        if not extracted:
+            extracted = extract_json_payload(resp.content)
         if not extracted:
             err_msg = "Output could not be parsed as valid JSON."
         else:

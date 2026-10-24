@@ -22,9 +22,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
+from core.approval import GLOBAL_APPROVAL_GATE
 from core.auth import APIKeyRecord, AuthManager
 from core.budget import BudgetConfig, BudgetTracker
 from core.bus import EventBus, SwarmEvent
+from core.checkpoint import CheckpointStore
 from core.config import CONFIG
 from core.llm import OpenAICompatibleProvider
 from core.mission import IntegratedMissionRunner
@@ -44,6 +46,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 # Shared application state initialized from centralized CONFIG
 bus = EventBus()
 storage = SQLiteStorage()
+checkpoint_store = CheckpointStore(db_path=str(CONFIG.db_path))
 role_registry = RoleRegistry()
 budget = BudgetTracker(config=BudgetConfig(), bus=bus)
 cost_governor = TenantCostGovernor(
@@ -390,7 +393,7 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
 
             qs = parse_qs(parsed.query)
             if auth.has_scope("admin"):
-                default_id = swarm_manager.list_swarms()[0].swarm_id if swarm_manager.list_swarms() else "victim"
+                default_id = swarm_manager.list_swarms()[0].swarm_id if swarm_manager.list_swarms() else "default"
                 raw_tenant = qs.get("tenant", [default_id])[0]
                 try:
                     tenant_id = validate_tenant_id(raw_tenant)
@@ -413,6 +416,9 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
                     "tenant_memories": storage.get_tenant_memories(tenant_id),
                     "global_skills": storage.get_global_skills(limit=12),
                     "session_turns": storage.get_session_turns(tenant_id, limit=10),
+                    "pending_approvals": GLOBAL_APPROVAL_GATE.list_pending(tenant_id),
+                    "approval_audit": GLOBAL_APPROVAL_GATE.get_audit_trail(limit=10, tenant_id=tenant_id),
+                    "checkpoints": checkpoint_store.list_tenant_checkpoints(tenant_id, limit=10),
                     "budget": {
                         "total_steps": active_budget.total_steps,
                         "max_swarm_steps": active_budget.config.max_swarm_steps,
@@ -608,44 +614,36 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
             self._send_json(scorecard)
             return
 
-        if parsed.path == "/api/missions/execute":
+        if parsed.path == "/api/approvals/resolve":
             auth = self._authenticate("user")
             if not auth:
                 return
 
-            prompt = str(body.get("prompt", "")).strip()
-            if not prompt:
-                self._send_json({"error": "Prompt is required."}, 400)
+            request_id = str(body.get("request_id", "")).strip()
+            decision = str(body.get("decision", "approve")).strip().lower()
+            reason = str(body.get("reason", "")).strip() or None
+            if not request_id or decision not in {"approve", "deny"}:
+                self._send_json({"error": "request_id and decision ('approve' or 'deny') are required."}, 400)
                 return
 
-            if auth.has_scope("admin"):
-                raw_tenant = str(body.get("tenant_id", "default")).strip()
-                try:
-                    tenant_id = validate_tenant_id(raw_tenant)
-                except ValueError as exc:
-                    self._send_json({"error": str(exc)}, 400)
-                    return
-            else:
-                tenant_id = auth.tenant_id
-
             try:
-                runner = IntegratedMissionRunner(llm=llm, bus=bus)
-                result = runner.execute(prompt=prompt, tenant_id=tenant_id)
+                approver_name = auth.name or auth.tenant_id or "operator"
+                if decision == "approve":
+                    rec = GLOBAL_APPROVAL_GATE.approve(request_id, approver=approver_name, reason=reason)
+                else:
+                    rec = GLOBAL_APPROVAL_GATE.deny(request_id, approver=approver_name, reason=reason)
                 self._send_json({
-                    "mission_id": result.mission_id,
-                    "tenant_id": result.tenant_id,
-                    "status": result.status,
-                    "spec": result.spec,
-                    "output": result.output,
-                    "checkpoints_count": result.checkpoints_count,
-                    "latest_checkpoint_hash": result.latest_checkpoint_hash,
-                    "audit_events": result.audit_events,
+                    "request_id": rec.request_id,
+                    "status": rec.status,
+                    "approver": rec.approver,
+                    "pending_approvals": GLOBAL_APPROVAL_GATE.list_pending(rec.tenant_id),
+                    "approval_audit": GLOBAL_APPROVAL_GATE.get_audit_trail(limit=10, tenant_id=rec.tenant_id),
                 })
             except Exception as exc:
-                self._send_json({"error": f"Mission execution failed: {exc}"}, 500)
+                self._send_json({"error": str(exc)}, 400)
             return
 
-        if parsed.path == "/api/run":
+        if parsed.path in {"/api/missions/execute", "/api/run"}:
             auth = self._authenticate("user")
             if not auth:
                 return
@@ -653,14 +651,15 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
             prompt = str(body.get("prompt", "")).strip()
             mode = str(body.get("mode", "")).strip().lower()
             simulate = bool(body.get("simulate", False))
+            auto_approve = bool(body.get("auto_approve", False))
+            is_async = bool(body.get("async", parsed.path == "/api/run"))
 
             if not prompt:
-                self._send_json({"error": "Prompt is required"}, 400)
+                self._send_json({"error": "Prompt is required."}, 400)
                 return
 
-            # Tenant derivation: Admins may target any valid tenant; user tokens are locked to their credential's tenant
             if auth.has_scope("admin"):
-                raw_tenant = str(body.get("tenant_id", "attacker")).strip()
+                raw_tenant = str(body.get("tenant_id", "default")).strip() or "default"
                 try:
                     tenant_id = validate_tenant_id(raw_tenant)
                 except ValueError as exc:
@@ -669,7 +668,36 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
             else:
                 tenant_id = auth.tenant_id
 
-            # FP-03: Rate Limiting & Daily Spend Cap Governance
+            if not is_async:
+                try:
+                    runner = IntegratedMissionRunner(
+                        llm=llm,
+                        checkpoint_store=checkpoint_store,
+                        approval_gate=GLOBAL_APPROVAL_GATE,
+                        bus=bus,
+                        storage=storage,
+                    )
+                    result = runner.execute(
+                        prompt=prompt,
+                        tenant_id=tenant_id,
+                        auto_approve_high_risk=auto_approve,
+                        topology_override=mode or None,
+                    )
+                    self._send_json({
+                        "mission_id": result.mission_id,
+                        "tenant_id": result.tenant_id,
+                        "status": result.status,
+                        "spec": result.spec,
+                        "output": result.output,
+                        "checkpoints_count": result.checkpoints_count,
+                        "latest_checkpoint_hash": result.latest_checkpoint_hash,
+                        "audit_events": result.audit_events,
+                    })
+                except Exception as exc:
+                    self._send_json({"error": f"Mission execution failed: {exc}"}, 500)
+                return
+
+            # FP-03: Rate Limiting & Daily Spend Cap Governance for async UI/API runs
             try:
                 cost_governor.check_rate_limit(tenant_id)
             except RateLimitExceededError as rle:
@@ -698,29 +726,47 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
 
             def _worker() -> None:
                 try:
-                    bus.emit(
-                        "mission_start",
-                        agent_name="system",
-                        tenant_id=tenant_id,
-                        mode=mode or "peer",
-                        prompt=prompt,
-                        simulate=simulate,
-                    )
                     if simulate:
+                        bus.emit(
+                            "mission_start",
+                            agent_name="system",
+                            tenant_id=tenant_id,
+                            mode=mode or "peer",
+                            prompt=prompt,
+                            simulate=True,
+                        )
                         _run_cinematic_simulation(tenant_id, prompt)
                         reply = "Simulation complete."
                     else:
-                        reply = swarm_manager.run_swarm(
-                            swarm_id=tenant_id,
+                        runner = IntegratedMissionRunner(
+                            llm=llm,
+                            checkpoint_store=checkpoint_store,
+                            approval_gate=GLOBAL_APPROVAL_GATE,
+                            bus=bus,
+                            storage=storage,
+                        )
+                        res = runner.execute(
                             prompt=prompt,
-                            topology_override=mode if mode in {"peer", "orchestrator"} else None,
+                            tenant_id=tenant_id,
+                            auto_approve_high_risk=auto_approve,
+                            topology_override=mode or None,
+                        )
+                        reply = res.output
+                        bus.emit(
+                            "swarm_complete",
+                            agent_name="coordinator",
+                            tenant_id=tenant_id,
+                            answer=reply,
+                            mission_id=res.mission_id,
+                            checkpoints_count=res.checkpoints_count,
+                            latest_checkpoint_hash=res.latest_checkpoint_hash,
                         )
 
                     bus.emit(
                         "mission_end",
                         agent_name="system",
                         tenant_id=tenant_id,
-                        mode=mode or "peer",
+                        mode=mode or "auto",
                         reply=reply,
                     )
                 except Exception as exc:
@@ -734,7 +780,7 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
                     tracker.__exit__(None, None, None)
 
             threading.Thread(target=_worker, daemon=True).start()
-            self._send_json({"status": "started", "tenant_id": tenant_id, "mode": mode})
+            self._send_json({"status": "started", "tenant_id": tenant_id, "mode": mode or "auto"})
             return
 
         if parsed.path == "/api/airlock-test":

@@ -16,11 +16,13 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Type
 
+from core.approval import ApprovalGate
 from core.budget import BudgetTracker
 from core.bus import EventBus
 from core.llm import LLMProvider
 from core.peer_swarm import PeerSwarm
-from core.registry import DynamicRoleSpec
+from core.registry import DynamicRoleSpec, GLOBAL_TOOL_REGISTRY
+from core.roles import RoleRegistry, RoleSpec
 from core.security import TaintTracker
 from core.storage import SQLiteStorage, StorageBackend
 from core.swarm import OrchestratorSwarm, WorkerAgent
@@ -44,6 +46,8 @@ class BaseTopology(ABC):
         bus: Optional[EventBus] = None,
         taint_tracker: Optional[TaintTracker] = None,
         storage: Optional[StorageBackend] = None,
+        directive: str = "",
+        approval_gate: Optional[ApprovalGate] = None,
     ) -> None:
         self.tenant_id = tenant_id
         self.roles = roles
@@ -52,6 +56,41 @@ class BaseTopology(ABC):
         self.bus = bus
         self.taint_tracker = taint_tracker or TaintTracker()
         self.storage = storage or SQLiteStorage()
+        self.directive = directive
+        self.approval_gate = approval_gate
+
+    def _build_mission_role_registry(self, bus: EventBus) -> tuple[RoleRegistry, Optional[List[str]]]:
+        """Build an in-memory RoleRegistry populated with the dynamically planned SwarmSpec roles."""
+        reg = RoleRegistry()
+        if not self.roles:
+            return reg, None
+
+        palette = ["#00ff9d", "#38bdf8", "#ffb800", "#a855f7", "#ff3b6b", "#00f0ff"]
+        allowed: List[str] = []
+        for idx, r_spec in enumerate(self.roles):
+            safe_name = reg._clean_name(r_spec.name)
+            if safe_name in {"coordinator", "orchestrator", "user", "airlock"}:
+                safe_name = f"{safe_name}_specialist"
+            eff_tools = r_spec.resolve_effective_tools(GLOBAL_TOOL_REGISTRY)
+            caps = list(dict.fromkeys([*r_spec.capabilities, *eff_tools])) or ["@web", "@files", "@memory"]
+            role_obj = RoleSpec(
+                name=safe_name,
+                title=getattr(r_spec, "purpose", "") or safe_name.replace("_", " ").title(),
+                instructions=r_spec.instructions,
+                capabilities=caps,
+                color=palette[idx % len(palette)],
+                is_builtin=False,
+                max_steps=r_spec.max_steps,
+            )
+            reg._roles[safe_name] = role_obj
+            allowed.append(safe_name)
+            bus.emit(
+                "role_created",
+                agent_name="meta_planner",
+                tenant_id=self.tenant_id,
+                role=role_obj.to_dict(),
+            )
+        return reg, allowed
 
     @abstractmethod
     def execute(self, prompt: str) -> str:
@@ -63,12 +102,17 @@ class OrchestratorTopology(BaseTopology):
 
     def execute(self, prompt: str) -> str:
         bus = self.bus or EventBus()
+        reg, allowed = self._build_mission_role_registry(bus)
         swarm = OrchestratorSwarm(
             llm=self.llm,
             storage=self.storage,
             budget=self.budget,
             bus=bus,
+            role_registry=reg,
+            allowed_roles=allowed,
+            directive=self.directive,
             taint_tracker=self.taint_tracker,
+            approval_gate=self.approval_gate,
         )
         return swarm.run(prompt, tenant_id=self.tenant_id)
 
@@ -78,12 +122,17 @@ class PeerTopology(BaseTopology):
 
     def execute(self, prompt: str) -> str:
         bus = self.bus or EventBus()
+        reg, allowed = self._build_mission_role_registry(bus)
         swarm = PeerSwarm(
             llm=self.llm,
             storage=self.storage,
             budget=self.budget,
             bus=bus,
+            role_registry=reg,
+            allowed_roles=allowed,
+            directive=self.directive,
             taint_tracker=self.taint_tracker,
+            approval_gate=self.approval_gate,
         )
         return swarm.run(prompt, tenant_id=self.tenant_id)
 
@@ -106,16 +155,19 @@ class PipelineTopology(BaseTopology):
 
         active_bus = self.bus or EventBus()
         for idx, role_spec in enumerate(self.roles, start=1):
+            eff_tools = role_spec.resolve_effective_tools(GLOBAL_TOOL_REGISTRY)
             worker = WorkerAgent(
                 name=role_spec.name,
-                role=role_spec.name.title(),
+                role=getattr(role_spec, "purpose", "") or role_spec.name.title(),
                 instructions=role_spec.instructions,
                 llm=self.llm,
                 storage=self.storage,
                 budget=self.budget,
                 bus=active_bus,
-                tool_names=role_spec.tool_list,
+                tool_names=eff_tools,
+                max_steps=role_spec.max_steps,
                 taint_tracker=self.taint_tracker,
+                approval_gate=self.approval_gate,
             )
 
             stage_prompt = f"Pipeline Stage {idx}/{len(self.roles)}. Process the following input:\n\n{current_input}"
@@ -148,28 +200,34 @@ class ReviewLoopTopology(BaseTopology):
             rev_role = self.roles[1]
 
         active_bus = self.bus or EventBus()
+        gen_tools = gen_role.resolve_effective_tools(GLOBAL_TOOL_REGISTRY)
+        rev_tools = rev_role.resolve_effective_tools(GLOBAL_TOOL_REGISTRY)
         generator = WorkerAgent(
             name=gen_role.name,
-            role=gen_role.name.title(),
+            role=getattr(gen_role, "purpose", "") or gen_role.name.title(),
             instructions=gen_role.instructions,
             llm=self.llm,
             storage=self.storage,
             budget=self.budget,
             bus=active_bus,
-            tool_names=gen_role.tool_list,
+            tool_names=gen_tools,
+            max_steps=gen_role.max_steps,
             taint_tracker=self.taint_tracker,
+            approval_gate=self.approval_gate,
         )
 
         reviewer = WorkerAgent(
             name=rev_role.name,
-            role=rev_role.name.title(),
+            role=getattr(rev_role, "purpose", "") or rev_role.name.title(),
             instructions=rev_role.instructions,
             llm=self.llm,
             storage=self.storage,
             budget=self.budget,
             bus=active_bus,
-            tool_names=rev_role.tool_list,
+            tool_names=rev_tools,
+            max_steps=rev_role.max_steps,
             taint_tracker=self.taint_tracker,
+            approval_gate=self.approval_gate,
         )
 
         draft = generator.execute_task(task_prompt=prompt, tenant_id=self.tenant_id)

@@ -57,6 +57,7 @@ class LLMProvider(Protocol):
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
+        **kwargs: Any,
     ) -> LLMResponse: ...
 
 
@@ -317,6 +318,7 @@ class OpenAICompatibleProvider:
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
+        **kwargs: Any,
     ) -> LLMResponse:
         if self._is_local_ollama():
             return self._generate_ollama_native(messages, tools=tools)

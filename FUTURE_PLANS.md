@@ -601,8 +601,10 @@ These are engineering considerations, not legal advice. Confirm obligations with
 - Cross-swarm privacy airlock and egress DLP (5-category regex scrubber, token redaction).
 - Security hardening: calculator DoS caps, SSRF and DNS-rebinding pinning, fail-closed sandbox, tenant workspace isolation.
 - API-key authentication and scoped RBAC: constant-time verification, non-loopback binding guard, tenant SSE isolation.
-- 39-test pytest suite and GitHub Actions CI.
-- Cloud LLM support through Google Gemini.
+- 144-test pytest suite (`tests/unit`, `tests/integration`, `tests/e2e`) and GitHub Actions CI.
+- Cloud LLM support through Google Gemini (`gemini-3.5-flash-lite`).
+- Unified default execution pipeline (`IntegratedMissionRunner` wired to `/api/missions/execute`, Web UI, and `agent.py`) with dynamic task-driven role planning (`TaskDrivenMetaPlanner`), native function-calling structured output (`emit_structured_output`), live interactive `ApprovalGate` (`auto_approve_high_risk=False`, `/api/approvals/resolve`), and step-by-step HMAC-SHA256 checkpoints (`CheckpointStore`).
+- Committed live 10-task Smoke Benchmark evaluation (`benchmarks/baselines/smoke_live_gemini_flash.json`) across 5 domain packs on `gemini-3.5-flash-lite` (10/10 passed, 26,846 prompt tokens, 2,619 completion tokens, $0.002799 USD).
 
 Each line above maps to the verification in section 8.5.
 

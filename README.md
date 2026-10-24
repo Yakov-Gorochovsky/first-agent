@@ -54,9 +54,9 @@ flowchart TD
 The codebase is organized into **Active Runtime Pipelines** and **Modular Subsystem Libraries**:
 
 #### 1. Integrated Active Pipelines (Runtime-Wired)
-- **Multi-Tenant Server & Telemetry UI ([`server.py`](server.py))**: Constant-time API key auth (`hmac.compare_digest`), scope RBAC (`admin` vs `user`), tenant isolation, strict security headers (CSP, HSTS, X-Content-Type-Options), and cross-tenant SSE event segregation.
-- **Unified Vertical Slice ([`core/mission.py`](core/mission.py))**: An end-to-end mission pipeline connecting **TaskDrivenMetaPlanner** $\rightarrow$ **SwarmFactory** $\rightarrow$ **BaseTopology** execution $\rightarrow$ **ApprovalGate** (with cryptographically random single-use tokens) $\rightarrow$ **CheckpointStore** (with HMAC-SHA256 signature verification).
-- **Multi-Agent Topologies ([`core/swarm.py`](core/swarm.py), [`core/peer_swarm.py`](core/peer_swarm.py), [`core/topology.py`](core/topology.py))**: Central orchestrator and decentralized peer inbox topologies with dynamic role recruitment and message routing.
+- **Unified Default Mission Pipeline ([`core/mission.py`](core/mission.py), [`server.py`](server.py), [`agent.py`](agent.py), [`static/index.html`](static/index.html))**: `POST /api/missions/execute` (`IntegratedMissionRunner`) is the default execution path across the Web UI, CLI, and API. Every mission dynamically plans a custom agent team via **TaskDrivenMetaPlanner** (using native function-calling structured output `emit_structured_output`), instantiates the selected topology via **SwarmFactory**, enforces live human operator authorization via **ApprovalGate** (`auto_approve_high_risk=False`, resolved via `POST /api/approvals/resolve` in the UI or interactive prompt in the CLI), and persists **HMAC-SHA256 signed checkpoints** at every specialist stage in **CheckpointStore**.
+- **Multi-Tenant Server & Telemetry UI ([`server.py`](server.py))**: Constant-time API key auth (`hmac.compare_digest`), scope RBAC (`admin` vs `user`), tenant isolation, strict security headers (CSP, HSTS, X-Content-Type-Options), live **Approval Gate & Checkpoints** operator panel, and cross-tenant SSE event segregation.
+- **Multi-Agent Topologies ([`core/swarm.py`](core/swarm.py), [`core/peer_swarm.py`](core/peer_swarm.py), [`core/topology.py`](core/topology.py))**: Central orchestrator, decentralized peer inbox network, sequential pipeline, and generator-critic review loop topologies with anti-loop defense (per-resource empty retry budget with step refunds, Exhausted Peer Shield, and 2-node Ping-Pong Circuit Breaker).
 - **Security-Hardened Primitives ([`tools.py`](tools.py))**: AST-whitelisted arithmetic calculator, SSRF firewall blocking RFC-1918 private IPs and cloud metadata endpoints, path-traversal prevention, and containerized Python execution (fail-closed when container runtime is absent unless explicit unsafe local execution is configured).
 
 #### 2. Standalone Component Libraries (Unit Tested)
@@ -73,7 +73,7 @@ The following modules provide tested capabilities with rigorous unit test suites
 
 The engine implements defense-in-depth controls across all execution paths:
 - **33 Security Findings Remediated & Documented** in [`SECURITY_FINDINGS.md`](SECURITY_FINDINGS.md).
-- **46 Quantitative Metrics & Measured Benchmarks** tracked in [`PROBLEMS_AND_METRICS.md`](PROBLEMS_AND_METRICS.md).
+- **49 Quantitative Metrics & Live Model Benchmarks** tracked in [`PROBLEMS_AND_METRICS.md`](PROBLEMS_AND_METRICS.md) and [`benchmarks/baselines/smoke_live_gemini_flash.json`](benchmarks/baselines/smoke_live_gemini_flash.json) (**10/10 tasks [100%] passed** on live `gemini-3.5-flash-lite` across 5 domain packs: `26,846` prompt tokens, `2,619` completion tokens, `$0.002799` total USD cost).
 - **Core Security Controls**:
   - Container execution sandbox with fail-closed local execution default.
   - SSRF & DNS resolution validation blocking loopback and private networks.

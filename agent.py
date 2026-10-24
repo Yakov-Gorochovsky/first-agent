@@ -19,10 +19,13 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+from core.approval import GLOBAL_APPROVAL_GATE
 from core.budget import BudgetConfig, BudgetTracker
 from core.bus import EventBus, SwarmEvent
+from core.checkpoint import CheckpointStore
 from core.config import CONFIG
 from core.llm import OpenAICompatibleProvider
+from core.mission import IntegratedMissionRunner
 from core.roles import CAPABILITY_BUNDLES, RoleRegistry
 from core.storage import SQLiteStorage
 from core.swarm_manager import SwarmManager
@@ -71,6 +74,41 @@ def console_event_listener(event: SwarmEvent) -> None:
             f"  [PrivacyAirlock -> Global Skill] [{data.get('category')}] "
             f"{data.get('problem_pattern')} => {data.get('solution_rule')}"
         )
+    elif etype == "mission_planned":
+        roles_str = ", ".join(r.get("name", "?") for r in data.get("roles", []))
+        print(
+            f"  [MetaPlanner | {tenant}] Title: {data.get('title')} | "
+            f"Topology: {data.get('topology')} | Team: [{roles_str}]"
+        )
+    elif etype == "checkpoint_saved":
+        sig = str(data.get("hmac_signature") or "")[:16]
+        print(
+            f"  [Checkpoint HMAC | {tenant}] Step #{data.get('step_number')} "
+            f"({data.get('status')}) sig={sig}..."
+        )
+    elif etype == "approval_required":
+        req_id = str(data.get("request_id", ""))
+        tool = data.get("tool")
+        args_preview = str(data.get("arguments", {}))[:160]
+        print(
+            f"\n  ⚠️ [HUMAN APPROVAL REQUIRED | {tenant}:{agent}] "
+            f"Tool: {tool} | Args: {args_preview}\n"
+            f"     Reason: {data.get('reason')} (Request ID: {req_id})"
+        )
+        if sys.stdin and sys.stdin.isatty():
+            try:
+                ans = input("     Approve high-risk tool execution? [y/N]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                ans = "n"
+            if ans in {"y", "yes", "approve"}:
+                GLOBAL_APPROVAL_GATE.approve(req_id, approver="cli_operator", reason="Approved via CLI prompt")
+            else:
+                GLOBAL_APPROVAL_GATE.deny(req_id, approver="cli_operator", reason="Denied via CLI prompt")
+    elif etype == "approval_resolved":
+        print(
+            f"  [ApprovalGate | {tenant}:{agent}] {data.get('tool')} -> {data.get('status')} "
+            f"(by {data.get('approver') or 'policy'})"
+        )
 
 
 def build_swarms():
@@ -80,11 +118,19 @@ def build_swarms():
     storage = SQLiteStorage()
     role_registry = RoleRegistry()
     budget = BudgetTracker(config=BudgetConfig(), bus=bus)
-    llm = OpenAICompatibleProvider()
+    llm = OpenAICompatibleProvider(bus=bus)
     swarm_manager = SwarmManager(
         storage=storage, bus=bus, role_registry=role_registry, default_llm=llm
     )
-    return swarm_manager, role_registry, storage, budget, bus
+    checkpoint_store = CheckpointStore(db_path=str(CONFIG.db_path))
+    mission_runner = IntegratedMissionRunner(
+        llm=llm,
+        checkpoint_store=checkpoint_store,
+        approval_gate=GLOBAL_APPROVAL_GATE,
+        bus=bus,
+        storage=storage,
+    )
+    return swarm_manager, role_registry, storage, budget, bus, mission_runner
 
 
 def main() -> None:
@@ -94,21 +140,26 @@ def main() -> None:
         "-t",
         "--tenant",
         type=str,
-        default="attacker",
-        help="Active Swarm ID / Tenant ID (default: attacker).",
+        default="default",
+        help="Active Swarm ID / Tenant ID (default: default).",
     )
     parser.add_argument(
         "-m",
         "--mode",
         type=str,
-        choices=["peer", "orchestrator"],
-        default="peer",
-        help="Swarm topology override: 'peer' or 'orchestrator'.",
+        choices=["auto", "peer", "orchestrator", "pipeline", "review_loop"],
+        default="auto",
+        help="Swarm topology override: 'auto' (MetaPlanner), 'peer', 'orchestrator', 'pipeline', or 'review_loop'.",
+    )
+    parser.add_argument(
+        "--auto-approve",
+        action="store_true",
+        help="Automatically approve high-risk tool actions without interactive human confirmation.",
     )
     parser.add_argument("--new-session", action="store_true", help="Clear tenant session history.")
     args = parser.parse_args()
 
-    swarm_manager, role_registry, storage, budget, _ = build_swarms()
+    swarm_manager, role_registry, storage, budget, _, mission_runner = build_swarms()
     tenant_id = args.tenant
     mode = args.mode
 
@@ -119,18 +170,19 @@ def main() -> None:
     role_names = ", ".join(r.name for r in role_registry.list_roles())
     print("=" * 78)
     print(f" Modular AI Swarm | Model: {CONFIG.model_name} | Active Swarm: '{tenant_id}' | Mode: {mode.upper()}")
-    print(f" Deployed Swarms: [{swarm_names}] (Managed via core/swarm_manager.py)")
-    print(f" Active Roles:    [{role_names}] (Managed via core/roles.py)")
+    print(f" Deployed Swarms: [{swarm_names}] (IntegratedMissionRunner default)")
+    print(f" Seed Roles:      [{role_names}] (Dynamic MetaPlanner enabled)")
     print(f" Web UI:          Run `python server.py` and open http://{CONFIG.host}:{CONFIG.port}")
     print("=" * 78)
 
     def run_active(prompt_text: str) -> str:
-        return swarm_manager.run_swarm(
-            swarm_id=tenant_id,
+        res = mission_runner.execute(
             prompt=prompt_text,
-            topology_override=mode,
-            budget=budget,
+            tenant_id=tenant_id,
+            auto_approve_high_risk=bool(args.auto_approve),
+            topology_override=None if mode == "auto" else mode,
         )
+        return res.output
 
     if args.prompt:
         print(f"\nYou ({tenant_id}): {args.prompt}")

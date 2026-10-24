@@ -15,6 +15,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Callable, Deque, Dict, List, Optional
 
+from core.approval import ApprovalGate
 from core.budget import BudgetExceededError, BudgetTracker
 from core.bus import EventBus
 from core.config import CONFIG
@@ -64,6 +65,7 @@ class PeerSwarm:
         extra_tools: Optional[Dict[str, Callable[..., str]]] = None,
         extra_schemas: Optional[List[Dict[str, object]]] = None,
         taint_tracker: Optional[TaintTracker] = None,
+        approval_gate: Optional[ApprovalGate] = None,
     ) -> None:
         self.llm = llm
         self.storage = storage
@@ -75,6 +77,7 @@ class PeerSwarm:
         self.extra_tools = extra_tools or {}
         self.extra_schemas = extra_schemas or []
         self.taint_tracker = taint_tracker or TaintTracker()
+        self.approval_gate = approval_gate
         self.nodes: Dict[str, PeerNode] = {}
         self._final_answer: Optional[str] = None
         self._recent_handoff_pairs: List[tuple[str, str]] = []
@@ -154,6 +157,7 @@ class PeerSwarm:
             yield_on_tools=["send_peer_message", "finish_swarm"],
             max_steps=CONFIG.max_coordinator_steps,
             taint_tracker=self.taint_tracker,
+            approval_gate=self.approval_gate,
         )
         coord_node = PeerNode(coord_worker)
         if "coordinator" in old_inboxes:
@@ -198,6 +202,7 @@ class PeerSwarm:
             yield_on_tools=["send_peer_message", "finish_swarm"],
             max_steps=spec.effective_max_steps,
             taint_tracker=self.taint_tracker,
+            approval_gate=self.approval_gate,
         )
         node = PeerNode(worker)
         if existing_inbox:
@@ -359,10 +364,9 @@ class PeerSwarm:
                                     recipient="coordinator",
                                     content=(
                                         f"[SYSTEM AUTO-CONTINUATION Cycle {continuation_count}]: Step batch completed. "
-                                        "Inspect workspace/ files (SPEC.md, TASKS.json, test execution results). "
-                                        "Continue dispatching tasks to pending specialists (coder, test_runner, critic) "
-                                        "until all software requirements and tests are 100% complete and verified, "
-                                        "then call finish_swarm with the final summary."
+                                        "Inspect workspace/ notes and gathered evidence across all mission objectives. "
+                                        "Continue dispatching subtasks to specialists if any mission requirements remain unverified, "
+                                        "or call finish_swarm with the comprehensive synthesized deliverable."
                                     ),
                                 )
                             )
@@ -405,7 +409,7 @@ class PeerSwarm:
                     inboxes=self._inbox_snapshot(),
                 )
 
-                history = past_turns if active_node.name == "coordinator" else None
+                history = past_turns if active_node.name == "coordinator" else (past_turns[-4:] if past_turns else None)
                 last_output = active_node.agent.execute_task(
                     inbox_prompt,
                     tenant_id=tenant_id,

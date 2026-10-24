@@ -29,25 +29,35 @@ import hmac
 import json
 import logging
 import os
+import secrets
 import sqlite3
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
-from core.config import CONFIG
+from core.config import CONFIG, WORKSPACE_DIR
 from core.storage import validate_tenant_id
 
 logger = logging.getLogger("neural_swarm.checkpoint")
 
+
 def get_checkpoint_hmac_secret() -> bytes:
-    """Retrieve checkpoint HMAC signing secret, failing closed if not configured."""
+    """Retrieve checkpoint HMAC signing secret from env/config or persistent workspace keyfile."""
     secret = os.getenv("CHECKPOINT_HMAC_SECRET") or getattr(CONFIG, "secret_key", None)
     if not secret:
-        raise RuntimeError(
-            "Security Configuration Error: CHECKPOINT_HMAC_SECRET must be set in the environment or config. "
-            "Refusing to use an insecure hardcoded fallback key."
-        )
+        key_file = WORKSPACE_DIR / ".checkpoint_hmac.key"
+        try:
+            if key_file.exists():
+                secret = key_file.read_text(encoding="utf-8").strip()
+            if not secret:
+                WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+                secret = secrets.token_hex(32)
+                key_file.write_text(secret, encoding="utf-8")
+        except Exception as exc:
+            raise RuntimeError(
+                f"Security Configuration Error: Failed to load or provision CHECKPOINT_HMAC_SECRET: {exc}"
+            ) from exc
     return secret.encode("utf-8") if isinstance(secret, str) else bytes(secret)
 
 
@@ -378,6 +388,38 @@ class CheckpointStore:
             count = cur.rowcount
             cur.execute("DELETE FROM idempotency_records WHERE tenant_id = ?", (tenant_id,))
             return count
+
+    def list_tenant_checkpoints(self, tenant_id: str, limit: int = 12) -> List[Dict[str, Any]]:
+        """List recent checkpoints for a tenant with HMAC verification status."""
+        validate_tenant_id(tenant_id)
+        with _connect_db(self.db_path) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT mission_id, tenant_id, step_number, status, topology, stage_index,
+                       accumulated_output, timestamp, hmac_signature
+                FROM mission_checkpoints
+                WHERE tenant_id = ?
+                ORDER BY timestamp DESC, step_number DESC
+                LIMIT ?
+                """,
+                (tenant_id, limit),
+            )
+            rows = cur.fetchall()
+        return [
+            {
+                "mission_id": r[0],
+                "tenant_id": r[1],
+                "step_number": int(r[2]),
+                "status": str(r[3]),
+                "topology": str(r[4]),
+                "stage_index": int(r[5]),
+                "summary": str(r[6])[:160],
+                "timestamp": float(r[7]),
+                "hmac_signature": str(r[8]),
+            }
+            for r in rows
+        ]
 
 
 class DurableMissionRunner:

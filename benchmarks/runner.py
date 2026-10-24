@@ -31,11 +31,41 @@ from core.budget import BudgetConfig, BudgetTracker
 from core.bus import EventBus
 from core.config import CONFIG
 from core.llm import LLMProvider, LLMResponse, OpenAICompatibleProvider, ToolCallRequest
+from core.meta_planner import TaskDrivenMetaPlanner
 from core.peer_swarm import PeerSwarm
 from core.roles import RoleRegistry
 from core.storage import SQLiteStorage
-from core.telemetry import UsageLedger
+from core.swarm import WorkerAgent
+from core.telemetry import UsageLedger, calculate_call_cost
 from tools import execute_tool
+
+
+class _MeteredProviderWrapper(LLMProvider):
+    """Wraps an LLMProvider to accumulate real prompt/completion tokens and USD cost per benchmark task."""
+
+    def __init__(self, inner: LLMProvider) -> None:
+        self.inner = inner
+        self.model = getattr(inner, "model", CONFIG.model_name)
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.cost_usd = 0.0
+
+    def generate(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        resp = self.inner.generate(messages=messages, tools=tools)
+        p = int(resp.prompt_tokens or 0)
+        c = int(resp.completion_tokens or 0)
+        self.prompt_tokens += p
+        self.completion_tokens += c
+        call_cost = float(getattr(resp, "cost_usd", 0.0) or 0.0)
+        if call_cost <= 0.0 and (p > 0 or c > 0):
+            call_cost = calculate_call_cost(self.model, p, c)
+        self.cost_usd += call_cost
+        return resp
 
 
 def get_git_commit_sha() -> str:
@@ -119,6 +149,14 @@ class SmokeBenchmarkRunner:
         self.tenant_id = tenant_id
 
     def run_all(self) -> Dict[str, Any]:
+        orig_exec = CONFIG.unsafe_allow_local_exec
+        CONFIG.unsafe_allow_local_exec = True
+        try:
+            return self._run_all_impl()
+        finally:
+            CONFIG.unsafe_allow_local_exec = orig_exec
+
+    def _run_all_impl(self) -> Dict[str, Any]:
         tasks = json.loads(self.tasks_file.read_text(encoding="utf-8"))
         results: List[TaskResult] = []
 
@@ -146,8 +184,63 @@ class SmokeBenchmarkRunner:
             cost = 0.0
 
             try:
-                # Direct tool execution or single-turn execution for evaluation
-                if allowed_tools and len(allowed_tools) == 1 and allowed_tools[0] in ("calculator", "run_python", "get_current_time", "get_weather"):
+                model_str = str(getattr(self.provider, "model", "") or "")
+                is_mock = model_str.startswith("mock")
+
+                if not is_mock:
+                    # Live LLM Evaluation Path: TaskDrivenMetaPlanner + Multi-Step WorkerAgent with real tool calls
+                    metered = _MeteredProviderWrapper(self.provider)
+                    bus = EventBus()
+                    storage = SQLiteStorage()
+                    budget = BudgetTracker(
+                        config=BudgetConfig(max_swarm_steps=10, max_steps_per_agent=6),
+                        bus=bus,
+                        tenant_id=self.tenant_id,
+                    )
+                    tool_outputs: List[str] = []
+
+                    def _capture_tool(ev: Any) -> None:
+                        if ev.event_type == "tool_result":
+                            ev_data = getattr(ev, "data", {}) or {}
+                            tool_outputs.append(str(ev_data.get("result", "")))
+
+                    bus.subscribe(_capture_tool)
+
+                    planner = TaskDrivenMetaPlanner(llm=metered)
+                    planned_spec = planner.plan_swarm(
+                        task_prompt=prompt,
+                        tenant_id=self.tenant_id,
+                        swarm_id=f"bench_{t_id.lower().replace('-', '_')}",
+                    )
+                    lead_role = planned_spec.roles[0] if planned_spec.roles else None
+                    eff_tools = (
+                        list(allowed_tools)
+                        if allowed_tools
+                        else (lead_role.resolve_effective_tools() if lead_role else [])
+                    )
+                    worker = WorkerAgent(
+                        name=lead_role.name if lead_role else "bench_specialist",
+                        role=(getattr(lead_role, "purpose", "") if lead_role else "") or "Benchmark Specialist",
+                        instructions=(
+                            f"{lead_role.instructions if lead_role else 'Solve the task accurately using your tools.'}\n"
+                            f"IMPORTANT: Always call the required tool(s) ({', '.join(allowed_tools)}) to execute the task "
+                            "or test the guardrail empirically, and include the exact tool result in your final answer."
+                        ),
+                        llm=metered,
+                        storage=storage,
+                        budget=budget,
+                        bus=bus,
+                        tool_names=eff_tools,
+                        max_steps=4,
+                    )
+                    agent_ans = worker.execute_task(task_prompt=prompt, tenant_id=self.tenant_id)
+                    combined_out = "\n".join([*tool_outputs, agent_ans]).strip()
+                    output = combined_out or agent_ans
+                    p_toks = metered.prompt_tokens
+                    c_toks = metered.completion_tokens
+                    cost = metered.cost_usd
+                    time.sleep(2.5)
+                elif allowed_tools and len(allowed_tools) == 1 and allowed_tools[0] in ("calculator", "run_python", "get_current_time", "get_weather"):
                     tool_name = allowed_tools[0]
                     # Direct deterministic probe of tool logic
                     if tool_name == "calculator":

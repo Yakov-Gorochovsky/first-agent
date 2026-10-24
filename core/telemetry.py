@@ -29,6 +29,9 @@ PRICING_TABLE: Dict[str, Dict[str, float]] = {
     "ollama": {"input": 0.0, "output": 0.0, "cached_input": 0.0},
     "mock-deterministic-v1": {"input": 0.0, "output": 0.0, "cached_input": 0.0},
     # Cloud models
+    "gemini-3.5-flash-lite": {"input": 0.075, "output": 0.30, "cached_input": 0.01875},
+    "gemini-3.5-flash": {"input": 0.10, "output": 0.40, "cached_input": 0.025},
+    "gemini-2.5-flash": {"input": 0.075, "output": 0.30, "cached_input": 0.01875},
     "gemini-2.0-flash": {"input": 0.075, "output": 0.30, "cached_input": 0.01875},
     "gemini-1.5-flash": {"input": 0.075, "output": 0.30, "cached_input": 0.01875},
     "gemini-1.5-pro": {"input": 1.25, "output": 5.00, "cached_input": 0.3125},

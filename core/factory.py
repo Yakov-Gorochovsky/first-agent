@@ -15,6 +15,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from core.approval import ApprovalGate
 from core.budget import BudgetConfig, BudgetTracker
 from core.bus import EventBus
 from core.config import CONFIG
@@ -157,6 +158,7 @@ class AgentFactory:
         bus: Optional[EventBus] = None,
         taint_tracker: Optional[TaintTracker] = None,
         storage: Optional[Any] = None,
+        approval_gate: Optional[ApprovalGate] = None,
     ) -> WorkerAgent:
         """Create a configured WorkerAgent bound to tenant isolation boundary."""
         tools_list = role_spec.resolve_effective_tools(self.tool_registry)
@@ -198,6 +200,7 @@ class AgentFactory:
             tool_names=tools_list,
             max_steps=role_spec.max_steps,
             taint_tracker=taint_tracker,
+            approval_gate=approval_gate,
         )
 
 
@@ -221,6 +224,8 @@ class SwarmFactory:
         bus: Optional[EventBus] = None,
         budget: Optional[BudgetTracker] = None,
         taint_tracker: Optional[TaintTracker] = None,
+        approval_gate: Optional[ApprovalGate] = None,
+        storage: Optional[Any] = None,
     ) -> BaseTopology:
         """Resolve and instantiate the multi-agent topology from SwarmSpec."""
         spec.validate(self.tool_registry)
@@ -241,6 +246,9 @@ class SwarmFactory:
             budget=active_budget,
             bus=bus,
             taint_tracker=active_taint,
+            storage=storage,
+            directive=spec.directive,
+            approval_gate=approval_gate,
         )
 
 

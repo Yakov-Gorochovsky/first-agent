@@ -132,3 +132,60 @@ def test_approval_denial_and_wrong_approver() -> None:
             rec2.request_id, "run_python", args2, expected_approver="authorized_admin"
         )
     assert "Approver mismatch" in str(exc.value)
+
+
+@pytest.mark.unit
+def test_worker_agent_live_approval_gate_interception(temp_storage) -> None:
+    """WorkerAgent pauses on high-risk tool execution, emits approval_required, and resumes after human approval."""
+    import threading
+    from core.budget import BudgetConfig, BudgetTracker
+    from core.bus import EventBus
+    from core.llm import LLMResponse, ToolCallRequest
+    from core.swarm import WorkerAgent
+    from tests.conftest import ScriptedMockLLM
+
+    gate = ApprovalGate(policy=ApprovalPolicy(high_risk="approve", default_timeout_sec=5.0))
+    bus = EventBus()
+    budget = BudgetTracker(config=BudgetConfig(), bus=bus)
+
+    def _auto_operator(event) -> None:
+        if event.event_type == "approval_required":
+            req_id = event.data["request_id"]
+            threading.Timer(0.05, lambda: gate.approve(req_id, approver="human_reviewer@org.com", reason="Verified safe")).start()
+
+    bus.subscribe(_auto_operator)
+
+    mock_llm = ScriptedMockLLM([
+        LLMResponse(
+            content="",
+            tool_calls=[
+                ToolCallRequest(
+                    id="tc_1",
+                    name="run_python",
+                    arguments={"code": "print(21 * 2)"},
+                )
+            ],
+        ),
+        LLMResponse(content="Approved calculation result: 42"),
+    ])
+
+    worker = WorkerAgent(
+        name="coder",
+        role="Engineer",
+        instructions="Run python when needed.",
+        llm=mock_llm,
+        storage=temp_storage,
+        budget=budget,
+        bus=bus,
+        tool_names=[],
+        extra_tools={"run_python": lambda code: "STDOUT:\n42"},
+        approval_gate=gate,
+    )
+
+    out = worker.execute_task("Compute 21 * 2 in python", tenant_id="tenant_live")
+    assert "42" in out
+    audit = gate.get_audit_trail(tenant_id="tenant_live")
+    statuses = [a["status"] for a in audit]
+    assert "PENDING" in statuses
+    assert "APPROVED" in statuses
+    assert "CONSUMED" in statuses

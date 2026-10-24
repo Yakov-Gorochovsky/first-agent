@@ -242,14 +242,15 @@ class DynamicRoleSpec:
     def max_steps(self) -> int:
         return int(self.limits.get("max_steps", CONFIG.max_steps_per_agent))
 
-    def resolve_effective_tools(self, tool_registry: ToolRegistry) -> List[str]:
+    def resolve_effective_tools(self, tool_registry: Optional[ToolRegistry] = None) -> List[str]:
         """Combine explicit tool_list and expanded capability bundles against registered tools."""
+        active_reg = tool_registry or GLOBAL_TOOL_REGISTRY
         resolved: Set[str] = set(self.tool_list)
 
         for cap in self.capabilities:
             norm_cap = cap.lower().strip()
             if norm_cap in {"@all", "all"}:
-                resolved.update([t.name for t in tool_registry.list_tools()])
+                resolved.update([t.name for t in active_reg.list_tools()])
             elif norm_cap in {"@web", "web"}:
                 resolved.update(["web_search", "fetch_url", "get_weather"])
             elif norm_cap in {"@code", "code"}:
@@ -258,11 +259,11 @@ class DynamicRoleSpec:
                 resolved.update(["save_note", "read_note", "list_notes"])
             elif norm_cap in {"@memory", "memory"}:
                 resolved.update(["remember_fact", "recall_memories"])
-            elif tool_registry.get(norm_cap):
+            elif active_reg.get(norm_cap):
                 resolved.add(norm_cap)
 
         # Filter only existing registered tools
-        return [name for name in resolved if tool_registry.get(name) is not None]
+        return [name for name in resolved if active_reg.get(name) is not None]
 
     def to_dict(self) -> Dict[str, Any]:
         return {
