@@ -390,8 +390,105 @@ def web_search(query: str) -> str:
         return f"Error searching the web for '{query}': {exc}"
 
 
-def fetch_url(url: str) -> str:
-    """Fetch a public webpage URL (SSRF & DNS-rebinding protected) and return readable text content."""
+class _DOMStructureInspector(HTMLParser):
+    """Extract structural DOM/HTML metadata (html attrs, meta, forms, inputs, scripts, links, iframes, aria/alt stats)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.html_attrs: Dict[str, str] = {}
+        self.title: str = ""
+        self._in_title = False
+        self.metas: List[str] = []
+        self.forms: List[str] = []
+        self.inputs: List[str] = []
+        self.buttons: List[str] = []
+        self.scripts: List[str] = []
+        self.stylesheets: List[str] = []
+        self.iframes: List[str] = []
+        self.img_total = 0
+        self.img_missing_alt = 0
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        ad = {k.lower(): (v or "") for k, v in attrs if k}
+        t = tag.lower()
+        if t == "html":
+            self.html_attrs = {k: v for k, v in ad.items() if k in ("lang", "dir", "class")}
+        elif t == "title":
+            self._in_title = True
+        elif t == "meta" and len(self.metas) < 12:
+            name = ad.get("name") or ad.get("property") or ad.get("http-equiv") or "charset"
+            content = ad.get("content") or ad.get("charset") or ""
+            self.metas.append(f"<meta {name}={content!r}>")
+        elif t == "form" and len(self.forms) < 8:
+            self.forms.append(
+                f"<form action={ad.get('action', '')!r} method={ad.get('method', 'get')!r} id={ad.get('id', '')!r}>"
+            )
+        elif t in ("input", "select", "textarea") and len(self.inputs) < 15:
+            self.inputs.append(
+                f"<{t} type={ad.get('type', 'text')!r} name={ad.get('name', '')!r} id={ad.get('id', '')!r} "
+                f"autocomplete={ad.get('autocomplete', '')!r} aria-label={ad.get('aria-label', '')!r} required={'required' in ad}>"
+            )
+        elif t == "button" and len(self.buttons) < 10:
+            self.buttons.append(
+                f"<button type={ad.get('type', '')!r} id={ad.get('id', '')!r} aria-label={ad.get('aria-label', '')!r}>"
+            )
+        elif t == "script" and ad.get("src") and len(self.scripts) < 12:
+            self.scripts.append(ad["src"])
+        elif t == "link" and ad.get("href") and len(self.stylesheets) < 10:
+            self.stylesheets.append(f"{ad.get('rel', 'link')}: {ad['href']}")
+        elif t == "iframe" and len(self.iframes) < 6:
+            self.iframes.append(ad.get("src", "<inline-iframe>"))
+        elif t == "img":
+            self.img_total += 1
+            if "alt" not in ad:
+                self.img_missing_alt += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "title":
+            self._in_title = False
+
+    def handle_data(self, data: str) -> None:
+        if self._in_title and not self.title:
+            self.title = data.strip()[:120]
+
+    def format_summary(self) -> str:
+        lines: List[str] = []
+        if self.html_attrs:
+            lines.append(f"- <html> attrs: {self.html_attrs}")
+        if self.title:
+            lines.append(f"- <title>: {self.title}")
+        if self.metas:
+            lines.append(f"- <meta> tags ({len(self.metas)}): " + "; ".join(self.metas))
+        if self.forms:
+            lines.append(f"- <form> tags ({len(self.forms)}): " + "; ".join(self.forms))
+        if self.inputs:
+            lines.append(f"- Form controls ({len(self.inputs)}): " + "; ".join(self.inputs))
+        if self.buttons:
+            lines.append(f"- <button> tags ({len(self.buttons)}): " + "; ".join(self.buttons))
+        if self.scripts:
+            lines.append(f"- External <script src> ({len(self.scripts)}): " + ", ".join(self.scripts))
+        if self.stylesheets:
+            lines.append(f"- <link> assets ({len(self.stylesheets)}): " + ", ".join(self.stylesheets))
+        if self.iframes:
+            lines.append(f"- <iframe> sources ({len(self.iframes)}): " + ", ".join(self.iframes))
+        if self.img_total > 0:
+            lines.append(f"- <img> count: {self.img_total} (missing alt: {self.img_missing_alt})")
+        return "\n".join(lines)
+
+
+def _extract_dom_metadata(html_content: str) -> str:
+    if "<" not in html_content:
+        return ""
+    inspector = _DOMStructureInspector()
+    try:
+        inspector.feed(html_content[:100_000])
+        return inspector.format_summary()
+    except Exception:
+        return ""
+
+
+def fetch_url(url: str, include_raw: bool = False) -> str:
+    """Fetch a public webpage URL (SSRF & DNS-rebinding protected) and return headers, structural DOM metadata, and readable or raw content."""
     try:
         safe_url, hostname, pinned_ip, port = _resolve_and_validate_public_url(url)
         headers = {
@@ -417,17 +514,24 @@ def fetch_url(url: str) -> str:
                 retry_config=RetryConfig(max_retries=3, initial_delay=1.0, max_delay=15.0),
                 retryable_exceptions=(requests.RequestException,),
             )
+        raw_body = getattr(resp, "text", "") or ""
         from core.cleaning import clean_html_to_markdown
-        text = clean_html_to_markdown(resp.text, max_chars=CONFIG.fetch_max_chars)
+        text = clean_html_to_markdown(raw_body, max_chars=CONFIG.fetch_max_chars)
+        dom_meta = _extract_dom_metadata(raw_body) if isinstance(raw_body, str) else ""
         status_line = f"HTTP {getattr(resp, 'status_code', 200)} {getattr(resp, 'reason', '')}".strip()
         headers_lines = [f"{k}: {v}" for k, v in getattr(resp, "headers", {}).items()]
         headers_block = "\n".join(headers_lines[:30])
         content_preview = text if text else "No readable text content found."
-        return (
-            f"[HTTP RESPONSE: {status_line}]\n"
-            f"[RESPONSE HEADERS]\n{headers_block}\n\n"
-            f"[PAGE CONTENT]\n{content_preview}"
-        )
+        sections = [
+            f"[HTTP RESPONSE: {status_line}]",
+            f"[RESPONSE HEADERS]\n{headers_block}",
+        ]
+        if dom_meta:
+            sections.append(f"[STRUCTURAL DOM / HTML METADATA]\n{dom_meta}")
+        sections.append(f"[PAGE CONTENT]\n{content_preview}")
+        if include_raw and isinstance(raw_body, str) and raw_body.strip():
+            sections.append(f"[RAW RESPONSE BODY SNIPPET]\n{raw_body[:CONFIG.fetch_max_chars]}")
+        return "\n\n".join(sections)
     except Exception as exc:
         return f"Error fetching URL '{url}': {exc}"
 
@@ -745,14 +849,22 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "fetch_url",
-            "description": "Fetch and extract the readable text content of any public HTTP/HTTPS web page URL.",
+            "description": (
+                "Fetch a public HTTP/HTTPS URL and return status code, response headers, "
+                "structural HTML/DOM metadata (<meta>, <form>, <input>, <script src>, <link>, <iframe>, <html> attrs), "
+                "and readable text. Pass include_raw=True when you need the raw unstripped HTML/source snippet."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "url": {
                         "type": "string",
-                        "description": "Full public HTTP/HTTPS URL to read.",
-                    }
+                        "description": "Full public HTTP/HTTPS URL to inspect.",
+                    },
+                    "include_raw": {
+                        "type": "boolean",
+                        "description": "Set true to include the raw unstripped HTML/response body snippet.",
+                    },
                 },
                 "required": ["url"],
             },

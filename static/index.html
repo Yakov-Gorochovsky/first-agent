@@ -1113,6 +1113,7 @@
     const spawnHighlights = {};       // nodeKey -> { start, duration, color }
     const recentSpawnedRoles = {};    // roleName -> expiryTimestamp
     const integratedLinks = {};       // canonKey -> { from, to, color, count, lastActive, label, isCross }
+    const missionDynamicRoles = {};   // swarmId -> { roleName: roleObj }
 
     function nodeId(swarmId, agentName) {
       const a = (agentName === 'orchestrator' || agentName === 'user') ? 'coordinator' : agentName;
@@ -1887,6 +1888,19 @@
       const swarms = data.swarms || [];
       const roles = data.roles || [];
 
+      // Merge any dynamically planned or mid-mission spawned roles so refreshState() never erases them
+      Object.entries(missionDynamicRoles).forEach(([sId, dynMap]) => {
+        const sObj = swarms.find(s => s.swarm_id === sId);
+        Object.values(dynMap || {}).forEach(dynRole => {
+          if (!roles.some(r => r.name === dynRole.name)) {
+            roles.push(dynRole);
+          }
+          if (sObj && Array.isArray(sObj.roles) && sObj.roles.length > 0 && !sObj.roles.includes(dynRole.name)) {
+            sObj.roles.push(dynRole.name);
+          }
+        });
+      });
+
       // Populate Active Swarm dropdown dynamically from deployed swarms
       const prevVal = sel.value;
       sel.innerHTML = swarms
@@ -2165,6 +2179,9 @@
     }
 
     async function deleteRole(name) {
+      Object.values(missionDynamicRoles).forEach(dynMap => {
+        if (dynMap && dynMap[name]) delete dynMap[name];
+      });
       await fetch('/api/roles/delete', {
         method: 'POST',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
@@ -2199,16 +2216,21 @@
       if (etype === 'role_created') {
         const rObj = d.role || {};
         const rName = rObj.name;
-        if (rName && !cachedRoles.some(r => r.name === rName)) {
-          cachedRoles.push({
+        const targetSwarm = ev.tenant_id || document.getElementById('tenantSelect').value || 'default';
+        if (rName) {
+          const normalizedRole = {
             name: rName,
             title: rObj.title || rName,
             color: rObj.color || '#00f0ff',
-            max_steps: rObj.max_steps || 6,
+            max_steps: rObj.max_steps || 16,
             capabilities: rObj.capabilities || [],
-          });
+          };
+          if (!missionDynamicRoles[targetSwarm]) missionDynamicRoles[targetSwarm] = {};
+          missionDynamicRoles[targetSwarm][rName] = normalizedRole;
+          if (!cachedRoles.some(r => r.name === rName)) {
+            cachedRoles.push(normalizedRole);
+          }
         }
-        const targetSwarm = ev.tenant_id || document.getElementById('tenantSelect').value || 'default';
         const sMatch = cachedSwarms.find(s => s.swarm_id === targetSwarm);
         if (sMatch && rName && !(sMatch.roles || []).includes(rName)) {
           sMatch.roles = [...(sMatch.roles || []), rName];
@@ -2218,12 +2240,26 @@
           const spawnedKey = nodeId(targetSwarm, rName);
           const hubKey = nodeId(targetSwarm, 'coordinator');
           triggerSpawnHighlight(spawnedKey, rName, rObj.color || '#00f0ff', hubKey);
-          appendLog('skill_learned', `[${targetSwarm.toUpperCase()}] ✦ DYNAMIC ROLE PLANNED`, `${rName} (${rObj.title || rName}) · max_steps=${rObj.max_steps || 6}`);
+          appendLog('skill_learned', `[${targetSwarm.toUpperCase()}] ✦ DYNAMIC ROLE PLANNED`, `${rName} (${rObj.title || rName}) · max_steps=${rObj.max_steps || 16}`);
         }
       } else if (etype === 'mission_planned') {
+        const targetSwarm = ev.tenant_id || document.getElementById('tenantSelect').value || 'default';
+        if (!missionDynamicRoles[targetSwarm]) missionDynamicRoles[targetSwarm] = {};
+        (d.roles || []).forEach(rObj => {
+          if (rObj && rObj.name) {
+            missionDynamicRoles[targetSwarm][rObj.name] = {
+              name: rObj.name,
+              title: rObj.purpose || rObj.title || rObj.name,
+              color: rObj.color || '#00f0ff',
+              max_steps: (rObj.limits && rObj.limits.max_steps) || rObj.max_steps || 16,
+              capabilities: rObj.capabilities || [],
+            };
+          }
+        });
         const roleNames = (d.roles || []).map(r => r.name).join(', ');
         document.getElementById('swarmStatusPill').textContent = `PLANNED · ${String(d.topology || 'PEER').toUpperCase()} TEAM [${roleNames}]`;
         appendLog('skill_learned', `[${sId.toUpperCase()}] META-PLANNER SPEC`, `${d.title || 'Dynamic Swarm'} (${d.topology}) -> Roles: [${roleNames}]`);
+        refreshState();
       } else if (etype === 'checkpoint_saved') {
         const sigShort = String(d.hmac_signature || '').slice(0, 12);
         appendLog('tool_result', `[${sId.toUpperCase()}] HMAC CHECKPOINT #${d.step_number}`, `Status: ${d.status} · HMAC-SHA256: ${sigShort}...`);

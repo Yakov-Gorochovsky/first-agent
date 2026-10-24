@@ -163,3 +163,42 @@ def test_fetch_url_rate_limiting_retry(monkeypatch):
     assert call_count == 2
     assert "Target Verified" in result
 
+
+@pytest.mark.unit
+def test_fetch_url_structural_dom_and_include_raw(monkeypatch) -> None:
+    """Verify fetch_url extracts structural DOM metadata and supports include_raw=True."""
+    import requests
+
+    html_sample = (
+        '<html lang="he" dir="rtl"><head><title>Portal Login</title>'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        '<script src="/assets/app.bundle.js"></script></head>'
+        '<body><form action="/auth" method="post" id="loginForm">'
+        '<input type="password" name="pwd" id="pwdInput" required>'
+        '<button type="submit" id="loginBtn">Login</button></form></body></html>'
+    )
+
+    class DummyResp:
+        status_code = 200
+        reason = "OK"
+        text = html_sample
+        headers = {"Content-Type": "text/html"}
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: DummyResp())
+    monkeypatch.setattr("tools._resolve_and_validate_public_url", lambda url: (url, "example.com", "93.184.216.34", 80))
+
+    res_default = fetch_url("https://example.com/login")
+    assert "[STRUCTURAL DOM / HTML METADATA]" in res_default
+    assert "viewport" in res_default
+    assert "/assets/app.bundle.js" in res_default
+    assert "loginForm" in res_default
+    assert "[RAW RESPONSE BODY SNIPPET]" not in res_default
+
+    res_raw = fetch_url("https://example.com/login", include_raw=True)
+    assert "[RAW RESPONSE BODY SNIPPET]" in res_raw
+    assert '<form action="/auth"' in res_raw
+
+

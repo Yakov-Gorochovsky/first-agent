@@ -199,11 +199,13 @@ class RoleRegistry:
             capabilities: Optional[List[str]] = None,
             max_steps: Optional[int] = None,
         ) -> str:
+            base_caps = capabilities if capabilities else ["@web", "@code", "@files", "@memory"]
+            merged_caps = list(dict.fromkeys([*base_caps, "@files", "@memory"]))
             spec = self.register_role(
                 name=name,
                 title=title,
                 instructions=instructions,
-                capabilities=capabilities or ["@web", "@code"],
+                capabilities=merged_caps,
                 color="#00f0ff",
                 max_steps=max_steps,
             )
@@ -219,36 +221,44 @@ class RoleRegistry:
             "function": {
                 "name": "spawn_specialist",
                 "description": (
-                    "Dynamically create and recruit a new specialist agent role when the current team "
-                    "lacks a needed persona (e.g., 'security_auditor', 'data_scientist', 'copywriter')."
+                    "Dynamically create and recruit a new specialist agent role to test a specific hypothesis, "
+                    "attack vector, or domain angle discovered during reconnaissance.\n"
+                    "CRITICAL CAPABILITY RULES:\n"
+                    "- '@web' (fetch_url, web_search): REQUIRED if the specialist needs to probe live URLs, HTTP headers, endpoints, or raw HTML/DOM (via fetch_url(url, include_raw=True)).\n"
+                    "- '@code' (run_python, calculator): Runs in an OFFLINE sandbox (no internet access). Use for computation, parsing, or local scripts.\n"
+                    "- '@files' & '@memory': Automatically included for workspace notes and shared memory."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "name": {
                             "type": "string",
-                            "description": "Short snake_case identifier (e.g., 'sql_analyst').",
+                            "description": "Short snake_case identifier (e.g., 'cors_prober', 'dom_inspector', 'sql_analyst').",
                         },
                         "title": {
                             "type": "string",
-                            "description": "Human-readable role title (e.g., 'SQL & Data Analyst').",
+                            "description": "Human-readable role title.",
                         },
                         "instructions": {
                             "type": "string",
-                            "description": "System prompt instructions defining how this specialist works.",
+                            "description": (
+                                "Actionable operational briefing for the specialist: specify (1) the exact hypothesis or vector to test, "
+                                "(2) which tools to actively run (do NOT tell it to merely read/summarize prior notes), and "
+                                "(3) what empirical evidence to verify and save."
+                            ),
                         },
                         "capabilities": {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": (
-                                "List of capability bundles: '@web', '@code', '@files', '@memory', or '@all'."
+                                "List of capability bundles: '@web' (required for any live URL/DOM/network probing), "
+                                "'@code' (offline Python/math sandbox), '@files', '@memory', or '@all'."
                             ),
                         },
                         "max_steps": {
                             "type": "integer",
                             "description": (
-                                "Maximum LLM steps allowed for this specialist per run "
-                                "(e.g., 10-12 for broad multi-query researchers, 5-6 for focused task/attack specialists)."
+                                "Maximum LLM steps allowed for this specialist per run (default 12-16)."
                             ),
                         },
                     },

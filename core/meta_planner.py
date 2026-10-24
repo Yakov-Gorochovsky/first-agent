@@ -165,14 +165,20 @@ class TaskDrivenMetaPlanner:
 
         system_prompt = (
             "You are an expert Multi-Agent Systems Architect. Your job is to decompose any task "
-            "into a minimal, highly capable team of autonomous specialist agents.\n\n"
-            "Guidelines:\n"
+            "into a high-agency team of autonomous specialist agents that actively test hypotheses rather than writing passive summaries.\n\n"
+            "Tool-Contract & Capability Rules:\n"
+            "- '@web' (fetch_url, web_search): REQUIRED for any role that inspects live URLs, HTTP headers, endpoints, or raw HTML/DOM structure (`fetch_url(url, include_raw=True)`).\n"
+            "- '@code' (run_python, calculator): Runs in an OFFLINE sandbox (no internet access). Use for computation, parsing workspace notes, regex/AST analysis, or local test scripts. If a role needs both live URL probing and Python analysis, give it BOTH '@web' and '@code'.\n"
+            "- '@files' (save_note, read_note, list_notes) & '@memory' (remember_fact, recall_memories): Include on all roles so specialists share artifacts.\n\n"
+            "Team Design Guidelines:\n"
             "1. Choose the most effective topology ('orchestrator', 'peer', 'pipeline', or 'review_loop').\n"
-            "2. Define 2 to 4 specialized roles with precise instructions.\n"
-            "3. Assign appropriate capabilities ('@web', '@code', '@files', '@memory'). Always include '@files' and '@memory' when specialists need to save/read workspace notes (e.g. 'audit_recon.txt') or share facts.\n"
-            "4. Allocate generous step and token budgets so multi-step tool chains and final verification complete without cutoff (e.g., max_steps: 12-16 per role, max_swarm_steps: 64, max_total_tokens: 120000).\n"
-            "5. Do NOT hallucinate capabilities outside the standard set.\n"
-            "6. Return strictly conforming JSON adhering to the SwarmSpec schema."
+            "2. Design a Discovery -> Active Probing -> Verification workflow:\n"
+            "   - Lead with a recon/discovery role (e.g. 'researcher') instructed to map the target empirically, research failure modes/attack vectors, and output a numbered Test Vector Manifest.\n"
+            "   - Define domain specialists instructed to actively probe, test, or compute new evidence for each vector using their tools (never merely re-summarizing prior notes).\n"
+            "   - Include a verification role ('critic') to reject generic textbook claims and verify empirical tool proof.\n"
+            "3. Allocate generous step and token budgets (e.g., max_steps: 12-16 per role, max_swarm_steps: 64, max_total_tokens: 120000).\n"
+            "4. Do NOT hallucinate capabilities outside ['@web', '@code', '@files', '@memory'].\n"
+            "5. Return strictly conforming JSON adhering to the SwarmSpec schema."
         )
 
         user_prompt = (

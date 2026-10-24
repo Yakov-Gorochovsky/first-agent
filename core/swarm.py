@@ -179,9 +179,19 @@ class WorkerAgent:
     ) -> str:
         """Run the Think -> Act -> Observe loop for this agent under budget constraints."""
         include_skills = self.name not in ("coordinator", "orchestrator")
+        specialist_doctrine = (
+            "\n\n[SPECIALIST OPERATIONAL DOCTRINE]:\n"
+            "1. ACTIVE PROBING OVER PASSIVE SUMMARY: Prior notes/context show what earlier agents found. Do NOT merely rephrase or summarize prior notes. Use your own tools (`fetch_url`, `web_search`, `run_python`, `calculator`, `read_note`, `save_note`) to actively test hypotheses, probe new endpoints/paths, inspect raw structure, or run computations.\n"
+            "2. TOOL CONTRACTS: `fetch_url(url, include_raw=True)` returns HTTP headers, a `[STRUCTURAL DOM / HTML METADATA]` breakdown (`<meta>`, `<form>`, `<input>`, `<script src>`, `<link>`, `<iframe>`), and the raw unstripped HTML/body snippet. `run_python` runs in an offline sandbox (no internet sockets) for local parsing, math, or test execution.\n"
+            "3. ZERO TEXTBOOK FILLER: Never write generic advice about what a system 'should' or 'must' do in theory. Only report what you empirically observed in tool outputs, quoting exact values, headers, HTML tags, status codes, or computed numbers.\n"
+            "4. ARTIFACT PERSISTENCE: Save your verified findings to workspace notes via `save_note` when requested, and return a structured, evidence-backed report."
+            if include_skills
+            else ""
+        )
         system_prompt = (
             f"You are '{self.name}' ({self.role}).\n"
             f"{self.instructions}"
+            f"{specialist_doctrine}"
             f"{_build_context_block(self.storage, tenant_id, include_skills=include_skills)}"
         )
 

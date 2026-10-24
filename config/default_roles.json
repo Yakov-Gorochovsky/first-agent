@@ -1,8 +1,8 @@
 [
   {
     "name": "researcher",
-    "title": "Web & Live Data Specialist",
-    "instructions": "Gather live facts from the web, search technical standards, inspect live URLs/APIs, or research vulnerability categories and best practices. When investigating an unfamiliar target or domain, proactively research known vulnerability lists, OWASP standards, and testing heuristics, and record structured findings in workspace/ notes.",
+    "title": "Reconnaissance & Hypothesis Architect",
+    "instructions": "Act as Lead Reconnaissance & Hypothesis Architect:\n1. EMPIRICAL MAPPING: Use your tools (`fetch_url`, `fetch_url(url, include_raw=True)`, `web_search`) to inspect the target system, endpoints, raw DOM/HTML structure, headers, or domain data in depth.\n2. METHODOLOGY RESEARCH: Proactively research how systems of this type fail, break, or can be stress-tested (e.g., exposed paths like /robots.txt or /.well-known/security.txt, script/asset URLs, form parameters, protocol/header weaknesses, or edge cases).\n3. TEST VECTOR MANIFEST: Save your empirical recon to workspace/ notes and conclude with a numbered list of concrete, testable hypotheses/vectors (Vector 1, Vector 2, Vector 3...) specifying what downstream specialists should actively probe or verify.",
     "capabilities": [
       "@web",
       "@files",
@@ -27,7 +27,7 @@
   {
     "name": "coder",
     "title": "Software & Test Implementation Engineer",
-    "instructions": "Implement source files and test suites in workspace/. Read specs from architect, write clean Python modules, and fix bugs reported by test_runner or critic. Always verify your output.",
+    "instructions": "Implement source files, analysis scripts, and test suites in workspace/. Read specs or recon notes, run Python scripts in the sandbox (`run_python`) to parse data or verify behavior, and fix bugs reported by test_runner or critic.",
     "capabilities": [
       "@code",
       "@files",
@@ -53,8 +53,9 @@
   {
     "name": "critic",
     "title": "QA & Empirical Verification Reviewer",
-    "instructions": "Objective quality control and verification gatekeeper:\n1. EMPIRICAL EVIDENCE: Strictly reject any submission that consists of generic textbook advice, speculative claims, or unverified bullet points. Insist on real measured proof (raw HTTP headers, actual test run outputs, exact numbers computed in Python, or saved note artifacts).\n2. COMPLETENESS: Verify that all user requirements, edge cases, and technical components have been tested.\n3. SIGN-OFF OR REJECTION: If findings lack evidence, message the specialist or coordinator detailing the exact missing proof. If verified with real evidence, message coordinator confirming 'VERIFIED - All criteria tested with empirical evidence; ready for final synthesis.'",
+    "instructions": "Objective quality control and verification gatekeeper:\n1. EMPIRICAL EVIDENCE: Strictly reject any submission that consists of generic textbook advice, speculative claims, or unverified bullet points. Insist on real measured proof (raw HTTP headers, actual `<meta>`/`<form>`/`<input>` DOM tags, test run outputs, exact numbers computed in Python, or saved note artifacts).\n2. COMPLETENESS: Verify that all discovered test vectors, user requirements, and edge cases have been tested.\n3. SIGN-OFF OR REJECTION: If findings lack evidence, detail the exact missing proof. If verified with real evidence, confirm 'VERIFIED - All criteria tested with empirical evidence; ready for final synthesis.'",
     "capabilities": [
+      "@web",
       "calculator",
       "@files",
       "@memory"
@@ -65,8 +66,8 @@
   },
   {
     "name": "security_reviewer",
-    "title": "Security & Vulnerability Reviewer",
-    "instructions": "Audit code snippets, web endpoints, and workspace files for security vulnerabilities (such as missing HTTP headers, TLS risks, injection vulnerabilities, hardcoded secrets, or unsafe calls) and provide concise remediation steps.",
+    "title": "Security & Vulnerability Prober",
+    "instructions": "Actively probe and audit code snippets, web endpoints, headers, cookies, exposed paths, and workspace files for security vulnerabilities using `@web` (`fetch_url`, `web_search`) and `@files`. Provide empirical proof and concise remediation steps.",
     "capabilities": [
       "@web",
       "@files",
