@@ -127,6 +127,14 @@ class IntegratedMissionRunner:
         )
         if topology_override and topology_override.lower().strip() not in ("", "auto"):
             planned_spec.topology = topology_override.lower().strip()
+        elif (
+            not str(getattr(self.llm, "model", "")).startswith("mock")
+            and planned_spec.topology == "orchestrator"
+            and len(planned_spec.roles) >= 3
+        ):
+            # Multi-specialist teams (>=3 roles: discovery + specialists + verification)
+            # operate as a collaborative peer mesh network so agents hand off directly.
+            planned_spec.topology = "peer"
 
         if not str(getattr(self.llm, "model", "")).startswith("mock"):
             planned_spec.budgets.max_swarm_steps = min(
@@ -136,7 +144,7 @@ class IntegratedMissionRunner:
                 planned_spec.budgets.max_steps_per_agent, CONFIG.max_steps_per_agent
             )
             planned_spec.budgets.max_total_tokens = min(
-                max(planned_spec.budgets.max_total_tokens, CONFIG.max_total_tokens), 200_000
+                max(planned_spec.budgets.max_total_tokens, CONFIG.max_total_tokens), 500_000
             )
             for r in planned_spec.roles:
                 r.limits["max_steps"] = max(r.max_steps, CONFIG.max_steps_per_agent)

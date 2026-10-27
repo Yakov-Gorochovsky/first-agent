@@ -37,8 +37,13 @@ SWARM_SPEC_SCHEMA: Dict[str, Any] = {
         },
         "topology": {
             "type": "string",
-            "enum": ["orchestrator", "peer", "pipeline", "review_loop"],
-            "description": "Selected communication topology best suited for the task.",
+            "enum": ["peer", "orchestrator", "pipeline", "review_loop"],
+            "description": (
+                "Selected communication topology: 'peer' (mesh network with direct peer-to-peer handoffs for multi-specialist discovery, analysis, coding, or audits), "
+                "'pipeline' (strictly linear sequential stage transformation), "
+                "'review_loop' (2-role generator-reviewer iterative refinement), or "
+                "'orchestrator' (simple 1-2 worker independent fan-out)."
+            ),
         },
         "directive": {
             "type": "string",
@@ -90,9 +95,9 @@ class SwarmGenerationValidator:
     def __init__(
         self,
         allowed_capabilities: Optional[Set[str]] = None,
-        max_allowed_steps: int = 96,
-        max_allowed_tokens: int = 160_000,
-        max_allowed_cost_usd: float = 5.0,
+        max_allowed_steps: int = 128,
+        max_allowed_tokens: int = 500_000,
+        max_allowed_cost_usd: float = 10.0,
         tool_registry: Optional[ToolRegistry] = None,
     ) -> None:
         self.allowed_capabilities = allowed_capabilities or {"@web", "@code", "@files", "@memory"}
@@ -166,19 +171,22 @@ class TaskDrivenMetaPlanner:
         system_prompt = (
             "You are an expert Multi-Agent Systems Architect. Your job is to decompose any task "
             "into a high-agency team of autonomous specialist agents that actively test hypotheses rather than writing passive summaries.\n\n"
+            "Topology Selection Logic (Analyze Task Structure First):\n"
+            "- 'peer' (Decentralized Mesh Network — PREFERRED for >=3 roles): Choose 'peer' whenever the task requires discovery/reconnaissance followed by multiple domain specialists, cross-disciplinary analysis, software architecture + coding + QA, or empirical verification where specialists hand off findings peer-to-peer.\n"
+            "- 'pipeline' (Sequential Chain): Choose ONLY when the task is a strictly linear stage-by-stage data transformation (Stage 1 -> Stage 2 -> Stage 3) with no branching or dynamic recruitment.\n"
+            "- 'review_loop' (Generator-Reviewer Loop): Choose ONLY when a single producer role drafts one artifact and a single reviewer role iteratively critiques it.\n"
+            "- 'orchestrator' (Hub-and-Spoke): Choose ONLY for simple 1-2 role tasks where sub-questions are completely independent.\n\n"
             "Tool-Contract & Capability Rules:\n"
             "- '@web' (fetch_url, web_search): REQUIRED for any role that inspects live URLs, HTTP headers, endpoints, or raw HTML/DOM structure (`fetch_url(url, include_raw=True)`).\n"
             "- '@code' (run_python, calculator): Runs in an OFFLINE sandbox (no internet access). Use for computation, parsing workspace notes, regex/AST analysis, or local test scripts. If a role needs both live URL probing and Python analysis, give it BOTH '@web' and '@code'.\n"
             "- '@files' (save_note, read_note, list_notes) & '@memory' (remember_fact, recall_memories): Include on all roles so specialists share artifacts.\n\n"
-            "Team Design Guidelines:\n"
-            "1. Choose the most effective topology ('orchestrator', 'peer', 'pipeline', or 'review_loop').\n"
-            "2. Design a Discovery -> Active Probing -> Verification workflow:\n"
-            "   - Lead with a recon/discovery role (e.g. 'researcher') instructed to map the target empirically, research failure modes/attack vectors, and output a numbered Test Vector Manifest.\n"
-            "   - Define domain specialists instructed to actively probe, test, or compute new evidence for each vector using their tools (never merely re-summarizing prior notes).\n"
-            "   - Include a verification role ('critic') to reject generic textbook claims and verify empirical tool proof.\n"
-            "3. Allocate generous step and token budgets (e.g., max_steps: 12-16 per role, max_swarm_steps: 64, max_total_tokens: 120000).\n"
-            "4. Do NOT hallucinate capabilities outside ['@web', '@code', '@files', '@memory'].\n"
-            "5. Return strictly conforming JSON adhering to the SwarmSpec schema."
+            "Team Design & Divide-and-Conquer Rules:\n"
+            "1. Lead with a Discovery / Recon role instructed to map the root target/problem empirically, save initial findings in workspace/, and output a numbered Hypothesis / Test Vector Manifest.\n"
+            "2. Define distinct Domain Specialists with non-overlapping responsibilities. Instruct downstream specialists NOT to repeat the discovery agent's root query, but to deepen the analysis by probing discovered sub-resources, child endpoints, referenced scripts/files, edge cases, or running domain computations.\n"
+            "3. Include an Empirical Verification / Critic role to reject generic textbook claims and verify that every finding cites measured tool output.\n"
+            "4. Allocate step and token budgets (e.g., max_steps: 12-16 per role, max_swarm_steps: 64, max_total_tokens: 300000).\n"
+            "5. Do NOT hallucinate capabilities outside ['@web', '@code', '@files', '@memory'].\n"
+            "6. Return strictly conforming JSON adhering to the SwarmSpec schema."
         )
 
         user_prompt = (

@@ -43,6 +43,64 @@ def _build_context_block(storage: StorageBackend, tenant_id: str, include_skills
     return ("\n\n" + "\n\n".join(sections)) if sections else ""
 
 
+def _get_compact_session_history(
+    storage: StorageBackend, tenant_id: str, user_input: str
+) -> List[Dict[str, str]]:
+    """Return lean session history: full recent context on 'continue' prompts, compact on new missions."""
+    clean_input = user_input.strip().lower()
+    is_continuation = clean_input.startswith(("continue", "resume", "proceed", "go on")) or len(clean_input) < 24
+    raw_turns = storage.get_session_turns(tenant_id, limit=6 if is_continuation else 2)
+    if not raw_turns:
+        return []
+    if not is_continuation:
+        # For a brand-new standalone mission, avoid re-injecting multi-thousand-token prior reports
+        return []
+    max_chars = 2000
+    compact: List[Dict[str, str]] = []
+    for t in raw_turns:
+        content = str(t.get("content", ""))
+        if len(content) > max_chars:
+            content = content[:max_chars] + "\n...[truncated prior turn]..."
+        compact.append({"role": str(t.get("role", "user")), "content": content})
+    return compact
+
+
+def _synthesize_executive_fallback(
+    llm: LLMProvider,
+    user_input: str,
+    findings: List[str],
+    reason: str = "",
+) -> str:
+    """Perform a single tool-less synthesis call over collected specialist findings if budget expires mid-run."""
+    joined_findings = "\n\n".join(findings)
+    try:
+        synth_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are the Lead Swarm Synthesizer. Multiple specialist agents have completed their empirical "
+                    "investigations and gathered the findings below. Synthesize all verified evidence, concrete artifacts, "
+                    "and prioritized recommendations into a clear, comprehensive final report answering the user's request."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"ORIGINAL MISSION REQUEST:\n{user_input}\n\n"
+                    f"GATHERED SPECIALIST FINDINGS:\n{joined_findings}\n\n"
+                    "Produce the complete, structured executive synthesis now."
+                ),
+            },
+        ]
+        resp = llm.generate(messages=synth_messages, tools=None)
+        if resp.content and resp.content.strip():
+            return resp.content.strip()
+    except Exception:
+        pass
+    suffix = f"\n\n[Note: {reason}]" if reason else ""
+    return f"{joined_findings}{suffix}"
+
+
 class WorkerAgent:
     """A specialized agent node with its own role, toolset, and budget enforcement."""
 
@@ -182,9 +240,10 @@ class WorkerAgent:
         specialist_doctrine = (
             "\n\n[SPECIALIST OPERATIONAL DOCTRINE]:\n"
             "1. ACTIVE PROBING OVER PASSIVE SUMMARY: Prior notes/context show what earlier agents found. Do NOT merely rephrase or summarize prior notes. Use your own tools (`fetch_url`, `web_search`, `run_python`, `calculator`, `read_note`, `save_note`) to actively test hypotheses, probe new endpoints/paths, inspect raw structure, or run computations.\n"
-            "2. TOOL CONTRACTS: `fetch_url(url, include_raw=True)` returns HTTP headers, a `[STRUCTURAL DOM / HTML METADATA]` breakdown (`<meta>`, `<form>`, `<input>`, `<script src>`, `<link>`, `<iframe>`), and the raw unstripped HTML/body snippet. `run_python` runs in an offline sandbox (no internet sockets) for local parsing, math, or test execution.\n"
-            "3. ZERO TEXTBOOK FILLER: Never write generic advice about what a system 'should' or 'must' do in theory. Only report what you empirically observed in tool outputs, quoting exact values, headers, HTML tags, status codes, or computed numbers.\n"
-            "4. ARTIFACT PERSISTENCE: Save your verified findings to workspace notes via `save_note` when requested, and return a structured, evidence-backed report."
+            "2. PROGRESSIVE DEEPENING (NO REDUNDANT ROOT QUERIES): If an earlier discovery/recon agent already fetched the root resource or mapped the initial dataset, do NOT repeat the exact same root query. Instead, deepen the analysis by fetching discovered sub-resources, child endpoints, referenced scripts/stylesheets/configs, secondary files, or running new domain computations.\n"
+            "3. TOOL CONTRACTS: `fetch_url(url, include_raw=True)` returns HTTP headers, a `[STRUCTURAL DOM / HTML METADATA]` breakdown (`<meta>`, `<form>`, `<input>`, `<script src>`, `<link>`, `<iframe>`), and the raw unstripped HTML/body snippet. `run_python` runs in an offline sandbox (no internet sockets) for local parsing, math, or test execution.\n"
+            "4. ZERO TEXTBOOK FILLER: Never write generic advice about what a system 'should' or 'must' do in theory. Only report what you empirically observed in tool outputs, quoting exact values, headers, HTML tags, status codes, or computed numbers.\n"
+            "5. ARTIFACT PERSISTENCE: Save your verified findings to workspace notes via `save_note` when requested, and return a structured, evidence-backed report."
             if include_skills
             else ""
         )
@@ -204,6 +263,7 @@ class WorkerAgent:
         last_error_tool: Optional[tuple[str, str]] = None
         collected_observations: List[str] = []
         empty_resource_retries: Dict[str, int] = {}
+        seen_tool_calls: Dict[str, int] = {}
         MAX_EMPTY_RETRIES = 2
         run_python_calls = 0
         local_turn = 0
@@ -394,6 +454,16 @@ class WorkerAgent:
                             f"Synthesize using in-memory observations or proceed with the workflow."
                         )
 
+                if tc.name in ("fetch_url", "web_search", "read_note", "list_notes"):
+                    call_sig = f"{tc.name}:{json.dumps(tc.arguments or {}, sort_keys=True)}"
+                    seen_tool_calls[call_sig] = seen_tool_calls.get(call_sig, 0) + 1
+                    if seen_tool_calls[call_sig] >= 2:
+                        result += (
+                            f"\n[DUPLICATE CALL NOTICE: You already called `{tc.name}` with these exact arguments "
+                            f"in this turn. Do NOT repeat identical queries; probe a different sub-resource/vector "
+                            f"or synthesize your findings now.]"
+                        )
+
                 if tc.name == "run_python":
                     run_python_calls += 1
                     if run_python_calls >= 2:
@@ -444,6 +514,25 @@ class WorkerAgent:
                     react_observations.append(f"Observation from {tc.name}: {result}")
 
             if any(tc.name in self.yield_on_tools for tc in resp.tool_calls):
+                yield_summary = resp.content.strip() if resp.content else ""
+                if not yield_summary:
+                    for tc in resp.tool_calls:
+                        if tc.name in self.yield_on_tools and isinstance(tc.arguments, dict):
+                            yield_summary = str(
+                                tc.arguments.get("final_answer")
+                                or tc.arguments.get("message")
+                                or ""
+                            )[:500]
+                            break
+                self.bus.emit(
+                    "agent_finish",
+                    agent_name=self.name,
+                    tenant_id=tenant_id,
+                    answer=yield_summary,
+                )
+                self.storage.log_trace(
+                    tenant_id, self.name, "agent_finish", {"answer": yield_summary[:500]}
+                )
                 return ""
 
             if resp.used_react_fallback:
@@ -576,7 +665,10 @@ class OrchestratorSwarm:
                 role=spec.to_dict(),
             )
 
-        spawn_fn, spawn_schema = self.role_registry.make_spawn_specialist_tool(on_spawn=_on_spawn)
+        spawn_fn, spawn_schema = self.role_registry.make_spawn_specialist_tool(
+            on_spawn=_on_spawn,
+            active_roster_names=lambda: list(self.workers.keys()),
+        )
 
         roster_lines = [
             f"- '{s.name}' ({s.title}): {s.instructions} [Tools: {', '.join(s.tool_names)}]"
@@ -631,17 +723,34 @@ class OrchestratorSwarm:
             max_steps=CONFIG.max_coordinator_steps,
         )
 
-        past_turns = self.storage.get_session_turns(tenant_id, limit=10)
+        past_turns = _get_compact_session_history(self.storage, tenant_id, user_input)
         try:
             answer = orchestrator.execute_task(
                 user_input,
                 tenant_id=tenant_id,
                 conversation_history=past_turns,
             )
+            if (
+                mission_findings
+                and (
+                    "[Continuation:" in answer
+                    or answer.lstrip().startswith("[delegate_to_worker]:")
+                )
+            ):
+                answer = _synthesize_executive_fallback(
+                    self.llm, user_input, mission_findings
+                )
             self.storage.append_session_turn(tenant_id, "user", user_input)
             self.storage.append_session_turn(tenant_id, "assistant", answer)
             return answer
         except BudgetExceededError as exc:
-            msg = f"[Budget Guardrail Triggered] {exc}"
             self.bus.emit("budget_exceeded", agent_name="orchestrator", tenant_id=tenant_id, error=str(exc))
+            if mission_findings:
+                synth = _synthesize_executive_fallback(
+                    self.llm, user_input, mission_findings, reason=str(exc)
+                )
+                self.storage.append_session_turn(tenant_id, "user", user_input)
+                self.storage.append_session_turn(tenant_id, "assistant", synth)
+                return synth
+            msg = f"[Budget Guardrail Triggered] {exc}"
             return msg

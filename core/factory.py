@@ -69,8 +69,8 @@ class SwarmSpec:
 
         if self.budgets.max_swarm_steps > 128:
             raise SwarmSpecValidationError(f"max_swarm_steps exceeds safety bound ({self.budgets.max_swarm_steps} > 128).")
-        if self.budgets.max_total_tokens > 200_000:
-            raise SwarmSpecValidationError(f"max_total_tokens exceeds safety bound ({self.budgets.max_total_tokens} > 200,000).")
+        if self.budgets.max_total_tokens > 500_000:
+            raise SwarmSpecValidationError(f"max_total_tokens exceeds safety bound ({self.budgets.max_total_tokens} > 500,000).")
 
         # Validate tools for all roles
         for r in self.roles:

@@ -200,3 +200,67 @@ def test_native_function_calling_structured_output() -> None:
     )
     assert res["title"] == "Native Schema Swarm"
     assert res["topology"] == "peer"
+
+
+@pytest.mark.unit
+def test_spawn_specialist_deduplication_guard(tmp_path) -> None:
+    """spawn_specialist refuses to duplicate or overwrite a role already in the active roster."""
+    from core.roles import RoleRegistry
+
+    reg = RoleRegistry(
+        roles_file=tmp_path / "roles.json",
+        default_roles_file=tmp_path / "default_roles.json",
+    )
+    reg.register_role(
+        name="security_auditor",
+        title="Security Auditor",
+        instructions="Audit headers and endpoints.",
+        capabilities=["@web", "@files"],
+    )
+
+    spawn_fn, _ = reg.make_spawn_specialist_tool(
+        active_roster_names=lambda: ["security_auditor", "rtl_accessibility_auditor"]
+    )
+    msg = spawn_fn(
+        name="security_auditor",
+        title="Duplicate Security Auditor",
+        instructions="Overwrite existing role",
+    )
+    assert "ALREADY exists in your ACTIVE ROSTER" in msg
+    assert "Do NOT re-spawn existing roles" in msg
+
+
+@pytest.mark.unit
+def test_compact_session_history_and_executive_fallback(temp_storage) -> None:
+    """New standalone missions do not re-inject bloated prior session reports; 'continue' prompts preserve context."""
+    from core.swarm import _get_compact_session_history, _synthesize_executive_fallback
+
+    temp_storage.append_session_turn("tenant_hist", "user", "Audit system A")
+    temp_storage.append_session_turn("tenant_hist", "assistant", "A" * 5000)
+
+    # Standalone new mission -> empty history to prevent quadratic token bloat
+    new_hist = _get_compact_session_history(
+        temp_storage, "tenant_hist", "Design a distributed key-value store in Python with unit tests"
+    )
+    assert new_hist == []
+
+    # Continuation prompt -> preserves bounded recent turns
+    cont_hist = _get_compact_session_history(temp_storage, "tenant_hist", "continue")
+    assert len(cont_hist) == 2
+    assert len(cont_hist[1]["content"]) < 2500
+
+    # Executive fallback synthesizes specialist findings via a tool-less LLM call
+    class SynthLLM(LLMProvider):
+        model = "mock-synth"
+
+        def generate(self, messages=None, tools=None, **kwargs):
+            assert tools is None
+            return LLMResponse(content="Executive Summary: All 3 vectors verified.", prompt_tokens=20, completion_tokens=10)
+
+    report = _synthesize_executive_fallback(
+        SynthLLM(),
+        "Audit target",
+        ["[recon]: Found 3 vectors", "[prober]: Verified vector 1-3"],
+        reason="Token budget reached",
+    )
+    assert "Executive Summary: All 3 vectors verified." in report

@@ -54,7 +54,7 @@ class SwarmConfig:
     max_swarm_steps: int = 64
     max_coordinator_steps: int = 24
     max_steps_per_agent: int = 16
-    max_total_tokens: int = 120000
+    max_total_tokens: int = 300000
     max_wall_seconds: float = 900.0
 
     # Storage settings
@@ -126,7 +126,7 @@ class SwarmConfig:
             max_swarm_steps=max_swarm_env,
             max_coordinator_steps=max_coord_env,
             max_steps_per_agent=max_steps_env,
-            max_total_tokens=int(os.getenv("MAX_TOTAL_TOKENS", str(budget_cfg.get("max_total_tokens", 120000)))),
+            max_total_tokens=int(os.getenv("MAX_TOTAL_TOKENS", str(budget_cfg.get("max_total_tokens", 300000)))),
             max_wall_seconds=float(os.getenv("MAX_WALL_SECONDS", str(budget_cfg.get("max_wall_seconds", 900.0)))),
             db_path=WORKSPACE_DIR / db_filename,
             roles_path=WORKSPACE_DIR / "roles.json",

@@ -188,7 +188,9 @@ class RoleRegistry:
         return [r.to_dict() for r in self._roles.values()]
 
     def make_spawn_specialist_tool(
-        self, on_spawn: Optional[Callable[[RoleSpec], None]] = None
+        self,
+        on_spawn: Optional[Callable[[RoleSpec], None]] = None,
+        active_roster_names: Optional[Callable[[], List[str]]] = None,
     ) -> Tuple[Callable[..., str], Dict[str, Any]]:
         """Build an AI-callable tool so Coordinator/Orchestrator can recruit new roles on the fly."""
 
@@ -199,10 +201,23 @@ class RoleRegistry:
             capabilities: Optional[List[str]] = None,
             max_steps: Optional[int] = None,
         ) -> str:
+            safe_name = self._clean_name(name)
+            if safe_name in {"coordinator", "orchestrator", "user", "airlock"}:
+                safe_name = f"{safe_name}_specialist"
+
+            current_active = set(active_roster_names()) if active_roster_names else set()
+            if safe_name in current_active and safe_name in self._roles:
+                existing = self._roles[safe_name]
+                return (
+                    f"Notice: Specialist role '{existing.name}' ({existing.title}) ALREADY exists in your ACTIVE ROSTER "
+                    f"with tools {existing.tool_names}. Do NOT re-spawn existing roles — delegate or send a peer message "
+                    f"to '{existing.name}' directly!"
+                )
+
             base_caps = capabilities if capabilities else ["@web", "@code", "@files", "@memory"]
             merged_caps = list(dict.fromkeys([*base_caps, "@web", "@files", "@memory"]))
             spec = self.register_role(
-                name=name,
+                name=safe_name,
                 title=title,
                 instructions=instructions,
                 capabilities=merged_caps,
@@ -221,8 +236,9 @@ class RoleRegistry:
             "function": {
                 "name": "spawn_specialist",
                 "description": (
-                    "Dynamically create and recruit a new specialist agent role to test a specific hypothesis, "
-                    "attack vector, or domain angle discovered during reconnaissance.\n"
+                    "Dynamically create and recruit a brand-new specialist agent role ONLY when discovery uncovers "
+                    "a domain angle or technical hypothesis that NO existing role in your ACTIVE ROSTER can handle. "
+                    "Do NOT call this to duplicate or overwrite roles already present in your ACTIVE ROSTER.\n"
                     "CRITICAL CAPABILITY RULES:\n"
                     "- '@web' (fetch_url, web_search): REQUIRED if the specialist needs to probe live URLs, HTTP headers, endpoints, or raw HTML/DOM (via fetch_url(url, include_raw=True)).\n"
                     "- '@code' (run_python, calculator): Runs in an OFFLINE sandbox (no internet access). Use for computation, parsing, or local scripts.\n"

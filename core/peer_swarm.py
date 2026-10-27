@@ -23,7 +23,11 @@ from core.llm import LLMProvider
 from core.roles import RoleRegistry, RoleSpec
 from core.security import TaintTracker
 from core.storage import StorageBackend
-from core.swarm import WorkerAgent
+from core.swarm import (
+    WorkerAgent,
+    _get_compact_session_history,
+    _synthesize_executive_fallback,
+)
 
 
 @dataclass
@@ -81,6 +85,7 @@ class PeerSwarm:
         self.nodes: Dict[str, PeerNode] = {}
         self._final_answer: Optional[str] = None
         self._recent_handoff_pairs: List[tuple[str, str]] = []
+        self._peer_outputs: List[str] = []
         self.refresh_peers()
 
     def _active_role_specs(self) -> List[RoleSpec]:
@@ -129,7 +134,10 @@ class PeerSwarm:
                 role=new_spec.to_dict(),
             )
 
-        spawn_fn, spawn_schema = self.role_registry.make_spawn_specialist_tool(on_spawn=_on_spawn)
+        spawn_fn, spawn_schema = self.role_registry.make_spawn_specialist_tool(
+            on_spawn=_on_spawn,
+            active_roster_names=lambda: [s.name for s in self._active_role_specs()],
+        )
         coord_tools, coord_schemas = self._make_peer_comm_tools("coordinator", all_peer_names)
         coord_tools["spawn_specialist"] = spawn_fn
         coord_tools.update(self.extra_tools)
@@ -245,6 +253,8 @@ class PeerSwarm:
                     )
 
             self._recent_handoff_pairs.append((sender_name, target))
+            if sender_name not in ("coordinator", "user", "system") and message.strip():
+                self._peer_outputs.append(f"[{sender_name} -> {target}]:\n{message.strip()[:1500]}")
             self.nodes[target].inbox.append(
                 PeerMessage(sender=sender_name, recipient=target, content=message)
             )
@@ -320,6 +330,7 @@ class PeerSwarm:
         self.budget.tenant_id = tenant_id
         self._final_answer = None
         self._recent_handoff_pairs.clear()
+        self._peer_outputs.clear()
         self.taint_tracker = TaintTracker(mission_id=f"peer_{tenant_id}")
         self.refresh_peers()
         for node in self.nodes.values():
@@ -338,9 +349,9 @@ class PeerSwarm:
             inboxes=self._inbox_snapshot(),
         )
 
-        past_turns = self.storage.get_session_turns(tenant_id, limit=8)
+        past_turns = _get_compact_session_history(self.storage, tenant_id, user_input)
         last_output = ""
-        peer_outputs: List[str] = []
+        peer_outputs = self._peer_outputs
 
         continuation_count = 0
         try:
@@ -401,6 +412,12 @@ class PeerSwarm:
                     m.content if m.sender == "user" else f"[INBOX MESSAGE from '{m.sender}']: {m.content}"
                     for m in batch
                 )
+                if active_node.name != "coordinator" and peer_outputs:
+                    prior_context = "\n\n".join(peer_outputs[-3:])
+                    inbox_prompt = (
+                        f"{inbox_prompt}\n\n"
+                        f"[PRIOR SPECIALIST FINDINGS IN THIS MISSION]:\n{prior_context}"
+                    )
                 self.bus.emit(
                     "inbox_pickup",
                     agent_name=active_node.name,
@@ -409,7 +426,7 @@ class PeerSwarm:
                     inboxes=self._inbox_snapshot(),
                 )
 
-                history = past_turns if active_node.name == "coordinator" else (past_turns[-4:] if past_turns else None)
+                history = past_turns if active_node.name == "coordinator" else None
                 last_output = active_node.agent.execute_task(
                     inbox_prompt,
                     tenant_id=tenant_id,
@@ -476,17 +493,23 @@ class PeerSwarm:
                         )
 
             final = self._final_answer or ("\n\n".join(peer_outputs) if peer_outputs else last_output) or "Swarm completed with no output."
+            if peer_outputs and "[Continuation:" in final:
+                final = _synthesize_executive_fallback(self.llm, user_input, peer_outputs)
             self.storage.append_session_turn(tenant_id, "user", user_input)
             self.storage.append_session_turn(tenant_id, "assistant", final)
             return final
 
         except BudgetExceededError as exc:
-            combined = "\n\n".join(peer_outputs) if peer_outputs else last_output
-            msg = (
-                f"{combined}\n\n[Continuation: {exc} Reply 'continue' to resume from these findings.]"
-                if combined
-                else f"[Continuation: {exc} Reply 'continue' to resume.]"
-            )
+            if peer_outputs:
+                msg = _synthesize_executive_fallback(
+                    self.llm, user_input, peer_outputs, reason=str(exc)
+                )
+            else:
+                msg = (
+                    f"{last_output}\n\n[Continuation: {exc} Reply 'continue' to resume from these findings.]"
+                    if last_output
+                    else f"[Continuation: {exc} Reply 'continue' to resume.]"
+                )
             self.storage.append_session_turn(tenant_id, "user", user_input)
             self.storage.append_session_turn(tenant_id, "assistant", msg)
             self.bus.emit(
