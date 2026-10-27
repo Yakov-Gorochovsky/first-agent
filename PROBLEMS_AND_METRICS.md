@@ -109,50 +109,60 @@ This document tracks the core engineering, performance, reliability, and securit
 | **52** | **Mid-File `summarize_code_output` Line Truncation & Repetitive `run_python` Loops (v0.6.3)** | `run_python` retry count per specialist & preservation of <4,000-char stdout outputs | **`summarize_code_output` truncated at `max_lines=40` (`99 lines omitted` on a 139-line, 2,851-char HTML dump), causing `ui_auditor` to re-run `run_python` 7 times in a row; `spawn_specialist` allowed overwriting roles without `@web`** | Raised `summarize_code_output` defaults to `max_lines=200, max_chars=4000` in [`core/cleaning.py`](core/cleaning.py), guaranteed `@web` in `spawn_specialist` ([`core/roles.py`](core/roles.py)), and added repetitive `run_python` circuit-breaker guidance in [`core/swarm.py`](core/swarm.py) | **Full <200-line stdout preserved without middle truncation; `spawn_specialist` always preserves `@web`; repetitive `run_python` loops prevented** | **Eliminated repetitive `run_python` approval loops & token burn** |
 | **53** | **Hub-and-Spoke Bottleneck, Duplicate Specialist Spawning & Coordinator Token Exhaustion (v0.6.4, Mission `m_default_c74725e2f7b8`)** | Topology selection for $\ge 3$ specialists, duplicate `spawn_specialist` rejection rate, and graceful synthesis on token ceiling | **Planner defaulted to `"orchestrator"` (45% tokens burned by coordinator hub); `researcher` re-spawned duplicate `security_auditor` & `rtl_accessibility_auditor`; `BudgetExceededError` at `123,109/120,000` tokens dumped raw logs instead of an executive report** | Added Topology Selection Matrix in [`core/meta_planner.py`](core/meta_planner.py) + auto-upgrade to `"peer"` topology for $\ge 3$ specialists in [`core/mission.py`](core/mission.py); added Roster Deduplication Guard in `make_spawn_specialist_tool` ([`core/roles.py`](core/roles.py)) and `ephemeral=True` mission `RoleRegistry` ([`core/topology.py`](core/topology.py)); added `_get_compact_session_history` & `_synthesize_executive_fallback` in [`core/swarm.py`](core/swarm.py) and [`core/peer_swarm.py`](core/peer_swarm.py); raised token ceiling to `300,000` (`500,000` max) | **Multi-specialist missions run in peer mesh; duplicate spawns deterministically blocked; mission `m_default_610387c77508` completed cleanly at `74,310` tokens with zero budget crash** | **Peer mesh handoffs, zero duplicate spawns & crash-free executive synthesis** |
 | **54** | **Single-Track Peer Starvation, Unquoted Asset Evidence & `run_python` File-Read Abuse (v0.6.5, Mission `m_default_610387c77508`)** | Active specialist participation rate (`%` of roster executing $\ge 1$ step), verbatim code/header citation density, and `read_note` vs `run_python` usage | **`discovery_specialist` only handed off to `securityauditor`, leaving `uxandrtlaccessibilityspecialist` at `0` steps (`75%` roster utilization); `securityauditor` fetched `js/validation.js` without quoting the regex; `critic` called `run_python` twice just to read `.md` files** | Added Automatic Multi-Peer Fan-Out (`_get_unrun_domain_specialists`), 3-Tier Priority Scheduler (Tier 1 Domain Specialists $\rightarrow$ Tier 2 Critic $\rightarrow$ Tier 3 Coordinator), and Unrun-Specialist Completion Gate in [`core/peer_swarm.py`](core/peer_swarm.py); enforced Mandatory Verbatim Citations & `read_note` over `run_python` in [`core/swarm.py`](core/swarm.py) | **100% Roster Utilization (`4/4` roles executed in `m_default_bc29580e6f9a`); `security_auditor_agent` & `rtl_accessibility_ui_agent` quoted exact CSP headers, `validation.js` regex, `loginform.css` rules, and HTML snippets** | **100% specialist participation & empirical verbatim evidence** |
+| **55** | **Unrun-Specialist Completion Gate Blocking Static Deployed Swarms (v0.6.5 regression)** | `tests/e2e/test_evals_regression.py::Multi-Swarm Deployment & Cross-Swarm Bridge` | **Failing** (victim swarm's `finish_swarm` was deferred to unrun static specialists, consuming the attacker's scripted reply) | Scoped the completion gate in `_get_unrun_domain_specialists` ([`core/peer_swarm.py`](core/peer_swarm.py)) to mission-planned (`ephemeral`) rosters only | **152/152 tests pass** | **Restored green test suite (prerequisite for the Self-Healer's test gate)** |
 
 ---
 
-## 3. Holistic Software & Swarm Scalability Scorecard (Before vs. After Self-Healing)
+## 3. Evidence-Based 4-Pillar Scorecard & Self-Healing Ledger
 
-To scale to **large multi-agent swarms handling complex tasks**, the engine and its **Self-Healer** evaluate every run and code change across **4 Human-Readable Engineering Pillars** plus an explicit **Tradeoff & ROI Evaluator** (so the system knows when spending more tokens is a worthwhile investment in deeper quality vs. wasteful bloat):
+All numbers in this section are **computed by [`core/self_healer.py`](core/self_healer.py)** (`ScorecardEngine.evaluate`) from real data only: mission checkpoints, `swarm_traces` inside the mission's time window, workspace notes written during the mission, `workspace/server_errors.log`, and an AST scan of the code. Targets live in [`config/swarm_guidelines.md`](config/swarm_guidelines.md). Nothing is hand-entered.
 
-### 3.1 The 4 Measurable Pillars (0–100 Each)
+> [!NOTE]
+> An earlier version of this section contained **hand-estimated** scores (38 → 56 → 72). Those were replaced on 2026-10-27 by the computed values below, which differ. Treat only computed values as authoritative.
 
-| Pillar | Weight | Human-Readable Sub-Metrics | Why It Matters for Large Swarms |
-| :--- | :---: | :--- | :--- |
-| **A. Mission Quality & Depth** | **`0–100`** | • **Roster Participation (`20 pts`)**: `%` of agents doing real work (`0` starved nodes)<br>• **Dynamic Spawning (`20 pts`)**: Lean seed $\rightarrow$ targeted vector specialists spawned from recon<br>• **Deep Asset Coverage (`15 pts`)**: Sub-resources probed (`.js`, `.css`, APIs) without root re-fetches<br>• **Tool Discipline (`15 pts`)**: Native `read_note`/`fetch_url` vs unnecessary `run_python` calls<br>• **Verbatim Evidence (`15 pts`)**: Exact code/header/DOM quotes per finding<br>• **Deliverable Completeness (`15 pts`)**: Full synthesized report delivered in UI drawer | Prevents shallow "summary-of-summary" swarms and ensures every specialist contributes verifiable depth. |
-| **B. Token Economy & Scaling ROI** | **`0–100`** | • **Total Tokens & Cost (`USD`)**: Exact prompt + completion tokens logged in `usage_ledger`<br>• **Wasted Token Ratio (`35 pts`)**: `%` of tokens burned on duplicate fetches, loops, or router chatter (`0%` waste = `35 pts`)<br>• **Quality ROI (`35 pts`)**: `Quality Score / (Total Tokens / 10,000)` — rewards spending tokens on deep sub-asset discovery while penalizing empty token burn<br>• **Context Scaling Slope (`30 pts`)**: Prompt token growth per added specialist ($O(1)$ indexed pointers vs $O(N^2)$ full-text prompt injection) | In a 15-agent swarm, $O(N^2)$ context injection or duplicate tool calls will blow a 500k token budget in minutes. |
-| **C. Execution Speed & Autonomy** | **`0–100`** | • **Wall-Clock Duration (`s`) & Latency/Turn (`s/step`)** (`40 pts`)<br>• **Productive Tool Ratio (`30 pts`)**: `unique_productive_tool_calls / total_llm_turns`<br>• **Human Approval Friction (`30 pts`)**: Count of unnecessary approval popups triggered for read-only tasks (`0` = `30 pts`, `-10 pts` each) | Keeps large swarms fast and autonomous, reserving human approval strictly for true high-risk mutations. |
-| **D. Codebase Cleanliness & Reliability** | **`0–100`** | • **Function Modularity (`30 pts`)**: `%` of functions $\le 80$ lines (AST scan across `core/`, `tools.py`, `server.py`)<br>• **Hotspot Ceiling (`25 pts`)**: Max LOC of largest functions (`server.py:do_POST`, `core/swarm.py:execute_task`)<br>• **Test Suite & Telemetry Integrity (`25 pts`)**: `pytest` pass rate (`100%`) + `usage_ledger`/`budget_json` persistence<br>• **Runtime Log Cleanliness (`20 pts`)**: `0` unhandled socket/runtime tracebacks (`WinError 10053`, bare `except:`) | Clean, modular code (`<80` LOC functions) allows both humans and the Self-Healer to inspect and patch logic safely without side effects. |
+### 3.1 Pillars
 
----
+| Pillar | What is measured (human-readable) |
+| :--- | :--- |
+| **A. Mission Quality** | Planned specialists that participated · specialists spawned from discovery · duplicate fetches · code-exec used just to read files · verbatim code quotes in notes · final answer length vs. full report |
+| **B. Token Economy** | Whether token usage is recorded at all · wasted tool-call ratio · quality points per 10k tokens · tokens per specialist (scaling) |
+| **C. Speed & Autonomy** | Wall-clock time · human approval interruptions |
+| **D. Code Health** | % functions ≤ 80 lines · largest function · bare excepts · server tracebacks (7 days) · `pytest` result |
 
-### 3.2 Tradeoff Decision Matrix (Quality vs. Tokens vs. Speed)
+**Composite** = average of the 4 pillars. Metrics that cannot be measured for a mission are listed as *not measured* rather than guessed.
 
-Spending fewer tokens is **not** always better if the swarm skips half the target assets. Conversely, spending more tokens is only justified when those tokens buy **new empirical discoveries**. Every change or self-heal cycle is classified by a deterministic **Tradeoff Verdict**:
+### 3.2 Tradeoff verdicts (applied by the healer to Before vs. After)
 
-| Tradeoff Verdict | Rule / Condition | Self-Healer Action | Human-Readable Meaning |
-| :--- | :--- | :--- | :--- |
-| 🟢 **1. Strict Win (Pareto Upgrade)** | `Quality >= Baseline` **AND** `Wasted Tokens < Baseline` **AND** `Code Cleanliness >= Baseline` (with at least one strictly improved) | **KEEP & COMMIT** | Better or equal results using fewer wasted tokens and/or cleaner code. |
-| 🔵 **2. Worthwhile Quality Investment (Positive ROI Tradeoff)** | `Total Tokens` increased by $+\Delta T\%$, **Driven by Productive Probing** (`Sub-Assets Probed` or `Active Specialists` increased), `Quality` jumped by $+\Delta Q \ge 10\text{ pts}$, and `Wasted Token Ratio <= 10%` | **KEEP & COMMIT** | We intentionally spent more tokens to inspect more files/vectors and got a significantly better report with minimal waste. |
-| 🟡 **3. Efficiency / Cleanliness Win (Zero Quality Loss)** | `Quality` within $\pm 2\text{ pts}$ of Baseline (`>= 85/100`), while `Total Tokens` dropped by $\ge 15\%$ **OR** `Code Cleanliness` improved by $\ge 5\text{ pts}$ | **KEEP & COMMIT** | Same high output quality achieved faster, cheaper, or with cleaner architecture. |
-| 🔴 **4. Unfavorable Tradeoff / Bloat / Regression** | `Quality` dropped by $> 2\text{ pts}$, **OR** `Total Tokens` rose by $> 15\%$ without increasing `Quality` (token bloat), **OR** `pytest` failed | **AUTO-REVERT (`git reset --hard`)** | The change burned more tokens for no quality gain, broke tests, or degraded output quality. |
+| Verdict | Rule | Action |
+| :--- | :--- | :--- |
+| `REGRESSION` | Quality −2 pts or worse, or composite −1 or worse | Revert |
+| `TOKEN_BLOAT` | Tokens +15% or more with < +5 quality pts | Revert |
+| `WORTHWHILE_INVESTMENT` | More tokens and ≥ +5 quality pts | Keep |
+| `STRICT_WIN` | Composite improved | Keep |
+| `NEUTRAL` | No measurable change | Keep (no harm) |
 
----
+### 3.3 Computed baseline (before any self-healing, code at `v0.6.5` + scorecard)
 
-### 3.3 Historical Progression & Current Baseline (Before Self-Healing)
+| Metric | Run 1 `m_default_c74725e2f7b8` | Run 2 `m_default_610387c77508` | Run 3 `m_default_bc29580e6f9a` |
+| :--- | :---: | :---: | :---: |
+| Planned specialists that participated | 75% | 75% | **100%** |
+| Specialists spawned during mission | 2 *(duplicate overwrites)* | 0 | 0 |
+| Duplicate fetches | 2 | **0** | 2 |
+| Code-exec used to read files | 1 | 2 | 1 |
+| Verbatim code quotes | not measured¹ | not measured¹ | 48 |
+| Final answer vs. full report | 0% *(budget crash)* | not measured¹ | 17.7% |
+| Total tokens | **not recorded** | **not recorded** | **not recorded** |
+| Wasted tool calls | 15.0% | 11.8% | 12.0% |
+| Wall-clock | 121.6 s | 93.5 s | 258.1 s |
+| Human approval interruptions | 2 | 2 | 1 |
+| Functions ≤ 80 lines / largest | 95.6% / 356 lines (`server.py:do_POST`) | same | same |
+| **Pillars A / B / C / D** | 65.0 / 31.1 / 70.0 / 83.1 | 70.0 / 34.0 / 70.0 / 83.1 | 58.3 / 33.8 / 85.0 / 83.1 |
+| **Composite** | **62.3** | **64.3** | **65.0** |
 
-| Metric Category | Human-Readable Metric | `v0.6.3` (Run 1: `m_default_c74725e2f7b8`) | `v0.6.4` (Run 2: `m_default_610387c77508`) | `v0.6.5` (Run 3: `m_default_bc29580e6f9a` — **Current Baseline**) | `v0.6.6+` (**Post-Self-Heal Target**) |
-| :--- | :--- | :---: | :---: | :---: | :---: |
-| **A. Mission Quality (`0–100`)** | **1. Roster Participation (`/20`)**<br>**2. Dynamic Spawning (`/20`)**<br>**3. Deep Asset Probing (`/15`)**<br>**4. Tool Discipline (`/15`)**<br>**5. Verbatim Citations (`/15`)**<br>**6. Deliverable Completeness (`/15`)**<br>**Pillar A Score (`/100`)** | `15/20` *(1 skipped, 2 dupes)*<br>`5/20` *(dupe overwrites)*<br>`0/15` *(0 sub-assets, 4x root)*<br>`5/15` *(2x `run_python`)*<br>`13/15` *(HTML only)*<br>`0/15` *(budget crash)*<br>**38 / 100** | `15/20` *(`ux_rtl` skipped)*<br>`5/20` *(4 roles pre-baked)*<br>`15/15` *(1 JS file, 0 dupes)*<br>`5/15` *(2x `run_python`)*<br>`6/15` *(no JS quotes)*<br>`10/15` *(medium summary)*<br>**56 / 100** *(+18)* | **`20/20`** *(4/4 roles active)*<br>`5/20` *(4 roles pre-baked)*<br>`10/15` *(4 sub-assets, 1 root re-fetch)*<br>`10/15` *(1x `run_python` in critic)*<br>**`15/15`** *(CSP, JS, CSS, HTML quotes)*<br>`12/15` *(6KB file, 400B in drawer)*<br>**72 / 100** *(+16)* | **`20/20`**<br>**`20/20`** *(Lean seed $\rightarrow$ dynamic)*<br>**`15/15`** *(4+ assets, 0 re-fetch)*<br>**`15/15`** *(0 `run_python`)*<br>**`15/15`**<br>**`15/15`** *(Full 6KB in drawer)*<br>**95–100 / 100** |
-| **B. Token Economy & Scaling (`0–100`)** | • **Total Tokens Consumed**<br>• **Sub-Assets Deep-Probed**<br>• **Estimated Wasted Tokens (`%`)**<br>• **Quality ROI (`Pts / 10k Tokens`)**<br>• **Context Growth Scaling**<br>**Pillar B Score (`/100`)** | `123,109` *(Crashed cap)*<br>`0` sub-assets<br>`~48%` *(`~59k` wasted)*<br>`3.1 pts / 10k tok`<br>$O(N^2)$ *(full text relay)*<br>**28 / 100** | `74,310` *(`-40%` tokens)*<br>`1` (`validation.js`)<br>`~18%` *(`~13k` wasted)*<br>`7.5 pts / 10k tok`<br>$O(N^2)$ *(full text relay)*<br>**68 / 100** *(+40)* | `~96,400` *(4 agents, 25 tool calls)*<br>**`4`** (`.js`, `.css`, `.json`)<br>`~8.5%` *(`~8.2k` wasted on 2 extra turns)*<br>`7.5 pts / 10k tok`<br>$O(N^2)$ *(full notes injected)*<br>**74 / 100** *(+6)* | **`~65,000–75,000`** *(`-25%` tokens)*<br>**`4+`** sub-assets<br>**`< 3%`** *(0 duplicate turns)*<br>**`> 13.0 pts / 10k tok`**<br>**$O(1)$ Compact Note Index**<br>**92–98 / 100** |
-| **C. Speed & Autonomy (`0–100`)** | • **Total Tool Calls / Turns**<br>• **Unnecessary Approval Popups**<br>• **Wall-Clock Active Time**<br>**Pillar C Score (`/100`)** | `25` calls / `44` traces<br>`4` popups (`-40 pts`)<br>`>180s` (manual waits)<br>**42 / 100** | `16` calls / `22` traces<br>`2` popups (`-20 pts`)<br>`88.5s`<br>**72 / 100** *(+30)* | `25` calls / `31` traces<br>`1` popup (`-10 pts`)<br>`249.9s` *(incl. 1 approval wait)*<br>**78 / 100** *(+6)* | **`18–20` calls** *(zero wasted)*<br>**`0` popups** *(pure `@web`/`@files`)*<br>**`60–90s`** *(zero human wait)*<br>**95 / 100** |
-| **D. Codebase Cleanliness (`0–100`)** | • **Functions $\le 80$ Lines (`%`)**<br>• **Largest Monolithic Function**<br>• **`usage_ledger` / `budget_json` DB Sync**<br>• **Unhandled Socket/Server Errors**<br>• **Automated Test Suite (`pytest`)**<br>**Pillar D Score (`/100`)** | `96.0%` (`380/396` funcs)<br>`352 LOC` (`server.py:do_POST`)<br>`0%` (`budget_json: {}`)<br>`WinError 10053` traceback<br>`145 passed`<br>**68 / 100** | `96.0%` (`380/396` funcs)<br>`352 LOC` (`server.py:do_POST`)<br>`0%` (`budget_json: {}`)<br>`WinError 10053` traceback<br>`148 passed`<br>**70 / 100** *(+2)* | `96.0%` (`380/396` funcs, `16 > 80 LOC`)<br>`352 LOC` (`do_POST`), `318 LOC` (`execute_task`)<br>`0%` (`usage_ledger` unwired in live runs)<br>`WinError 10053` traceback on keep-alive close<br>`148 passed (100%)`<br>**70 / 100** | **`> 98%`** (refactor >200 LOC hotspots)<br>**`< 150 LOC`** per function<br>**`100%`** per-step token & cost DB sync<br>**`0`** unhandled socket tracebacks<br>**`155+ passed (100%)`**<br>**94 / 100** |
-| **OVERALL COMPOSITE** | **Weighted Overall Engineering Score (`0–100`) & Tradeoff Verdict** | **44 / 100**<br>*(Baseline)* | **66 / 100 (+22)**<br>🟢 *Strict Win (Higher quality + 40% fewer tokens)* | **73.5 / 100 (+7.5)**<br>🔵 *Worthwhile Quality Investment (+22k tokens bought 4/4 active agents & 4 deep asset probes; +16 Quality pts)* | **94–97 / 100 (+22)**<br>🟢 *Strict Win (Higher quality + O(1) token scaling + cleaner code)* |
+¹ Workspace notes from Runs 1–2 were overwritten by later runs, so their content can no longer be attributed to those missions.
 
+**Biggest measured gaps on Run 3:** token usage not recorded (−30 B), oversized functions (−16.9 D), roster fixed at planning time (−15 A), approval interruption (−15 C), short final answer (−11.7 A), duplicate fetches (−10 A).
 
+### 3.4 Self-healing ledger
 
-
-
-
-
+Rows are appended automatically to the table in Section 2 by the healer when a cycle is kept (title prefix **Self-Heal:**), including before/after composite, verification mission ID, and verdict. Every attempt — kept, reverted, or rejected — is also logged in `workspace/self_heal/history.jsonl` and shown in the UI.

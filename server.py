@@ -476,8 +476,10 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
             auth = self._authenticate("user")
             if not auth:
                 return
-            mission_id = (qs.get("mission_id", [""])[0] or "").strip() or None
-            self._send_json(self_healer.get_status_report(mission_id=mission_id))
+            hq = parse_qs(parsed.query)
+            mission_id = (hq.get("mission_id", [""])[0] or "").strip() or None
+            baseline_id = (hq.get("baseline_id", [""])[0] or "").strip() or None
+            self._send_json(self_healer.status(mission_id=mission_id, baseline_id=baseline_id))
             return
 
         self._send_json({"error": "Not found"}, 404)
@@ -489,38 +491,40 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
         if not auth:
             return True
         if path == "/api/self-heal/run":
-            mission_id = str(body.get("mission_id", "")).strip() or None
-            selected_rules = body.get("selected_rules")
-            auto_commit = bool(body.get("auto_commit", True))
-            report = self_healer.run_healing_cycle(
-                mission_id=mission_id,
-                selected_rules=selected_rules if isinstance(selected_rules, list) else None,
-                auto_commit=auto_commit,
+            rules = body.get("rules")
+            try:
+                max_fixes = max(1, min(5, int(body.get("max_fixes", 3) or 3)))
+            except (TypeError, ValueError):
+                max_fixes = 3
+            started = self_healer.start_cycle_async(
+                mission_id=str(body.get("mission_id", "")).strip() or None,
+                max_fixes=max_fixes,
+                verify=bool(body.get("verify", True)),
+                rules=rules if isinstance(rules, list) and rules else None,
             )
-            self._send_json(report)
+            self._send_json(
+                {"started": started, "message": "Self-heal cycle started." if started else "A cycle is already running."},
+                200 if started else 409,
+            )
             return True
         if path == "/api/self-heal/guidelines":
             content = str(body.get("guidelines", "")).strip()
             if not content:
                 self._send_json({"error": "Guidelines content cannot be empty."}, 400)
                 return True
-            saved = self_healer.save_guidelines(content)
-            self._send_json({"status": "saved", "guidelines": saved})
+            self_healer.save_guidelines(content)
+            self._send_json({"status": "saved"})
             return True
         if path == "/api/self-heal/restore":
             ref = str(body.get("ref", "")).strip()
             if not ref:
                 self._send_json({"error": "Git ref is required."}, 400)
                 return True
-            ok, msg = self_healer.git_safety.restore_to_ref(ref)
-            self._send_json(
-                {
-                    "restored": ok,
-                    "message": msg,
-                    "status_report": self_healer.get_status_report(),
-                },
-                200 if ok else 400,
-            )
+            if self_healer.running:
+                self._send_json({"error": "Cannot restore while a heal cycle is running."}, 409)
+                return True
+            ok, msg = self_healer.git.restore(ref)
+            self._send_json({"restored": ok, "message": msg}, 200 if ok else 400)
             return True
         return False
 
@@ -882,9 +886,30 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
         self._send_json({"error": "Unknown endpoint"}, 404)
 
 
+def _install_error_log(server: ThreadingHTTPServer) -> None:
+    """Instrumentation only: mirror unhandled request tracebacks into workspace/server_errors.log
+    so the Self-Healer can measure runtime reliability (behaviour is otherwise unchanged)."""
+    import traceback
+
+    log_path = CONFIG.workspace_dir / "server_errors.log"
+    log_path.touch(exist_ok=True)
+    original = server.handle_error
+
+    def handle_error(request: Any, client_address: Any) -> None:
+        try:
+            with log_path.open("a", encoding="utf-8") as fh:
+                fh.write(f"[{time.time():.3f}] TRACEBACK client={client_address}\n{traceback.format_exc()}\n")
+        except OSError:
+            pass
+        original(request, client_address)
+
+    server.handle_error = handle_error  # type: ignore[method-assign]
+
+
 def main() -> None:
     check_host_binding_security(CONFIG.host, CONFIG.auth_enabled, auth_manager)
     server = ThreadingHTTPServer((CONFIG.host, CONFIG.port), SwarmRequestHandler)
+    _install_error_log(server)
     print("=" * 72)
     print(" NEURAL SWARM // EVENT DASHBOARD SERVER")
     print(f" URL:      http://{CONFIG.host}:{CONFIG.port}")

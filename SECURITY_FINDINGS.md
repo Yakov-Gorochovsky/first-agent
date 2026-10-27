@@ -418,11 +418,13 @@ The following security findings were verified via code audit and local test repr
 - **Status**: **ENFORCED BY DESIGN**
 - **Threat Model**:
   1. An autonomous Self-Healing loop that inspects traces and patches repository source code could accidentally weaken security boundaries (`core/security.py`, `core/auth.py`, `core/approval.py`), corrupt the working tree, or claim improvements without empirical proof.
-- **Defense-in-Depth Controls**:
-  1. **Immutable Security Core Allow/Deny List**: The Self-Healer is strictly prohibited from modifying security enforcement modules (`core/security.py`, `core/auth.py`, `core/approval.py`, `core/rate_limiter.py`, `.env`, `keys.json`). Only orchestration, scheduling, prompt doctrine, and UI telemetry files (`core/peer_swarm.py`, `core/swarm.py`, `core/meta_planner.py`, `core/roles.py`, `static/index.html`, `config/swarm_guidelines.md`) are eligible for self-healing patches.
-  2. **Mandatory Pre-Heal Git Checkpoint (`self-heal/baseline-*`)**: Every self-healing cycle creates a clean Git tag/commit before applying any diff, enabling instant 1-click rollback (`git reset --hard <tag>`).
-  3. **Automated `pytest` + Swarm Network Health Scorecard Gate**: A candidate self-heal patch is automatically reverted unless `pytest` passes 100% AND the post-heal verification run maintains or improves the 6-dimension **Swarm Network Health Score (`0–100`)**.
-  4. **Automatic Documentation Synchronization**: Every verified self-heal commit automatically appends its root cause, before/after **Swarm Network Health Score**, and commit hash to [`PROBLEMS_AND_METRICS.md`](PROBLEMS_AND_METRICS.md) (and [`SECURITY_FINDINGS.md`](SECURITY_FINDINGS.md) when security-relevant).
+- **Defense-in-Depth Controls** (implemented in [`core/self_healer.py`](core/self_healer.py), covered by `tests/unit/test_self_healer.py`):
+  1. **Edit allow-list + immutable judge**: The healer may only edit orchestration/UI files (`core/*`, `tools.py`, `server.py`, `agent.py`, `static/index.html`, selected `config/*.json`). It can never edit security modules (`core/security.py`, `core/auth.py`, `core/approval.py`, `core/rate_limiter.py`), **itself / the scorecard** (`core/self_healer.py`), **the tests** (`tests/`), the guidelines, `.env`, or `workspace/`. This prevents reward hacking (weakening the metric or the tests instead of fixing the system).
+  2. **Clean-tree precondition + restore tag**: A cycle refuses to start on a dirty working tree, tags HEAD (`self-heal/pre-heal-*`) before any change, and reverts only the files it touched. Manual restore stashes uncommitted work before `git reset --hard`.
+  3. **Per-fix gates**: Each LLM-proposed edit must match its target text exactly once, must parse (`ast.parse`), and must keep `pytest` 100% green or it is reverted immediately. The cycle refuses to run if baseline tests already fail.
+  4. **Real-behaviour verification + tradeoff gate**: The same mission is re-run in a fresh process (no auto-approval of high-risk tools); the batch is kept only if the evidence-based tradeoff verdict is not `REGRESSION` or `TOKEN_BLOAT`.
+  5. **Audit trail**: Every attempt is logged in `workspace/self_heal/history.jsonl`; kept cycles are committed with before/after scores and appended to [`PROBLEMS_AND_METRICS.md`](PROBLEMS_AND_METRICS.md).
+- **Residual risk**: LLM-written changes can pass tests while introducing subtle behaviour changes not covered by tests or metrics. Review `self-heal:` commits before deploying beyond local use.
 
 
 

@@ -113,6 +113,10 @@ class PeerSwarm:
         """Return planned non-critic domain specialists that have neither run nor been queued yet."""
         if not self.allowed_roles or len(self.allowed_roles) < 3:
             return []
+        # Only enforce for mission-planned (ephemeral) rosters; static deployed swarms
+        # answering simple/cross-swarm requests must be allowed to finish directly.
+        if not getattr(self.role_registry, "ephemeral", False):
+            return []
         excl = {e.lower().strip() for e in (exclude or set())}
         unrun: List[str] = []
         for r in self.allowed_roles:

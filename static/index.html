@@ -1104,6 +1104,17 @@
         <span class="badge-mono" id="selfHealCompositeBadge" style="font-size: 12px; padding: 4px 10px;">-- / 100</span>
       </div>
 
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:12px;">
+        <div>
+          <label style="font-size:11px; color:var(--text-secondary);">Baseline mission (Before)</label>
+          <select id="selfHealBaselineSelect" class="field-input" style="width:100%; font-size:11px;" onchange="loadSelfHealStatus()"></select>
+        </div>
+        <div>
+          <label style="font-size:11px; color:var(--text-secondary);">Mission to evaluate / heal (After)</label>
+          <select id="selfHealMissionSelect" class="field-input" style="width:100%; font-size:11px;" onchange="loadSelfHealStatus()"></select>
+        </div>
+      </div>
+
       <!-- Before vs After 4-Pillar Comparison Grid -->
       <div style="margin-bottom: 14px;">
         <div style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px;">
@@ -1131,7 +1142,17 @@
       </div>
 
       <!-- Applied Fixes Log (visible after healing) -->
-      <div id="selfHealAppliedBox" style="display: none; margin-bottom: 14px; padding: 10px; border-radius: 6px; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.3); font-size: 11.5px; font-family: var(--font-mono);"></div>
+      <div id="selfHealUnmeasured" style="display:none; margin-bottom: 12px; padding: 8px 10px; border-radius: 6px; background: rgba(148,163,184,0.08); border: 1px dashed rgba(148,163,184,0.35); font-size: 11px; color: var(--text-secondary);"></div>
+
+      <div style="margin-bottom: 14px;">
+        <div style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 6px;">Live healer log</div>
+        <div id="selfHealProgressLog" style="max-height: 160px; overflow-y: auto; font-family: var(--font-mono); font-size: 10.5px; background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 6px 8px; color: var(--text-secondary);">No cycle run yet.</div>
+      </div>
+
+      <div style="margin-bottom: 14px;">
+        <div style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 6px;">Heal history (what the healer tried & outcome)</div>
+        <div id="selfHealHistory" style="max-height: 140px; overflow-y: auto; font-family: var(--font-mono); font-size: 10.5px;"></div>
+      </div>
 
       <!-- Editable Guidelines + Safe Git Restore Points -->
       <div style="display: grid; grid-template-columns: 1.4fr 1fr; gap: 12px; margin-bottom: 14px;">
@@ -1149,16 +1170,18 @@
             ⏪ Restore Selected Safe Baseline
           </button>
           <div style="font-size: 10.5px; color: var(--text-muted); margin-top: 8px; line-height: 1.4;">
-            Every Self-Heal cycle automatically tags the current Git state before modifying code, validates changes with <code>pytest</code>, and updates <code>PROBLEMS_AND_METRICS.md</code>.
+            Every cycle tags the current Git state first, tests each fix with <code>pytest</code>, optionally re-runs the mission, and only commits changes that don't score worse. Restoring stashes any uncommitted work.
           </div>
         </div>
       </div>
 
       <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border-subtle); padding-top: 12px;">
-        <div id="selfHealLiveProgress" style="font-family: var(--font-mono); font-size: 11px; color: var(--accent-cyan);">Ready to inspect & heal.</div>
-        <div style="display: flex; gap: 8px;">
-          <button class="btn" onclick="loadSelfHealStatus()">🔄 Refresh Scorecard</button>
-          <button class="btn btn-emerald" id="runSelfHealBtn" onclick="triggerSelfHealCycle()">✨ Run Self-Heal Cycle Now</button>
+        <div id="selfHealLiveProgress" style="font-family: var(--font-mono); font-size: 11px; color: var(--accent-cyan); max-width: 380px;">Ready.</div>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <label style="font-size:11px; display:flex; gap:4px; align-items:center;" title="Re-run the same mission in a fresh process after patching to measure real behaviour (costs tokens)."><input type="checkbox" id="selfHealVerifyCheck" checked /> Verify with real re-run</label>
+          <label style="font-size:11px;">Max fixes <input type="number" id="selfHealMaxFixes" min="1" max="5" value="3" class="field-input" style="width:46px; padding:2px 4px;" /></label>
+          <button class="btn" onclick="loadSelfHealStatus()">🔄 Refresh</button>
+          <button class="btn btn-emerald" id="runSelfHealBtn" onclick="triggerSelfHealCycle()">✨ Run Self-Heal Cycle</button>
         </div>
       </div>
     </div>
@@ -2243,166 +2266,186 @@
     }
 
     function fmtDelta(val, unit = ' pts', invertColor = false) {
-      const n = Number(val || 0);
-      const sign = n > 0 ? '+' : '';
+      if (val === null || val === undefined || isNaN(Number(val))) return '<span style="color:var(--text-muted);">n/a</span>';
+      const n = Number(Number(val).toFixed(1));
       const isGood = invertColor ? n <= 0 : n >= 0;
       const col = n === 0 ? 'var(--text-muted)' : (isGood ? '#10b981' : '#f43f5e');
-      return `<span style="color:${col}; font-weight:600;">${sign}${n}${unit}</span>`;
+      return `<span style="color:${col}; font-weight:600;">${n > 0 ? '+' : ''}${n}${unit}</span>`;
     }
 
+    function fmtVal(v) {
+      if (v === null || v === undefined) return '<span style="color:var(--text-muted);">not measured</span>';
+      if (Array.isArray(v)) return escapeHtml(v.join(', ') || '—');
+      if (typeof v === 'number') return v.toLocaleString();
+      return escapeHtml(String(v));
+    }
+
+    let selfHealPollTimer = null;
+    const SELF_HEAL_ROWS = [
+      ['A', 'A. Mission Quality & Depth', [
+        ['roster_participation_pct', 'Planned specialists that participated (%)', false],
+        ['dynamic_spawns', 'Specialists spawned from discovery', false],
+        ['duplicate_fetches', 'Duplicate fetches', true],
+        ['misused_code_exec', 'Code-exec used just to read files', true],
+        ['verbatim_citations', 'Verbatim code quotes in notes', false],
+        ['deliverable_ratio_pct', 'Final answer vs full report (%)', false],
+      ]],
+      ['B', 'B. Token Economy & Scaling', [
+        ['total_tokens', 'Total tokens', true],
+        ['wasted_call_ratio_pct', 'Wasted tool calls (%)', true],
+        ['quality_per_10k_tokens', 'Quality pts per 10k tokens', false],
+        ['tokens_per_specialist', 'Tokens per specialist', true],
+      ]],
+      ['C', 'C. Speed & Autonomy', [
+        ['wall_clock_sec', 'Wall-clock seconds', true],
+        ['approval_requests', 'Human approval interruptions', true],
+        ['tool_calls', 'Tool calls', null],
+      ]],
+      ['D', 'D. Code Health & Reliability', [
+        ['code_functions_le_80_pct', 'Functions ≤ 80 lines (%)', false],
+        ['code_largest_function_lines', 'Largest function (lines)', true],
+        ['code_bare_excepts', 'Bare excepts', true],
+        ['server_tracebacks_7d', 'Server tracebacks (7d)', true],
+        ['pytest', 'Test suite', null],
+      ]],
+    ];
+
     function renderSelfHealDashboard(data) {
-      if (!data || !data.current_scorecard) return;
-      const base = data.baseline_before_healing || data.current_scorecard;
-      const cur = data.current_scorecard;
-      const tr = data.tradeoff_vs_baseline || { badge: 'Baseline Ready', explanation: '' };
+      const cur = data.current;
+      const base = data.baseline || cur;
+      const fillSel = (id, selected) => {
+        const el = document.getElementById(id);
+        const prev = selected || el.value;
+        el.innerHTML = (data.missions || []).map(m => `<option value="${escapeHtml(m.mission_id)}">${escapeHtml(m.mission_id)} ${m.completed ? '' : '(incomplete)'} — ${escapeHtml(m.prompt.slice(0, 60))}</option>`).join('');
+        if (prev && (data.missions || []).some(m => m.mission_id === prev)) el.value = prev;
+      };
+      fillSel('selfHealMissionSelect', cur && cur.mission_id);
+      fillSel('selfHealBaselineSelect', base && base.mission_id);
 
-      document.getElementById('selfHealCompositeBadge').textContent = `${cur.composite_score} / 100`;
-      const dComp = Number((cur.composite_score - base.composite_score).toFixed(1));
-      document.getElementById('selfHealVerdictText').innerHTML = dComp > 0
-        ? `<b>${escapeHtml(tr.badge)}</b> · ${escapeHtml(tr.explanation)}`
-        : `<b>Current Baseline (${escapeHtml(cur.mission_id)})</b> · Composite Score: <b>${cur.composite_score}/100</b> (${(cur.violations || []).length} guideline bottlenecks detected)`;
-
-      const rows = [
-        {
-          title: `<b>A. Mission Quality & Depth (0–100)</b><div style="color:var(--text-muted); font-size:10.5px;">Roster: ${cur.roster_utilization_pts}/20 · Dynamic Spawn: ${cur.dynamic_spawning_pts}/20 · Deepening: ${cur.progressive_deepening_pts}/15 · Tool Disc: ${cur.tool_discipline_pts}/15 · Citations: ${cur.verbatim_citations_pts}/15 · Deliverable: ${cur.deliverable_completeness_pts}/15</div>`,
-          b: `${base.pillar_a_quality} / 100`,
-          c: `${cur.pillar_a_quality} / 100`,
-          d: fmtDelta((cur.pillar_a_quality - base.pillar_a_quality).toFixed(1)),
-        },
-        {
-          title: `<b>B. Token Economy & Scaling ROI (0–100)</b><div style="color:var(--text-muted); font-size:10.5px;">Tokens: ${cur.total_tokens.toLocaleString()} (Waste: ${cur.wasted_token_ratio_pct}%) · ROI: ${cur.quality_roi_per_10k} pts/10k tok · Scaling: ${escapeHtml(cur.context_scaling_mode)}</div>`,
-          b: `${base.pillar_b_token_economy} / 100 <span style="color:var(--text-muted);">(${base.total_tokens.toLocaleString()} tok, ${base.wasted_token_ratio_pct}% waste)</span>`,
-          c: `${cur.pillar_b_token_economy} / 100 <span style="color:var(--text-muted);">(${cur.total_tokens.toLocaleString()} tok, ${cur.wasted_token_ratio_pct}% waste)</span>`,
-          d: `${fmtDelta((cur.pillar_b_token_economy - base.pillar_b_token_economy).toFixed(1))} · Waste ${fmtDelta((cur.wasted_token_ratio_pct - base.wasted_token_ratio_pct).toFixed(1), '%', true)}`,
-        },
-        {
-          title: `<b>C. Execution Speed & Autonomy (0–100)</b><div style="color:var(--text-muted); font-size:10.5px;">Active Time: ${cur.wall_clock_sec}s · Tool Calls: ${cur.tool_calls_count} · Unnecessary Approval Popups: ${cur.unnecessary_approvals}</div>`,
-          b: `${base.pillar_c_speed_autonomy} / 100 <span style="color:var(--text-muted);">(${base.unnecessary_approvals} popups)</span>`,
-          c: `${cur.pillar_c_speed_autonomy} / 100 <span style="color:var(--text-muted);">(${cur.unnecessary_approvals} popups)</span>`,
-          d: fmtDelta((cur.pillar_c_speed_autonomy - base.pillar_c_speed_autonomy).toFixed(1)),
-        },
-        {
-          title: `<b>D. Codebase Cleanliness & Reliability (0–100)</b><div style="color:var(--text-muted); font-size:10.5px;">Funcs ≤80 LOC: ${cur.functions_le_80_pct}% (${cur.long_functions_count} hotspots, max ${cur.max_function_loc} LOC) · Ledger Wired: ${cur.usage_ledger_wired ? 'YES' : 'NO'} · WinError 10053 Guard: ${cur.winerror_10053_guarded ? 'YES' : 'NO'}</div>`,
-          b: `${base.pillar_d_code_cleanliness} / 100`,
-          c: `${cur.pillar_d_code_cleanliness} / 100`,
-          d: fmtDelta((cur.pillar_d_code_cleanliness - base.pillar_d_code_cleanliness).toFixed(1)),
-        },
-        {
-          title: `<b style="color:#38bdf8;">OVERALL COMPOSITE ENGINEERING SCORE</b>`,
-          b: `<b>${base.composite_score} / 100</b>`,
-          c: `<b style="color:#10b981;">${cur.composite_score} / 100</b>`,
-          d: fmtDelta(dComp),
-        },
-      ];
-
-      document.getElementById('selfHealComparisonBody').innerHTML = rows.map(r => `
-        <tr style="border-top: 1px solid var(--border-subtle);">
-          <td style="padding: 8px 10px;">${r.title}</td>
-          <td style="padding: 8px 10px;">${r.b}</td>
-          <td style="padding: 8px 10px;">${r.c}</td>
-          <td style="padding: 8px 10px;">${r.d}</td>
-        </tr>
-      `).join('');
-
-      const vList = cur.violations || [];
-      document.getElementById('selfHealViolationCount').textContent = String(vList.length);
-      const vBox = document.getElementById('selfHealViolationsList');
-      if (vList.length === 0) {
-        vBox.innerHTML = `<div style="padding:10px; border-radius:6px; background:rgba(16,185,129,0.1); border:1px solid rgba(16,185,129,0.3); color:#10b981; font-family:var(--font-mono); font-size:11.5px;">✅ 0 active guideline violations! All 4 Pillars (Quality, Token Economy, Speed/Autonomy, and Code Cleanliness) meet target standards.</div>`;
+      if (data.error || !cur) {
+        document.getElementById('selfHealVerdictText').textContent = data.error || 'No completed missions to evaluate yet.';
       } else {
-        vBox.innerHTML = vList.map(v => `
-          <div style="padding: 8px 10px; border-radius: 6px; background: var(--bg-elevated); border: 1px solid rgba(245, 158, 11, 0.3); font-size: 11px;">
-            <div style="display:flex; justify-content:space-between; font-family:var(--font-mono); font-weight:600; color:#fbbf24;">
-              <span>[${escapeHtml(v.rule_id)} · Pillar ${escapeHtml(v.pillar)}] ${escapeHtml(v.title)}</span>
-              <span style="color:#f43f5e;">-${v.points_lost} pts</span>
-            </div>
-            <div style="color:var(--text-secondary); margin-top:3px;">${escapeHtml(v.evidence)}</div>
-            <div style="color:var(--accent-cyan); font-family:var(--font-mono); font-size:10.5px; margin-top:3px;">Target: ${escapeHtml((v.target_files || []).join(', '))} → ${escapeHtml(v.remediation_summary)}</div>
-          </div>
-        `).join('');
+        document.getElementById('selfHealCompositeBadge').textContent = `${cur.composite} / 100`;
+        const tr = data.tradeoff;
+        document.getElementById('selfHealVerdictText').innerHTML = tr
+          ? `<b>${escapeHtml(tr.verdict)}</b> · ${escapeHtml(tr.explanation)} · resolved: ${escapeHtml((tr.deltas.findings_resolved || []).join(', ') || 'none')} · new: ${escapeHtml((tr.deltas.findings_new || []).join(', ') || 'none')}`
+          : `<b>${escapeHtml(cur.mission_id)}</b> · composite <b>${cur.composite}/100</b> · ${cur.findings.length} findings. Pick a different Baseline mission to compare.`;
+
+        let html = '';
+        SELF_HEAL_ROWS.forEach(([key, title, metrics]) => {
+          html += `<tr style="border-top:1px solid var(--border-subtle); background:rgba(255,255,255,0.03);"><td style="padding:7px 10px;"><b>${title}</b></td><td style="padding:7px 10px;"><b>${base.pillars[key]}</b></td><td style="padding:7px 10px;"><b>${cur.pillars[key]}</b></td><td style="padding:7px 10px;">${fmtDelta(cur.pillars[key] - base.pillars[key])}</td></tr>`;
+          metrics.forEach(([mk, label, lowerIsBetter]) => {
+            const bv = base.metrics[mk], cv = cur.metrics[mk];
+            const delta = (typeof bv === 'number' && typeof cv === 'number' && lowerIsBetter !== null) ? fmtDelta(cv - bv, '', lowerIsBetter) : '';
+            html += `<tr><td style="padding:4px 10px 4px 22px; color:var(--text-secondary);">${label}</td><td style="padding:4px 10px;">${fmtVal(bv)}</td><td style="padding:4px 10px;">${fmtVal(cv)}</td><td style="padding:4px 10px;">${delta}</td></tr>`;
+          });
+        });
+        html += `<tr style="border-top:2px solid var(--border-strong);"><td style="padding:8px 10px;"><b style="color:#38bdf8;">COMPOSITE (avg of 4 pillars)</b></td><td style="padding:8px 10px;"><b>${base.composite}</b></td><td style="padding:8px 10px;"><b>${cur.composite}</b></td><td style="padding:8px 10px;">${fmtDelta(cur.composite - base.composite)}</td></tr>`;
+        document.getElementById('selfHealComparisonBody').innerHTML = html;
+
+        const vList = cur.findings || [];
+        document.getElementById('selfHealViolationCount').textContent = String(vList.length);
+        document.getElementById('selfHealViolationsList').innerHTML = vList.length === 0
+          ? `<div style="padding:10px; color:#10b981; font-size:11.5px;">✅ No findings — all measured targets met.</div>`
+          : vList.map(v => `
+            <div style="padding:8px 10px; border-radius:6px; background:var(--bg-elevated); border:1px solid rgba(245,158,11,0.3); font-size:11px;">
+              <div style="display:flex; justify-content:space-between; font-family:var(--font-mono); font-weight:600; color:#fbbf24;">
+                <span>[${escapeHtml(v.rule_id)} · Pillar ${escapeHtml(v.pillar)}] ${escapeHtml(v.title)}</span><span style="color:#f43f5e;">-${v.points_lost} pts</span>
+              </div>
+              <div style="color:var(--text-secondary); margin-top:3px;">${escapeHtml(v.metric)} = <b>${fmtVal(v.measured)}</b> (target ${escapeHtml(v.target)})</div>
+              ${v.evidence ? `<div style="color:var(--text-muted); margin-top:3px; font-family:var(--font-mono); font-size:10.5px;">${escapeHtml(v.evidence)}</div>` : ''}
+            </div>`).join('');
+
+        const um = cur.unmeasured || [];
+        const umEl = document.getElementById('selfHealUnmeasured');
+        umEl.style.display = um.length ? 'block' : 'none';
+        umEl.innerHTML = '<b>Not measurable for this mission:</b><ul style="margin:4px 0 0 16px; padding:0;">' + um.map(u => `<li>${escapeHtml(u)}</li>`).join('') + '</ul>';
       }
 
-      if (data.guidelines) {
-        const gEl = document.getElementById('selfHealGuidelinesInput');
-        if (!gEl.value || gEl.dataset.loaded !== '1') {
-          gEl.value = data.guidelines;
-          gEl.dataset.loaded = '1';
-        }
+      const log = data.progress || [];
+      if (log.length) {
+        const box = document.getElementById('selfHealProgressLog');
+        box.innerHTML = log.map(p => `<div><span style="color:var(--accent-cyan);">[${escapeHtml(p.stage)}]</span> ${escapeHtml(p.message)}</div>`).join('');
+        box.scrollTop = box.scrollHeight;
+        document.getElementById('selfHealLiveProgress').textContent = log[log.length - 1].message.slice(0, 160);
       }
+      const hist = (data.history || []).slice().reverse();
+      document.getElementById('selfHealHistory').innerHTML = hist.length === 0
+        ? '<div style="color:var(--text-muted);">No heal attempts yet.</div>'
+        : hist.map(h => {
+            const col = h.outcome === 'kept' ? '#10b981' : (h.outcome === 'reverted' || h.outcome === 'tests_failed' ? '#f43f5e' : '#fbbf24');
+            const when = new Date((h.t || 0) * 1000).toLocaleString();
+            return `<div style="padding:3px 0; border-bottom:1px solid var(--border-subtle);"><span style="color:${col}; font-weight:600;">${escapeHtml(h.outcome)}</span> [${escapeHtml(h.rule_id || '')}] ${h.before !== undefined ? `${h.before}→${h.after}` : ''} <span style="color:var(--text-muted);">${escapeHtml(when)}</span><div style="color:var(--text-secondary);">${escapeHtml((h.diagnosis || '').slice(0, 220))}</div></div>`;
+          }).join('');
 
-      const rSel = document.getElementById('selfHealRestoreSelect');
-      const pts = data.restore_points || [];
-      rSel.innerHTML = pts.map(p => `<option value="${escapeHtml(p.ref)}">${escapeHtml(p.ref)} (${escapeHtml(p.commit)}) — ${escapeHtml(p.subject)}</option>`).join('');
+      const gEl = document.getElementById('selfHealGuidelinesInput');
+      if (gEl.dataset.loaded !== '1' && data.guidelines) {
+        gEl.value = data.guidelines;
+        gEl.dataset.loaded = '1';
+      }
+      document.getElementById('selfHealRestoreSelect').innerHTML = (data.restore_points || [])
+        .map(p => `<option value="${escapeHtml(p.ref)}">${escapeHtml(p.ref)} — ${escapeHtml(p.subject.slice(0, 70))}</option>`).join('');
+
+      const btn = document.getElementById('runSelfHealBtn');
+      btn.disabled = !!data.running;
+      btn.textContent = data.running ? '⏳ Healing...' : '✨ Run Self-Heal Cycle';
+      if (data.running && !selfHealPollTimer) {
+        selfHealPollTimer = setInterval(loadSelfHealStatus, 3000);
+      } else if (!data.running && selfHealPollTimer) {
+        clearInterval(selfHealPollTimer);
+        selfHealPollTimer = null;
+      }
     }
 
     async function loadSelfHealStatus() {
       try {
-        const res = await fetch('/api/self-heal/status', { headers: authHeaders() });
-        const data = await res.json();
-        renderSelfHealDashboard(data);
+        const m = document.getElementById('selfHealMissionSelect').value;
+        const b = document.getElementById('selfHealBaselineSelect').value;
+        const qp = new URLSearchParams();
+        if (m) qp.set('mission_id', m);
+        if (b) qp.set('baseline_id', b);
+        const res = await fetch(`/api/self-heal/status?${qp.toString()}`, { headers: authHeaders() });
+        renderSelfHealDashboard(await res.json());
       } catch (err) {
         document.getElementById('selfHealLiveProgress').textContent = `Error loading scorecard: ${err}`;
       }
     }
 
     async function triggerSelfHealCycle() {
-      const btn = document.getElementById('runSelfHealBtn');
-      const prog = document.getElementById('selfHealLiveProgress');
-      btn.disabled = true;
-      btn.textContent = '⏳ Healing & Running Pytest Gate...';
-      prog.textContent = 'Creating safe Git tag, patching violations, and verifying with pytest...';
-      try {
-        const res = await fetch('/api/self-heal/run', {
-          method: 'POST',
-          headers: authHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ auto_commit: true }),
-        });
-        const report = await res.json();
-        prog.textContent = report.message || 'Self-heal cycle finished.';
-        const appliedBox = document.getElementById('selfHealAppliedBox');
-        if (report.applied_fixes && report.applied_fixes.length > 0) {
-          appliedBox.style.display = 'block';
-          appliedBox.innerHTML = `<b>✅ Applied & Verified Fixes (${escapeHtml(report.pytest_summary || 'pytest passed')}):</b><ul style="margin:6px 0 0 18px; padding:0;">` +
-            report.applied_fixes.map(f => `<li>${escapeHtml(f)}</li>`).join('') + `</ul>`;
-        }
-        await loadSelfHealStatus();
-        await refreshState();
-      } catch (err) {
-        prog.textContent = `Self-heal error: ${err}`;
-      } finally {
-        btn.disabled = false;
-        btn.textContent = '✨ Run Self-Heal Cycle Now';
-      }
+      const verify = document.getElementById('selfHealVerifyCheck').checked;
+      const max_fixes = parseInt(document.getElementById('selfHealMaxFixes').value, 10) || 3;
+      const mission_id = document.getElementById('selfHealMissionSelect').value;
+      if (verify && !confirm('The healer will patch code, run tests, then re-run this mission in a fresh process (real tokens, real target). Continue?')) return;
+      const res = await fetch('/api/self-heal/run', {
+        method: 'POST',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ mission_id, verify, max_fixes }),
+      });
+      const data = await res.json();
+      document.getElementById('selfHealLiveProgress').textContent = data.message || data.error || '';
+      await loadSelfHealStatus();
     }
 
     async function saveSelfHealGuidelines() {
-      const text = document.getElementById('selfHealGuidelinesInput').value;
       const res = await fetch('/api/self-heal/guidelines', {
         method: 'POST',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ guidelines: text }),
+        body: JSON.stringify({ guidelines: document.getElementById('selfHealGuidelinesInput').value }),
       });
-      if (res.ok) {
-        document.getElementById('selfHealLiveProgress').textContent = '✅ Saved config/swarm_guidelines.md.';
-      }
+      document.getElementById('selfHealLiveProgress').textContent = res.ok ? '✅ Saved config/swarm_guidelines.md' : 'Failed to save guidelines';
     }
 
     async function restoreSafeBaseline() {
       const ref = document.getElementById('selfHealRestoreSelect').value;
-      if (!ref) return;
-      if (!confirm(`Restore codebase to '${ref}'? (A pre-restore safety tag will also be created automatically.)`)) return;
-      const prog = document.getElementById('selfHealLiveProgress');
-      prog.textContent = `Restoring repository to ${ref}...`;
+      if (!ref || !confirm(`Restore code to '${ref}'? Current state is tagged first and uncommitted work is stashed. Restart server.py afterwards.`)) return;
       const res = await fetch('/api/self-heal/restore', {
         method: 'POST',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ ref }),
       });
       const data = await res.json();
-      prog.textContent = data.message || 'Restored.';
-      document.getElementById('selfHealAppliedBox').style.display = 'none';
-      if (data.status_report) renderSelfHealDashboard(data.status_report);
-      await refreshState();
+      document.getElementById('selfHealLiveProgress').textContent = data.message || data.error || 'Done.';
+      await loadSelfHealStatus();
     }
 
     async function submitNewRole() {
