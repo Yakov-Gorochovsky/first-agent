@@ -764,6 +764,57 @@ def list_notes(tenant_id: Optional[str] = None) -> str:
     return header + ", ".join(files)
 
 
+def scorecard_diagnose(mission_id: Optional[str] = None) -> str:
+    """Diagnose codebase health and mission performance across the 4 Pillars (Quality, Tokens, Speed, Code)."""
+    try:
+        from core.self_healer import ScorecardEngine
+        engine = ScorecardEngine()
+        card = engine.evaluate(mission_id)
+        lines = [
+            f"=== 4-PILLAR SCORECARD: {card.mission_id} ===",
+            f"Composite Score: {card.composite}/100",
+            f"Pillars: Quality(A)={card.pillars['A']}/100, Tokens(B)={card.pillars['B']}/100, Speed(C)={card.pillars['C']}/100, Code(D)={card.pillars['D']}/100",
+            f"Open Findings ({len(card.findings)}):",
+        ]
+        for f in card.findings:
+            lines.append(f"- [{f.rule_id} · Pillar {f.pillar}] {f.title}: measured {f.measured} (target {f.target}) [-{f.points_lost} pts]")
+            if f.evidence:
+                lines.append(f"  Evidence: {f.evidence[:160]}")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"Error diagnosing scorecard: {exc}"
+
+
+def self_heal_codebase(max_fixes: int = 3, verify: bool = True, rules: Optional[str] = None) -> str:
+    """Run an autonomous self-healing cycle: diagnoses findings, LLM proposes patches, tests with interactive repair, runs verification mission in isolated child process, evaluates tradeoffs, and commits wins or reverts."""
+    try:
+        from core.self_healer import SelfHealer
+        healer = SelfHealer()
+        rule_list = [r.strip() for r in rules.split(",") if r.strip()] if isinstance(rules, str) else None
+        report = healer.run_cycle(max_fixes=max_fixes, verify=verify, rules=rule_list)
+        status = report.get("status")
+        if status == "no_fix":
+            return "Self-heal cycle completed: No fix survived test/syntax validation. Codebase was left unchanged."
+        if status == "nothing_to_fix":
+            return "Self-heal cycle completed: All targets already met. Nothing to fix."
+        if status in ("kept", "reverted"):
+            b, a = report.get("before", {}).get("composite"), report.get("after", {}).get("composite")
+            trade = report.get("tradeoff", {})
+            applied = report.get("applied", [])
+            lines = [
+                f"Self-heal cycle status: {status.upper()}",
+                f"Verdict: {trade.get('verdict')} — {trade.get('explanation')}",
+                f"Composite score: {b} -> {a}",
+                f"Fixes applied: {', '.join(a['rule_id'] for a in applied) if applied else 'none'}",
+            ]
+            if report.get("commit"):
+                lines.append(f"Git commit: {report['commit']}")
+            return "\n".join(lines)
+        return f"Self-heal cycle result: {report}"
+    except Exception as exc:
+        return f"Error executing self-heal: {exc}"
+
+
 # ---------------------------------------------------------------------------
 # 2. Tool Registry & Schemas
 # ---------------------------------------------------------------------------
@@ -780,6 +831,8 @@ AVAILABLE_TOOLS: Dict[str, Callable[..., str]] = {
     "save_note": save_note,
     "read_note": read_note,
     "list_notes": list_notes,
+    "scorecard_diagnose": scorecard_diagnose,
+    "self_heal_codebase": self_heal_codebase,
 }
 
 TOOL_SCHEMAS: List[Dict[str, Any]] = [
@@ -968,6 +1021,46 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "scorecard_diagnose",
+            "description": "Diagnose the system's performance, code quality, token economy, and reliability using the 4-Pillar Scorecard Engine.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mission_id": {
+                        "type": "string",
+                        "description": "Optional mission ID to evaluate. Defaults to the latest completed mission.",
+                    }
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "self_heal_codebase",
+            "description": "Autonomously diagnose scorecard findings, propose code fixes, repair test failures, verify via isolated benchmark mission, and commit strictly winning improvements.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "max_fixes": {
+                        "type": "integer",
+                        "description": "Maximum number of findings to fix in this cycle (1-5, default 3).",
+                    },
+                    "verify": {
+                        "type": "boolean",
+                        "description": "Whether to re-run the benchmark mission in a fresh subprocess to measure real performance lift (default true).",
+                    },
+                    "rules": {
+                        "type": "string",
+                        "description": "Optional comma-separated list of rule IDs to target (e.g. 'G-B1,G-D1').",
+                    },
+                },
             },
         },
     },

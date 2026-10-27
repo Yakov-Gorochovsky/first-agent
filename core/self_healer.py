@@ -165,8 +165,8 @@ class GitSafetyController:
 # Scorecard engine (evidence only)
 # ----------------------------------------------------------------------------
 class ScorecardEngine:
-    def __init__(self, repo_root: pathlib.Path, db_path: Optional[str] = None) -> None:
-        self.repo_root = repo_root
+    def __init__(self, repo_root: Optional[pathlib.Path] = None, db_path: Optional[str] = None) -> None:
+        self.repo_root = repo_root or pathlib.Path(__file__).resolve().parent.parent
         self.db_path = str(db_path or CONFIG.db_path)
 
     def _conn(self) -> sqlite3.Connection:

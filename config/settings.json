@@ -57,6 +57,10 @@
     "@memory": [
       "remember_fact",
       "recall_memories"
+    ],
+    "@self_heal": [
+      "scorecard_diagnose",
+      "self_heal_codebase"
     ]
   },
   "prompts": {

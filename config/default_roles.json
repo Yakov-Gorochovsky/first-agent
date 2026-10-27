@@ -76,5 +76,19 @@
     "color": "#ff3b6b",
     "is_builtin": true,
     "max_steps": 12
+  },
+  {
+    "name": "system_optimizer",
+    "title": "Autonomous Self-Healing & System Optimizer",
+    "instructions": "Audit codebase quality, token economy, speed, and reliability. Diagnose scorecard findings (`scorecard_diagnose`), trigger autonomous self-healing cycles (`self_heal_codebase`), verify real benchmark lifts, and report quantitative tradeoff verdicts.",
+    "capabilities": [
+      "@self_heal",
+      "@code",
+      "@files",
+      "@memory"
+    ],
+    "color": "#10b981",
+    "is_builtin": true,
+    "max_steps": 12
   }
 ]
