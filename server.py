@@ -37,6 +37,7 @@ from core.rate_limiter import (
     TenantCostGovernor,
 )
 from core.roles import CAPABILITY_BUNDLES, RoleRegistry
+from core.self_healer import SelfHealer
 from core.storage import SQLiteStorage, validate_tenant_id
 from core.swarm_manager import SwarmManager
 from core.version import get_version_info
@@ -61,6 +62,7 @@ swarm_manager = SwarmManager(
     storage=storage, bus=bus, role_registry=role_registry, default_llm=llm
 )
 auth_manager = AuthManager(CONFIG.keys_path)
+self_healer = SelfHealer(bus=bus)
 
 
 @dataclass
@@ -470,7 +472,57 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
                         _sse_clients.remove(client_conn)
             return
 
+        if path == "/api/self-heal/status":
+            auth = self._authenticate("user")
+            if not auth:
+                return
+            mission_id = (qs.get("mission_id", [""])[0] or "").strip() or None
+            self._send_json(self_healer.get_status_report(mission_id=mission_id))
+            return
+
         self._send_json({"error": "Not found"}, 404)
+
+    def _handle_self_heal_post(self, path: str, body: Dict[str, Any]) -> bool:
+        if not path.startswith("/api/self-heal/"):
+            return False
+        auth = self._authenticate("admin")
+        if not auth:
+            return True
+        if path == "/api/self-heal/run":
+            mission_id = str(body.get("mission_id", "")).strip() or None
+            selected_rules = body.get("selected_rules")
+            auto_commit = bool(body.get("auto_commit", True))
+            report = self_healer.run_healing_cycle(
+                mission_id=mission_id,
+                selected_rules=selected_rules if isinstance(selected_rules, list) else None,
+                auto_commit=auto_commit,
+            )
+            self._send_json(report)
+            return True
+        if path == "/api/self-heal/guidelines":
+            content = str(body.get("guidelines", "")).strip()
+            if not content:
+                self._send_json({"error": "Guidelines content cannot be empty."}, 400)
+                return True
+            saved = self_healer.save_guidelines(content)
+            self._send_json({"status": "saved", "guidelines": saved})
+            return True
+        if path == "/api/self-heal/restore":
+            ref = str(body.get("ref", "")).strip()
+            if not ref:
+                self._send_json({"error": "Git ref is required."}, 400)
+                return True
+            ok, msg = self_healer.git_safety.restore_to_ref(ref)
+            self._send_json(
+                {
+                    "restored": ok,
+                    "message": msg,
+                    "status_report": self_healer.get_status_report(),
+                },
+                200 if ok else 400,
+            )
+            return True
+        return False
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
@@ -492,6 +544,9 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
             body = json.loads(raw_body)
         except json.JSONDecodeError:
             body = {}
+
+        if self._handle_self_heal_post(parsed.path, body):
+            return
 
         if parsed.path == "/api/swarms":
             auth = self._authenticate("admin")

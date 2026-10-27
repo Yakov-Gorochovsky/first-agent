@@ -402,6 +402,29 @@ The following security findings were verified via code audit and local test repr
   1. **Strict Dev/Test Quarantine ([`core/prompt_opt.py`](core/prompt_opt.py))**: Exploration and mutation occur solely against the `dev` split. The frozen `test` split is evaluated exactly once as a gating check.
   2. **Hard Spend Caps ([`core/prompt_opt.py`](core/prompt_opt.py))**: Enforces strict USD spend caps on optimization runs.
 
+### Finding 34 (Remediated — P2): Dynamic Specialist Overwrite, Cross-Mission Roster Persistence & Unapproved `run_python` File-Read Loops (`v0.6.4`–`v0.6.5`)
+- **Severity**: Medium
+- **Status**: **FIXED** (Remediated October 27, 2026; verified in `tests/unit/` and live audit missions `m_default_610387c77508` & `m_default_bc29580e6f9a`)
+- **Root Cause**:
+  1. In mission `m_default_c74725e2f7b8`, `make_spawn_specialist_tool` allowed specialists to overwrite existing active roles (`security_auditor`) and mutate `workspace/roles.json` on disk across independent missions.
+  2. Verification/Critic agents invoked high-risk `run_python` subprocesses (triggering human approval gates) merely to read or count lines in workspace `.md`/`.json` notes instead of using low-risk `read_note`.
+- **Remediation Implemented**:
+  1. **Roster Deduplication Guard ([`core/roles.py`](core/roles.py))**: `spawn_specialist` normalizes alphanumeric role keys and rejects duplicate or overlapping role spawns when an equivalent domain specialist is already active in the mission roster.
+  2. **Ephemeral Per-Mission RoleRegistry ([`core/topology.py`](core/topology.py), [`core/roles.py`](core/roles.py))**: Mission-scoped `RoleRegistry(ephemeral=True)` isolates dynamically spawned roles in memory so they never overwrite `workspace/roles.json` or bleed across tenants/missions.
+  3. **Strict `read_note` Enforcement ([`core/swarm.py`](core/swarm.py))**: Enforced `[SPECIALIST OPERATIONAL DOCTRINE]` forbidding `run_python` for workspace file inspection and requiring verbatim citations via `read_note`.
+
+### Finding 35 (Architecture & Governance Gate — P1): Autonomous Self-Healing Code Modification Guardrails & Immutable Security Boundary
+- **Severity**: High (Governance Invariant for Continuous Self-Healing)
+- **Status**: **ENFORCED BY DESIGN**
+- **Threat Model**:
+  1. An autonomous Self-Healing loop that inspects traces and patches repository source code could accidentally weaken security boundaries (`core/security.py`, `core/auth.py`, `core/approval.py`), corrupt the working tree, or claim improvements without empirical proof.
+- **Defense-in-Depth Controls**:
+  1. **Immutable Security Core Allow/Deny List**: The Self-Healer is strictly prohibited from modifying security enforcement modules (`core/security.py`, `core/auth.py`, `core/approval.py`, `core/rate_limiter.py`, `.env`, `keys.json`). Only orchestration, scheduling, prompt doctrine, and UI telemetry files (`core/peer_swarm.py`, `core/swarm.py`, `core/meta_planner.py`, `core/roles.py`, `static/index.html`, `config/swarm_guidelines.md`) are eligible for self-healing patches.
+  2. **Mandatory Pre-Heal Git Checkpoint (`self-heal/baseline-*`)**: Every self-healing cycle creates a clean Git tag/commit before applying any diff, enabling instant 1-click rollback (`git reset --hard <tag>`).
+  3. **Automated `pytest` + Swarm Network Health Scorecard Gate**: A candidate self-heal patch is automatically reverted unless `pytest` passes 100% AND the post-heal verification run maintains or improves the 6-dimension **Swarm Network Health Score (`0–100`)**.
+  4. **Automatic Documentation Synchronization**: Every verified self-heal commit automatically appends its root cause, before/after **Swarm Network Health Score**, and commit hash to [`PROBLEMS_AND_METRICS.md`](PROBLEMS_AND_METRICS.md) (and [`SECURITY_FINDINGS.md`](SECURITY_FINDINGS.md) when security-relevant).
+
+
 
 
 
