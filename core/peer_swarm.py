@@ -99,6 +99,32 @@ class PeerSwarm:
     def _inbox_snapshot(self) -> Dict[str, int]:
         return {name: len(node.inbox) for name, node in self.nodes.items()}
 
+    @staticmethod
+    def _is_critic_role(name: str) -> bool:
+        n = name.lower()
+        return any(k in n for k in ("critic", "verifier", "verification", "reviewer", "qa_gate"))
+
+    @staticmethod
+    def _is_discovery_role(name: str) -> bool:
+        n = name.lower()
+        return any(k in n for k in ("recon", "research", "discovery", "mapper", "planner", "architect"))
+
+    def _get_unrun_domain_specialists(self, exclude: Optional[set[str]] = None) -> List[str]:
+        """Return planned non-critic domain specialists that have neither run nor been queued yet."""
+        if not self.allowed_roles or len(self.allowed_roles) < 3:
+            return []
+        excl = {e.lower().strip() for e in (exclude or set())}
+        unrun: List[str] = []
+        for r in self.allowed_roles:
+            rn = r.lower().strip()
+            if rn in excl or rn == "coordinator" or rn not in self.nodes:
+                continue
+            if self._is_critic_role(rn):
+                continue
+            if self.budget.agent_steps.get(rn, 0) == 0 and len(self.nodes[rn].inbox) == 0:
+                unrun.append(rn)
+        return unrun
+
     def refresh_peers(self) -> None:
         """Rebuild the peer network dynamically from RoleRegistry while preserving existing inbox queues."""
         old_inboxes = {k: v.inbox for k, v in self.nodes.items()}
@@ -267,9 +293,61 @@ class PeerSwarm:
                 message=message,
                 inboxes=self._inbox_snapshot(),
             )
+
+            # Automatic Multi-Peer Fan-Out: When discovery hands off to a domain specialist (or when a
+            # specialist hands off to the critic while sibling planned domain specialists are still unrun),
+            # automatically fan out the handoff so every planned domain specialist participates in parallel.
+            should_fanout = (
+                (self._is_discovery_role(sender_name) and target != "coordinator" and not self._is_critic_role(target))
+                or self._is_critic_role(target)
+            )
+            if should_fanout:
+                unrun_peers = self._get_unrun_domain_specialists(exclude={sender_name, target})
+                for unrun_peer in unrun_peers:
+                    fanout_msg = (
+                        f"[PARALLEL SWARM FAN-OUT from '{sender_name}' — Execute your specialized role "
+                        f"('{self.nodes[unrun_peer].role}') on the discovered vectors, save your empirical "
+                        f"findings with verbatim code/data citations via `save_note`, and hand off to verification]:\n\n{message}"
+                    )
+                    self.nodes[unrun_peer].inbox.append(
+                        PeerMessage(sender=sender_name, recipient=unrun_peer, content=fanout_msg)
+                    )
+                    self.bus.emit(
+                        "peer_message",
+                        agent_name=sender_name,
+                        tenant_id=self.budget.tenant_id,
+                        from_agent=sender_name,
+                        to_agent=unrun_peer,
+                        message=fanout_msg,
+                        inboxes=self._inbox_snapshot(),
+                    )
+
             return f"Message delivered to '{target}' inbox."
 
         def finish_swarm(final_answer: str) -> str:
+            unrun_peers = self._get_unrun_domain_specialists(exclude={sender_name})
+            if unrun_peers:
+                for unrun_peer in unrun_peers:
+                    fanout_msg = (
+                        f"[SWARM COMPLETION GATE — Execute your planned specialist role ('{self.nodes[unrun_peer].role}') "
+                        f"before final sign-off, save your empirical findings via `save_note`, and hand off to '{sender_name}']:\n\n{final_answer[:1200]}"
+                    )
+                    self.nodes[unrun_peer].inbox.append(
+                        PeerMessage(sender=sender_name, recipient=unrun_peer, content=fanout_msg)
+                    )
+                    self.bus.emit(
+                        "peer_message",
+                        agent_name=sender_name,
+                        tenant_id=self.budget.tenant_id,
+                        from_agent=sender_name,
+                        to_agent=unrun_peer,
+                        message=fanout_msg,
+                        inboxes=self._inbox_snapshot(),
+                    )
+                return (
+                    f"Deferred finish_swarm: Planned specialist(s) {unrun_peers} had not executed yet and have now been queued."
+                )
+
             self._final_answer = final_answer.strip()
             self.bus.emit(
                 "swarm_complete",
@@ -392,12 +470,19 @@ class PeerSwarm:
                     break
 
                 active_node: Optional[PeerNode] = None
-                # Schedule specialist peers before coordinator so multi-peer fan-outs
-                # complete all specialist work before coordinator synthesizes the batch.
+                # 3-Tier Priority Scheduler:
+                # Tier 1: Non-critic domain specialists (so parallel fan-outs complete all domain work first)
+                # Tier 2: Verification / Critic specialists (wakes up once with all domain findings batched)
+                # Tier 3: Coordinator (routing & final synthesis)
                 for name, node in self.nodes.items():
-                    if name != "coordinator" and node.inbox:
+                    if name != "coordinator" and not self._is_critic_role(name) and node.inbox:
                         active_node = node
                         break
+                if active_node is None:
+                    for name, node in self.nodes.items():
+                        if name != "coordinator" and self._is_critic_role(name) and node.inbox:
+                            active_node = node
+                            break
                 if active_node is None and self.nodes["coordinator"].inbox:
                     active_node = self.nodes["coordinator"]
 
