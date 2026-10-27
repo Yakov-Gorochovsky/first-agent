@@ -10,6 +10,7 @@ Peers communicate directly with one another via `send_peer_message(to_agent, mes
 without needing the coordinator to relay every intermediate hop.
 """
 
+import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -350,6 +351,26 @@ class PeerSwarm:
                     )
                 return (
                     f"Deferred finish_swarm: Planned specialist(s) {unrun_peers} had not executed yet and have now been queued."
+                )
+
+            # Anti-Hallucination Gate for Remote Web Targets:
+            # A swarm cannot claim to have modified/remediated an external third-party server
+            external_urls = [u for u in re.findall(r"https?://[^\s/$.?#].[^\s]*", final_answer) if "localhost" not in u and "127.0.0.1" not in u]
+            claims_external_remediation = any(
+                w in final_answer.lower()
+                for w in (
+                    "validated all remediation vectors for the https://",
+                    "remediated https://",
+                    "hardened the live server",
+                    "deployed fix to https://",
+                    "remediated the live https://",
+                )
+            )
+            if external_urls and claims_external_remediation:
+                return (
+                    "Validation Rejected: The swarm cannot claim to have hardened or remediated a live external web server. "
+                    "You may only present empirical audit findings, discovered vulnerabilities, and proposed remediation steps, "
+                    "or verify offline/local test suites."
                 )
 
             self._final_answer = final_answer.strip()

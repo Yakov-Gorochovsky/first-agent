@@ -71,6 +71,20 @@ def test_run_python_environment_secret_scrubbing() -> None:
         os.environ.pop("SECRET_TEST_TOKEN", None)
 
 
+def test_run_python_blocks_file_reading_misuse() -> None:
+    """Verify deterministic AST guard blocks run_python from being used as a file-reading tool."""
+    res1 = run_python("import os\nfor f in os.listdir('workspace'): print(f)")
+    assert "PolicyViolation" in res1
+    assert "read_note" in res1
+
+    res2 = run_python("with open('tenants/default/security_findings.json') as f: print(f.read())")
+    assert "PolicyViolation" in res2
+    assert "read_note" in res2
+
+    res3 = run_python("import unittest\nclass T(unittest.TestCase):\n def test_dummy(self): pass")
+    assert "PolicyViolation" not in res3
+
+
 @pytest.mark.unit
 @pytest.mark.security
 def test_notes_multi_tenant_isolation_and_restricted_files() -> None:

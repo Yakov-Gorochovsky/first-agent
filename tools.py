@@ -618,8 +618,49 @@ socket.socket.connect_ex = _guarded_connect_ex
 '''
 
 
+def _is_misused_file_read(code_str: str) -> Optional[str]:
+    """Deterministic AST Guard: Block run_python from being misused purely for reading or listing workspace files.
+    Agents must use 'read_note' and 'list_notes' instead, which are fast, tenant-scoped, and require no human approval."""
+    try:
+        tree = ast.parse(code_str)
+    except Exception:
+        return None
+
+    # Legitimate test frameworks, heavy analytical libraries, or class definitions are exempted
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names = [a.name for a in getattr(node, "names", [])] + [getattr(node, "module", "") or ""]
+            if any(n in ("unittest", "pytest", "numpy", "pandas", "scipy", "requests", "bs4", "selenium", "sqlite3") for n in names):
+                return None
+        elif isinstance(node, ast.ClassDef):
+            return None
+
+    reads_files = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name) and func.id == "open":
+                reads_files = True
+            elif isinstance(func, ast.Attribute) and func.attr in ("listdir", "walk", "glob", "read_text", "read_bytes"):
+                reads_files = True
+
+    if reads_files:
+        has_functions = any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) for n in ast.walk(tree))
+        if not has_functions:
+            return (
+                "PolicyViolation: 'run_python' cannot be used purely to read or list workspace files. "
+                "Use the dedicated 'read_note(filename)' and 'list_notes()' tools instead. "
+                "They are instantaneous, tenant-scoped, and require no human approval."
+            )
+    return None
+
+
 def run_python(code: str) -> str:
     """Execute Python code in an isolated container sandbox or fail closed unless local execution is permitted."""
+    guard_err = _is_misused_file_read(code)
+    if guard_err:
+        return guard_err
+
     container_bin = shutil.which("docker") or shutil.which("podman")
     use_container = container_bin is not None and CONFIG.python_sandbox_mode in {"auto", "container"}
 

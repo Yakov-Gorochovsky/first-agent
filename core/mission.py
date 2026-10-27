@@ -86,6 +86,11 @@ class IntegratedMissionRunner:
         7. Return structured result.
         """
         clean_tenant = validate_tenant_id(tenant_id)
+        _INTERNAL_HEAL_KEYWORDS = ("heal", "self_heal", "bottleneck", "scorecard", "token consumption", "code modularity", "system_optimizer", "code cleanliness", "clean code", "fix our")
+        is_system_heal = any(kw in prompt.lower() for kw in _INTERNAL_HEAL_KEYWORDS)
+        if is_system_heal and clean_tenant == "default":
+            clean_tenant = "system"
+
         effective_mission_id = mission_id or f"m_{clean_tenant}_{secrets.token_hex(6)}"
         step_counter = 1
 
@@ -120,11 +125,35 @@ class IntegratedMissionRunner:
         )
 
         # Step 2: Meta-Planning
+        planning_prompt = prompt
+        if is_system_heal:
+            planning_prompt = (
+                "[SYSTEM TARGET DIRECTIVE: The target of this mission is the FIRST-AGENT Multi-Agent Swarm Framework itself "
+                "(core/, tools.py, server.py). You must diagnose codebase health using 'scorecard_diagnose' and invoke 'self_heal_codebase'. "
+                "Do NOT invent or target external websites or past workspace audit files.]\n\n"
+                f"Task: {prompt}"
+            )
+
         planned_spec: SwarmSpec = self.meta_planner.plan_swarm(
-            task_prompt=prompt,
+            task_prompt=planning_prompt,
             tenant_id=clean_tenant,
             swarm_id=f"swarm_{effective_mission_id}",
         )
+        if is_system_heal:
+            has_self_heal = any("@self_heal" in r.capabilities or "self_heal_codebase" in r.capabilities for r in planned_spec.roles)
+            if not has_self_heal:
+                from core.roles import RoleSpec
+                planned_spec.roles.append(
+                    RoleSpec(
+                        name="system_optimizer",
+                        title="Autonomous Self-Healing & System Optimizer",
+                        instructions="Diagnose 4-pillar scorecard bottlenecks via scorecard_diagnose and execute self_heal_codebase to resolve findings.",
+                        capabilities=["@self_heal", "@code", "@files", "@memory"],
+                        color="#10b981",
+                        max_steps=12,
+                        is_builtin=True,
+                    )
+                )
         if topology_override and topology_override.lower().strip() not in ("", "auto"):
             planned_spec.topology = topology_override.lower().strip()
         elif (
