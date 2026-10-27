@@ -84,4 +84,26 @@ def test_fix_proposer_has_no_builtin_patches() -> None:
     import core.self_healer as mod
     assert not [n for n in dir(SelfHealer) if n.startswith("_heal_")]
     assert hasattr(FixProposer, "propose")
+    assert hasattr(FixProposer, "repair")
     assert isinstance(mod.Scorecard, type) and Scorecard
+
+
+def test_fix_proposer_repair_method() -> None:
+    class DummyLLM:
+        def generate(self, messages, tools=None):
+            class Resp:
+                content = json.dumps({
+                    "diagnosis": "fixed the test failure",
+                    "edits": [{"file": "core/resilience.py", "search": "x = 1", "replace": "x = 2"}],
+                    "expected_effect": "passes tests",
+                    "tradeoffs": "none",
+                })
+            return Resp()
+
+    from core.self_healer import Finding
+    proposer = FixProposer(DummyLLM(), pathlib.Path(__file__).resolve().parents[2])
+    finding = Finding("G-D1", "D", "Large functions", "metric", 100, "<=80", 10.0, "evidence")
+    proposal = {"diagnosis": "orig", "edits": [{"file": "core/resilience.py", "search": "x = 9", "replace": "x = 2"}]}
+    res = proposer.repair(finding, proposal, ["core/resilience.py"], "search text occurs 0x", "guidelines")
+    assert res.get("diagnosis") == "fixed the test failure"
+    assert len(res.get("edits")) == 1

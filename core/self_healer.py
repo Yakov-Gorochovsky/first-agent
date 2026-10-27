@@ -318,6 +318,7 @@ class ScorecardEngine:
         if not mid:
             raise ValueError("No completed missions found to evaluate.")
         data = self._load_mission(mid)
+        prompt = self.mission_prompt(mid)
         cps = data["checkpoints"]
         tm = self._collect_trace_metrics(data["traces"])
         findings: List[Finding] = []
@@ -405,10 +406,16 @@ class ScorecardEngine:
         a += s
         add("G-A1", "A", "Not every planned specialist participated", "roster_participation_pct", rp, "100%", 20 - s,
             f"Planned {planned}; participated {participated}.")
-        s = 20.0 if (len(planned) < 3 or tm["spawns"]) else 5.0
+        is_multi_domain = any(w in prompt.lower() for w in ("security", "audit", "accessibility", "rtl", "vulnerabilit", "ui/ux", "multi", "cross"))
+        if is_multi_domain or len(planned) >= 3:
+            s = 20.0 if tm["spawns"] else (10.0 if len(participated) >= 3 else 5.0)
+            target_str = ">=1 dynamic spawn on multi-domain mission"
+        else:
+            s = 20.0
+            target_str = ">=1 dynamic spawn when >=3 specialists"
         a += s
-        add("G-A2", "A", "Team did not adapt to discovery", "dynamic_spawns", len(tm["spawns"]), ">=1 when >=3 specialists", 20 - s,
-            f"{len(planned)} roles were fixed at planning time ({planned}); spawn_specialist calls during mission: {tm['spawns'] or 'none'}.")
+        add("G-A2", "A", "Team did not adapt to discovery", "dynamic_spawns", len(tm["spawns"]), target_str, 20 - s,
+            f"{len(planned)} roles were fixed at planning time ({planned}); active specialists: {participated}; spawn_specialist calls during mission: {tm['spawns'] or 'none'}.")
         s = max(0.0, 15.0 - 5.0 * len(tm["dups"]))
         a += s
         add("G-A3", "A", "Repeated fetches of the same resource", "duplicate_fetches", len(tm["dups"]), "0", 15 - s, "; ".join(tm["dups"]))
@@ -589,6 +596,33 @@ class FixProposer:
             return {"error": "LLM returned no usable edits."}
         return prop
 
+    def repair(self, finding: Finding, proposal: Dict[str, Any], files: List[str], error_info: str, guidelines: str) -> Dict[str, Any]:
+        """Ask LLM to fix a proposed patch that failed pytest or had syntax/search issues."""
+        system = (
+            "You are a senior engineer debugging a failed patch in a Python codebase. "
+            "Your previous edit caused an error or failed pytest. "
+            "Analyze the failure, preserve the original fix intent, and provide a corrected patch. "
+            "Each edit's `search` must be copied EXACTLY (including exact whitespace/indentation) from the CURRENT file content. "
+            "Respond ONLY with JSON."
+        )
+        valid_files = [f for f in files if is_editable(f) and (self.repo_root / f).exists()]
+        sources = "\n\n".join(f"===== FILE: {f} =====\n{(self.repo_root / f).read_text(encoding='utf-8', errors='replace')}" for f in valid_files)
+        prompt = (
+            f"GUIDELINES:\n{guidelines}\n\nFINDING TO FIX:\n{json.dumps(finding.to_dict(), indent=1)}\n\n"
+            f"PREVIOUS DIAGNOSIS:\n{proposal.get('diagnosis', '')}\n\n"
+            f"PREVIOUS EDITS:\n{json.dumps(proposal.get('edits', []), indent=1)}\n\n"
+            f"TEST / EXECUTION FAILURE:\n{error_info}\n\n"
+            f"CURRENT SOURCE CODE:\n{sources}\n\n"
+            "Provide the corrected fix that resolves this error and passes tests. "
+            'Reply as JSON: {"diagnosis": "explanation of what failed and how you corrected it", '
+            '"edits": [{"file": "...", "search": "...", "replace": "..."}], '
+            '"expected_effect": "...", "tradeoffs": "..."}'
+        )
+        rep = _extract_json(self._ask(system, prompt))
+        if not rep or not isinstance(rep.get("edits"), list) or not rep["edits"]:
+            return {"error": "LLM returned no usable repair edits."}
+        return rep
+
 
 # ----------------------------------------------------------------------------
 # Self-healer orchestration
@@ -651,7 +685,9 @@ class SelfHealer:
             p = subprocess.run([sys.executable, "-m", "pytest", "-q", "-x", "--no-header", "-p", "no:cacheprovider"],
                                cwd=str(self.repo_root), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
             lines = [ln for ln in p.stdout.strip().splitlines() if ln.strip()]
-            res = {"passed": p.returncode == 0, "summary": lines[-1] if lines else "no output", "tail": "\n".join(lines[-25:]), "t": time.time()}
+            summary = lines[-1] if lines else "no output"
+            tail = "\n".join(lines[-45:]) if len(lines) > 45 else "\n".join(lines)
+            res = {"passed": p.returncode == 0, "summary": summary, "tail": tail, "t": time.time()}
         except Exception as exc:
             res = {"passed": False, "summary": f"pytest error: {exc}", "tail": "", "t": time.time()}
         (self.repo_root / HEAL_STATE_DIR / "last_pytest.json").write_text(json.dumps(res), encoding="utf-8")
@@ -767,22 +803,53 @@ class SelfHealer:
                 self._emit("skip", f"[{f.rule_id}] {prop['error']}")
                 self._record({"t": time.time(), "rule_id": f.rule_id, "outcome": "no_proposal", "diagnosis": prop["error"]})
                 continue
-            self._emit("patch", f"[{f.rule_id}] Diagnosis: {prop.get('diagnosis', '')[:300]}")
-            files, err = self._apply_edits(prop["edits"])
-            if err:
-                self._emit("skip", f"[{f.rule_id}] Edit rejected: {err}")
-                self._record({"t": time.time(), "rule_id": f.rule_id, "outcome": "edit_rejected", "diagnosis": prop.get("diagnosis", ""), "error": err})
+
+            max_repairs = 2
+            current_prop = prop
+            files: List[str] = []
+            applied_cleanly = False
+            last_err = ""
+
+            for attempt in range(max_repairs + 1):
+                if attempt > 0:
+                    self._emit("repair", f"[{f.rule_id}] Attempting repair {attempt}/{max_repairs} for: {last_err[:160]}...")
+                    read_files = list(set([e.get("file") for e in current_prop.get("edits", []) if e.get("file")] + files))
+                    rep = proposer.repair(f, current_prop, read_files, last_err, guidelines)
+                    if rep.get("error"):
+                        self._emit("skip", f"[{f.rule_id}] Repair proposal failed: {rep['error']}")
+                        last_err = rep["error"]
+                        break
+                    current_prop = rep
+
+                self._emit("patch", f"[{f.rule_id}] Applying patch" + (f" (repair {attempt})" if attempt > 0 else "") + f": {current_prop.get('diagnosis', '')[:160]}")
+                patch_files, err = self._apply_edits(current_prop["edits"])
+                if err:
+                    self._emit("skip", f"[{f.rule_id}] Edit rejected: {err}")
+                    last_err = f"Edit application error: {err}"
+                    continue
+
+                files = patch_files
+                self._emit("pytest", f"[{f.rule_id}] Patched {files}; running tests...")
+                res = self.run_pytest()
+                if res["passed"]:
+                    self._emit("ok", f"[{f.rule_id}] Fix passes tests" + (f" (after {attempt} repairs)" if attempt > 0 else "") + ".")
+                    applied_cleanly = True
+                    break
+                else:
+                    self._emit("repair_needed", f"[{f.rule_id}] Tests failed ({res['summary']}).")
+                    last_err = f"Pytest failed with:\n{res.get('tail') or res.get('summary')}"
+                    self.git.revert_files(files)
+                    files = []
+
+            if not applied_cleanly:
+                if files:
+                    self.git.revert_files(files)
+                self._emit("revert", f"[{f.rule_id}] Tests/edits failed after {max_repairs} repairs; cleanly reverted.")
+                self._record({"t": time.time(), "rule_id": f.rule_id, "outcome": "tests_failed", "diagnosis": current_prop.get("diagnosis", ""), "error": last_err})
                 continue
-            self._emit("pytest", f"[{f.rule_id}] Patched {files}; running tests...")
-            res = self.run_pytest()
-            if not res["passed"]:
-                self.git.revert_files(files)
-                self._emit("revert", f"[{f.rule_id}] Tests failed ({res['summary']}); reverted.")
-                self._record({"t": time.time(), "rule_id": f.rule_id, "outcome": "tests_failed", "diagnosis": prop.get("diagnosis", ""), "tests": res["summary"]})
-                continue
+
             touched.extend(x for x in files if x not in touched)
-            applied.append({"rule_id": f.rule_id, "files": files, **{k: prop.get(k, "") for k in ("diagnosis", "expected_effect", "tradeoffs")}})
-            self._emit("ok", f"[{f.rule_id}] Fix passes tests.")
+            applied.append({"rule_id": f.rule_id, "files": files, **{k: current_prop.get(k, "") for k in ("diagnosis", "expected_effect", "tradeoffs")}})
 
         if not applied:
             self._emit("complete", "No fix survived. Codebase unchanged.")
