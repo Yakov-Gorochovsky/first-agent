@@ -61,9 +61,9 @@ class BaseTopology(ABC):
 
     def _build_mission_role_registry(self, bus: EventBus) -> tuple[RoleRegistry, Optional[List[str]]]:
         """Build an in-memory RoleRegistry populated with the dynamically planned SwarmSpec roles."""
-        reg = RoleRegistry()
         if not self.roles:
-            return reg, None
+            return RoleRegistry(), None
+        reg = RoleRegistry(ephemeral=True)
 
         palette = ["#00ff9d", "#38bdf8", "#ffb800", "#a855f7", "#ff3b6b", "#00f0ff"]
         allowed: List[str] = []

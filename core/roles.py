@@ -81,9 +81,11 @@ class RoleRegistry:
         self,
         roles_file: Path = ROLES_FILE,
         default_roles_file: Path = DEFAULT_ROLES_FILE,
+        ephemeral: bool = False,
     ) -> None:
         self.roles_file = roles_file
         self.default_roles_file = default_roles_file
+        self.ephemeral = ephemeral
         self.roles_file.parent.mkdir(parents=True, exist_ok=True)
         self._roles: Dict[str, RoleSpec] = {}
         self.load()
@@ -126,6 +128,8 @@ class RoleRegistry:
         return self.list_roles()
 
     def save(self) -> None:
+        if self.ephemeral:
+            return
         payload = [asdict(r) for r in self._roles.values()]
         self.roles_file.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False),
