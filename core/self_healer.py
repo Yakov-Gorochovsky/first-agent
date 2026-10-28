@@ -406,8 +406,9 @@ class ScorecardEngine:
         a += s
         add("G-A1", "A", "Not every planned specialist participated", "roster_participation_pct", rp, "100%", 20 - s,
             f"Planned {planned}; participated {participated}.")
-        is_multi_domain = any(w in prompt.lower() for w in ("security", "audit", "accessibility", "rtl", "vulnerabilit", "ui/ux", "multi", "cross"))
-        if is_multi_domain or len(planned) >= 3:
+        # Generic multi-domain/compound task check (independent of specific domain keywords)
+        is_compound_task = len(planned) >= 3 or len(participated) >= 3 or len(re.split(r",|\band\b|;", prompt)) >= 3
+        if is_compound_task:
             s = 20.0 if tm["spawns"] else (10.0 if len(participated) >= 3 else 5.0)
             target_str = ">=1 dynamic spawn on multi-domain mission"
         else:

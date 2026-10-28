@@ -642,18 +642,6 @@ class OrchestratorSwarm:
             worker_out = worker.execute_task(enriched_task, tenant_id=tenant_id)
             if worker_out:
                 mission_findings.append(f"[{worker.name}]:\n{worker_out[:1500]}")
-                if (
-                    worker.name == "researcher"
-                    or "audit_recon.txt" in task
-                    or "audit_recon.txt" in user_input
-                ) and "save_note" in AVAILABLE_TOOLS:
-                    existing_notes = AVAILABLE_TOOLS["list_notes"](tenant_id=tenant_id)
-                    if "audit_recon.txt" not in existing_notes:
-                        AVAILABLE_TOOLS["save_note"](
-                            "audit_recon.txt",
-                            worker_out,
-                            tenant_id=tenant_id,
-                        )
             return worker_out
 
         def _on_spawn(spec: RoleSpec) -> None:
