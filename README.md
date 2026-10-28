@@ -55,9 +55,10 @@ The codebase is organized into **Active Runtime Pipelines** and **Modular Subsys
 
 #### 1. Integrated Active Pipelines (Runtime-Wired)
 - **Unified Default Mission Pipeline ([`core/mission.py`](core/mission.py), [`server.py`](server.py), [`agent.py`](agent.py), [`static/index.html`](static/index.html))**: `POST /api/missions/execute` (`IntegratedMissionRunner`) is the default execution path across the Web UI, CLI, and API. Every mission dynamically plans a custom agent team via **TaskDrivenMetaPlanner** (using native function-calling structured output `emit_structured_output`), instantiates the selected topology via **SwarmFactory**, enforces live human operator authorization via **ApprovalGate** (`auto_approve_high_risk=False`, resolved via `POST /api/approvals/resolve` in the UI or interactive prompt in the CLI), and persists **HMAC-SHA256 signed checkpoints** at every specialist stage in **CheckpointStore**.
+- **Evidence-Based 4-Pillar Scorecard & Autonomous Self-Healer ([`core/self_healer.py`](core/self_healer.py), [`tools.py`](tools.py), [`static/index.html`](static/index.html))**: Measures mission execution purely from real database traces, workspace artifacts, and AST code metrics across 4 Pillars (Quality, Tokens, Speed, Code). Features LLM-driven root cause diagnosis with an **Interactive Test-Repair Loop**, isolated subprocess verification benchmarking, non-compensatory tradeoff verdicts, and clean Git tagged rollbacks. Exposes `@self_heal` tools (`scorecard_diagnose`, `self_heal_codebase`) and the `system_optimizer` role directly to the swarm.
 - **Multi-Tenant Server & Telemetry UI ([`server.py`](server.py))**: Constant-time API key auth (`hmac.compare_digest`), scope RBAC (`admin` vs `user`), tenant isolation, strict security headers (CSP, HSTS, X-Content-Type-Options), live **Approval Gate & Checkpoints** operator panel, and cross-tenant SSE event segregation.
-- **Multi-Agent Topologies ([`core/swarm.py`](core/swarm.py), [`core/peer_swarm.py`](core/peer_swarm.py), [`core/topology.py`](core/topology.py))**: Central orchestrator, decentralized peer inbox network, sequential pipeline, and generator-critic review loop topologies with anti-loop defense (per-resource empty retry budget with step refunds, Exhausted Peer Shield, and 2-node Ping-Pong Circuit Breaker).
-- **Security-Hardened Primitives ([`tools.py`](tools.py))**: AST-whitelisted arithmetic calculator, SSRF firewall blocking RFC-1918 private IPs and cloud metadata endpoints, path-traversal prevention, and containerized Python execution (fail-closed when container runtime is absent unless explicit unsafe local execution is configured).
+- **Multi-Agent Topologies ([`core/swarm.py`](core/swarm.py), [`core/peer_swarm.py`](core/peer_swarm.py), [`core/topology.py`](core/topology.py))**: Central orchestrator, decentralized peer inbox network, sequential pipeline, and generator-critic review loop topologies with anti-loop defense (per-resource empty retry budget with step refunds, Exhausted Peer Shield, 2-node Ping-Pong Circuit Breaker, parallel fan-out scheduler, and remote target anti-hallucination gate).
+- **Security-Hardened Primitives ([`tools.py`](tools.py))**: AST-whitelisted arithmetic calculator, SSRF firewall blocking RFC-1918 private IPs and cloud metadata endpoints, deterministic AST pure file-read blocker (preventing approval popup storms and forcing `read_note`/`list_notes`), path-traversal prevention, and containerized Python execution (fail-closed when container runtime is absent unless explicit unsafe local execution is configured).
 
 #### 2. Standalone Component Libraries (Unit Tested)
 The following modules provide tested capabilities with rigorous unit test suites, available for programmatic integration:
@@ -72,11 +73,14 @@ The following modules provide tested capabilities with rigorous unit test suites
 ## Security Invariants & Hardening Controls
 
 The engine implements defense-in-depth controls across all execution paths:
-- **33 Security Findings Remediated & Documented** in [`SECURITY_FINDINGS.md`](SECURITY_FINDINGS.md).
-- **49 Quantitative Metrics & Live Model Benchmarks** tracked in [`PROBLEMS_AND_METRICS.md`](PROBLEMS_AND_METRICS.md) and [`benchmarks/baselines/smoke_live_gemini_flash.json`](benchmarks/baselines/smoke_live_gemini_flash.json) (**10/10 tasks [100%] passed** on live `gemini-3.5-flash-lite` across 5 domain packs: `26,846` prompt tokens, `2,619` completion tokens, `$0.002799` total USD cost).
+- **36 Security Findings Remediated & Documented** in [`SECURITY_FINDINGS.md`](SECURITY_FINDINGS.md).
+- **56 Engineering Problems & Quantitative Metrics Tracked** in [`PROBLEMS_AND_METRICS.md`](PROBLEMS_AND_METRICS.md) and [`benchmarks/baselines/smoke_live_gemini_flash.json`](benchmarks/baselines/smoke_live_gemini_flash.json) (**10/10 tasks [100%] passed** on live `gemini-3.5-flash-lite` across 5 domain packs: `26,846` prompt tokens, `2,619` completion tokens, `$0.002799` total USD cost).
 - **Core Security Controls**:
   - Container execution sandbox with fail-closed local execution default.
   - SSRF & DNS resolution validation blocking loopback and private networks.
+  - Deterministic AST pure file-read blocker in `run_python` preventing approval popup spam and sandbox escape.
+  - Mission scope and tenant namespace isolation separating internal framework self-healing from user workspace notes.
+  - Remote target anti-hallucination gate preventing swarms from claiming impossible live external server modifications.
   - Multi-tenant SQLite database and filesystem isolation with case folding and reserved device name rejection.
   - Constant-time API key verification (`hmac.compare_digest`) via `Authorization: Bearer` headers (rejecting query-string tokens).
   - Cryptographically random human approval tokens (`secrets.token_urlsafe(32)`) with single-use consumption and argument binding.
@@ -94,8 +98,8 @@ pip install -r requirements.txt
 pip install -r requirements-dev.txt
 cp .env.example .env
 
-# 2. Run Complete Pytest Suite (127 tests, 82% coverage)
-pytest --cov=core --cov=tools
+# 2. Run Complete Pytest Suite (154 tests, 100% green)
+pytest
 
 # 3. Run Multi-Domain Smoke Benchmark Suite (10 tasks across 4 domain packs)
 python benchmarks/runner.py

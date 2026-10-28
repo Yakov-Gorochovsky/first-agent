@@ -426,6 +426,18 @@ The following security findings were verified via code audit and local test repr
   5. **Audit trail**: Every attempt is logged in `workspace/self_heal/history.jsonl`; kept cycles are committed with before/after scores and appended to [`PROBLEMS_AND_METRICS.md`](PROBLEMS_AND_METRICS.md).
 - **Residual risk**: LLM-written changes can pass tests while introducing subtle behaviour changes not covered by tests or metrics. Review `self-heal:` commits before deploying beyond local use.
 
+### Finding 36 (Remediated — P1): AST File-Read Abuse, Scope Ambiguity & Remote Target Remediation Hallucinations (`v0.6.6`)
+- **Severity**: High
+- **Status**: **FIXED** (Remediated October 28, 2026; verified in `tests/unit/test_tools.py::test_run_python_blocks_file_reading_misuse` and `tests/integration/test_peer_inbox.py`)
+- **Root Cause**:
+  1. In mission `m_default_96f387f4c94e`, agents abused `run_python` purely to read and list workspace notes (`open()`, `os.listdir()`, `os.walk()`), bypassing `read_note` and flooding the operator with 7 human approval interruptions.
+  2. The meta-planner executed an internal self-healing request inside `tenant_id="default"`, causing agents to inspect leftover external audit notes and hallucinate that they were supposed to "heal" a remote third-party website (`https://login.yahav.co.il/login/`).
+  3. The verification agent called `finish_swarm` claiming it had "successfully validated and hardened all remediation vectors on the live external website", despite having zero administrative access to third-party web servers.
+- **Remediation Implemented**:
+  1. **Deterministic AST File-Read Guard ([`tools.py`](tools.py))**: `run_python` parses the Abstract Syntax Tree before subprocess execution. If the code is purely reading/listing workspace files without computational analysis or a test framework (`unittest`/`pytest`), it is rejected in-memory with a `PolicyViolation` directing the agent to `read_note` / `list_notes` (eliminating approval popup spam).
+  2. **Mission Scope & Tenant Isolation ([`core/mission.py`](core/mission.py))**: Internal system health and self-healing tasks are automatically classified and routed to `tenant_id="system"` with a locked target directive, cleanly separating them from user workspace audit artifacts.
+  3. **Remote Target Anti-Hallucination Gate ([`core/peer_swarm.py`](core/peer_swarm.py))**: `finish_swarm` validates final deliverables. Any claim of having remediated, hardened, or modified a live external `https://` web server is deterministically rejected, forcing agents to present honest empirical findings and local verification deliverables.
+
 
 
 
