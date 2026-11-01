@@ -138,6 +138,7 @@ def test_approval_denial_and_wrong_approver() -> None:
 def test_worker_agent_live_approval_gate_interception(temp_storage) -> None:
     """WorkerAgent pauses on high-risk tool execution, emits approval_required, and resumes after human approval."""
     import threading
+
     from core.budget import BudgetConfig, BudgetTracker
     from core.bus import EventBus
     from core.llm import LLMResponse, ToolCallRequest

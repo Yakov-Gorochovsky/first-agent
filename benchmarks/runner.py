@@ -8,16 +8,16 @@ and produces committed baseline reports.
 """
 
 import argparse
-from dataclasses import asdict, dataclass
 import hashlib
 import json
-import os
-from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import time
-from typing import Any, Callable, Dict, List, Optional
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 # Ensure project root is in sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -27,20 +27,17 @@ if str(PROJECT_ROOT) not in sys.path:
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from core.budget import BudgetConfig, BudgetTracker
 from core.bus import EventBus
+from core.checkpoint import CheckpointStore
 from core.config import CONFIG
-from core.llm import LLMProvider, LLMResponse, OpenAICompatibleProvider, ToolCallRequest
-from core.meta_planner import TaskDrivenMetaPlanner
-from core.peer_swarm import PeerSwarm
-from core.roles import RoleRegistry
+from core.llm import LLMProvider, LLMResponse, OpenAICompatibleProvider
+from core.mission import IntegratedMissionRunner
 from core.storage import SQLiteStorage
-from core.swarm import WorkerAgent
-from core.telemetry import UsageLedger, calculate_call_cost
+from core.telemetry import calculate_call_cost
 from tools import execute_tool
 
 
-class _MeteredProviderWrapper(LLMProvider):
+class MeteredProvider(LLMProvider):
     """Wraps an LLMProvider to accumulate real prompt/completion tokens and USD cost per benchmark task."""
 
     def __init__(self, inner: LLMProvider) -> None:
@@ -56,7 +53,7 @@ class _MeteredProviderWrapper(LLMProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        resp = self.inner.generate(messages=messages, tools=tools)
+        resp = self.inner.generate(messages=messages, tools=tools, **kwargs)
         p = int(resp.prompt_tokens or 0)
         c = int(resp.completion_tokens or 0)
         self.prompt_tokens += p
@@ -164,10 +161,10 @@ class SmokeBenchmarkRunner:
         config_hash = compute_config_hash()
         git_sha = get_git_commit_sha()
 
-        print(f"\n========================================================")
+        print("\n========================================================")
         print(f"Running Smoke Benchmark ({len(tasks)} tasks)")
         print(f"Model: {getattr(self.provider, 'model', 'unknown')} | Config Hash: {config_hash}")
-        print(f"========================================================")
+        print("========================================================")
 
         for t in tasks:
             t_id = t["id"]
@@ -188,54 +185,28 @@ class SmokeBenchmarkRunner:
                 is_mock = model_str.startswith("mock")
 
                 if not is_mock:
-                    # Live LLM Evaluation Path: TaskDrivenMetaPlanner + Multi-Step WorkerAgent with real tool calls
-                    metered = _MeteredProviderWrapper(self.provider)
+                    # Live path: the same mission pipeline users get, in a throwaway tenant store.
+                    metered = MeteredProvider(self.provider)
                     bus = EventBus()
-                    storage = SQLiteStorage()
-                    budget = BudgetTracker(
-                        config=BudgetConfig(max_swarm_steps=10, max_steps_per_agent=6),
-                        bus=bus,
-                        tenant_id=self.tenant_id,
-                    )
                     tool_outputs: List[str] = []
 
                     def _capture_tool(ev: Any) -> None:
                         if ev.event_type == "tool_result":
-                            ev_data = getattr(ev, "data", {}) or {}
-                            tool_outputs.append(str(ev_data.get("result", "")))
+                            tool_outputs.append(str((getattr(ev, "data", {}) or {}).get("result", "")))
 
                     bus.subscribe(_capture_tool)
-
-                    planner = TaskDrivenMetaPlanner(llm=metered)
-                    planned_spec = planner.plan_swarm(
-                        task_prompt=prompt,
-                        tenant_id=self.tenant_id,
-                        swarm_id=f"bench_{t_id.lower().replace('-', '_')}",
-                    )
-                    lead_role = planned_spec.roles[0] if planned_spec.roles else None
-                    eff_tools = (
-                        list(allowed_tools)
-                        if allowed_tools
-                        else (lead_role.resolve_effective_tools() if lead_role else [])
-                    )
-                    worker = WorkerAgent(
-                        name=lead_role.name if lead_role else "bench_specialist",
-                        role=(getattr(lead_role, "purpose", "") if lead_role else "") or "Benchmark Specialist",
-                        instructions=(
-                            f"{lead_role.instructions if lead_role else 'Solve the task accurately using your tools.'}\n"
-                            f"IMPORTANT: Always call the required tool(s) ({', '.join(allowed_tools)}) to execute the task "
-                            "or test the guardrail empirically, and include the exact tool result in your final answer."
-                        ),
-                        llm=metered,
-                        storage=storage,
-                        budget=budget,
-                        bus=bus,
-                        tool_names=eff_tools,
-                        max_steps=4,
-                    )
-                    agent_ans = worker.execute_task(task_prompt=prompt, tenant_id=self.tenant_id)
-                    combined_out = "\n".join([*tool_outputs, agent_ans]).strip()
-                    output = combined_out or agent_ans
+                    with tempfile.TemporaryDirectory(prefix="swarm-smoke-") as workdir:
+                        mission_runner = IntegratedMissionRunner(
+                            llm=metered,
+                            bus=bus,
+                            checkpoint_store=CheckpointStore(
+                                db_path=str(Path(workdir) / "checkpoints.db"), hmac_secret=b"benchmark-only" * 3
+                            ),
+                            storage=SQLiteStorage(db_path=str(Path(workdir) / "swarm.db")),
+                        )
+                        # Unattended run: the benchmark's checkers are the reviewer, inside a temp store.
+                        result = mission_runner.execute(prompt, tenant_id=self.tenant_id, auto_approve_high_risk=True)
+                    output = "\n".join([*tool_outputs, result.output]).strip() or result.output
                     p_toks = metered.prompt_tokens
                     c_toks = metered.completion_tokens
                     cost = metered.cost_usd

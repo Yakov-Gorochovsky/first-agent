@@ -33,6 +33,9 @@ logger = logging.getLogger("neural_swarm.factory")
 class SwarmSpecValidationError(ValueError):
     """Raised when a SwarmSpec violates security constraints or allowable bounds."""
 
+MAX_SPEC_STEPS = 128
+MAX_SPEC_TOKENS = 500_000
+
 
 @dataclass
 class SwarmSpec:
@@ -49,6 +52,8 @@ class SwarmSpec:
     version: int = 1
     color: str = "#38bdf8"
     directive: str = ""
+    task_analysis: Dict[str, Any] = field(default_factory=dict)
+    topology_source: str = "spec"  # "task_analysis" | "manual" | "preview" | "spec"
 
     def validate(self, tool_registry: Optional[ToolRegistry] = None) -> None:
         """Enforce bounds on role counts, step budgets, and registered tools."""
@@ -67,10 +72,17 @@ class SwarmSpec:
         if len(self.roles) > 12:
             raise SwarmSpecValidationError(f"Swarm exceeds maximum allowed roles (got {len(self.roles)}, max 12).")
 
-        if self.budgets.max_swarm_steps > 128:
-            raise SwarmSpecValidationError(f"max_swarm_steps exceeds safety bound ({self.budgets.max_swarm_steps} > 128).")
-        if self.budgets.max_total_tokens > 500_000:
-            raise SwarmSpecValidationError(f"max_total_tokens exceeds safety bound ({self.budgets.max_total_tokens} > 500,000).")
+        # An operator can raise these bounds in config; a generated plan cannot.
+        step_bound = max(MAX_SPEC_STEPS, CONFIG.mission_min_steps)
+        if self.budgets.max_swarm_steps > step_bound:
+            raise SwarmSpecValidationError(
+                f"max_swarm_steps exceeds safety bound ({self.budgets.max_swarm_steps} > {step_bound})."
+            )
+        token_bound = max(MAX_SPEC_TOKENS, CONFIG.mission_min_tokens)
+        if self.budgets.max_total_tokens > token_bound:
+            raise SwarmSpecValidationError(
+                f"max_total_tokens exceeds safety bound ({self.budgets.max_total_tokens} > {token_bound})."
+            )
 
         # Validate tools for all roles
         for r in self.roles:
@@ -99,6 +111,8 @@ class SwarmSpec:
             "version": self.version,
             "color": self.color,
             "directive": self.directive,
+            "task_analysis": self.task_analysis,
+            "topology_source": self.topology_source,
         }
 
     @classmethod
@@ -134,6 +148,7 @@ class SwarmSpec:
             version=int(data.get("version", 1)),
             color=str(data.get("color", "#38bdf8")),
             directive=str(data.get("directive", "")).strip(),
+            task_analysis=dict(data.get("task_analysis") or {}),
         )
 
 
@@ -166,7 +181,7 @@ class AgentFactory:
         active_storage = storage or SQLiteStorage()
         active_bus = bus or EventBus()
 
-        effective_llm = llm
+        effective_llm: Any = llm
         if self.router and role_spec.model_policy:
             p_prov = role_spec.model_policy.get("primary_provider") or role_spec.model_policy.get("provider")
             p_mod = role_spec.model_policy.get("primary_model") or role_spec.model_policy.get("model")

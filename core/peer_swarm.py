@@ -4,7 +4,7 @@ core/peer_swarm.py - Step 3: Decentralized Peer Network with Inboxes (Data-Drive
 Unlike `OrchestratorSwarm` (strictly hierarchical Parent -> Child call/return),
 `PeerSwarm` equips every agent with an asynchronous FIFO `inbox` queue:
 - `coordinator`: Entry point, dynamic specialist recruiter (`spawn_specialist`), & synthesizer
-- All specialist roles registered in `RoleRegistry` (e.g., `researcher`, `coder`, `critic`, or custom roles)
+- All specialist roles registered in `RoleRegistry`; scheduling follows each role's declared `function`
 
 Peers communicate directly with one another via `send_peer_message(to_agent, message)`
 without needing the coordinator to relay every intermediate hop.
@@ -100,18 +100,18 @@ class PeerSwarm:
     def _inbox_snapshot(self) -> Dict[str, int]:
         return {name: len(node.inbox) for name, node in self.nodes.items()}
 
-    @staticmethod
-    def _is_critic_role(name: str) -> bool:
-        n = name.lower()
-        return any(k in n for k in ("critic", "verifier", "verification", "reviewer", "qa_gate"))
+    def _role_function(self, name: str) -> str:
+        spec = self.role_registry.get_role(name)
+        return spec.function if spec else "specialist"
 
-    @staticmethod
-    def _is_discovery_role(name: str) -> bool:
-        n = name.lower()
-        return any(k in n for k in ("recon", "research", "discovery", "mapper", "planner", "architect"))
+    def _is_verifier(self, name: str) -> bool:
+        return self._role_function(name) == "verifier"
+
+    def _is_discovery(self, name: str) -> bool:
+        return self._role_function(name) == "discovery"
 
     def _get_unrun_domain_specialists(self, exclude: Optional[set[str]] = None) -> List[str]:
-        """Return planned non-critic domain specialists that have neither run nor been queued yet."""
+        """Return planned non-verifier specialists that have neither run nor been queued yet."""
         if not self.allowed_roles or len(self.allowed_roles) < 3:
             return []
         # Only enforce for mission-planned (ephemeral) rosters; static deployed swarms
@@ -124,7 +124,7 @@ class PeerSwarm:
             rn = r.lower().strip()
             if rn in excl or rn == "coordinator" or rn not in self.nodes:
                 continue
-            if self._is_critic_role(rn):
+            if self._is_verifier(rn):
                 continue
             if self.budget.agent_steps.get(rn, 0) == 0 and len(self.nodes[rn].inbox) == 0:
                 unrun.append(rn)
@@ -228,7 +228,7 @@ class PeerSwarm:
                 f"{spec.instructions}{directive_block}\n"
                 f"You are in a peer network with: [{peer_list_str}].\n"
                 "- Use your tools to complete your part of the mission directly.\n"
-                "- When ready to hand off, message the next peer (e.g., coder, critic) using `send_peer_message(to_agent=..., message=...)`.\n"
+                "- When ready to hand off, message the next peer using `send_peer_message(to_agent=..., message=...)`.\n"
                 "- Return your findings in plain text (they are automatically delivered to 'coordinator' for next-step routing and verification)."
             ),
             llm=self.llm,
@@ -299,19 +299,19 @@ class PeerSwarm:
                 inboxes=self._inbox_snapshot(),
             )
 
-            # Automatic Multi-Peer Fan-Out: When discovery hands off to a domain specialist (or when a
-            # specialist hands off to the critic while sibling planned domain specialists are still unrun),
-            # automatically fan out the handoff so every planned domain specialist participates in parallel.
+            # Automatic Fan-Out: When discovery hands off to a specialist (or a specialist hands off to a
+            # verifier while planned specialists are still unrun), queue the handoff for every planned
+            # specialist so each gets a turn. Peers run one at a time.
             should_fanout = (
-                (self._is_discovery_role(sender_name) and target != "coordinator" and not self._is_critic_role(target))
-                or self._is_critic_role(target)
+                (self._is_discovery(sender_name) and target != "coordinator" and not self._is_verifier(target))
+                or self._is_verifier(target)
             )
             if should_fanout:
                 unrun_peers = self._get_unrun_domain_specialists(exclude={sender_name, target})
                 for unrun_peer in unrun_peers:
                     fanout_msg = (
-                        f"[PARALLEL SWARM FAN-OUT from '{sender_name}' — Execute your specialized role "
-                        f"('{self.nodes[unrun_peer].role}') on the discovered vectors, save your empirical "
+                        f"[FAN-OUT from '{sender_name}' — Carry out your role "
+                        f"('{self.nodes[unrun_peer].role}') using the context below, record your "
                         f"findings with verbatim code/data citations via `save_note`, and hand off to verification]:\n\n{message}"
                     )
                     self.nodes[unrun_peer].inbox.append(
@@ -335,7 +335,7 @@ class PeerSwarm:
                 for unrun_peer in unrun_peers:
                     fanout_msg = (
                         f"[SWARM COMPLETION GATE — Execute your planned specialist role ('{self.nodes[unrun_peer].role}') "
-                        f"before final sign-off, save your empirical findings via `save_note`, and hand off to '{sender_name}']:\n\n{final_answer[:1200]}"
+                        f"before final sign-off, then hand off to '{sender_name}']:\n\n{final_answer[:1200]}"
                     )
                     self.nodes[unrun_peer].inbox.append(
                         PeerMessage(sender=sender_name, recipient=unrun_peer, content=fanout_msg)
@@ -369,7 +369,7 @@ class PeerSwarm:
             if external_urls and claims_external_remediation:
                 return (
                     "Validation Rejected: The swarm cannot claim to have hardened or remediated a live external web server. "
-                    "You may only present empirical audit findings, discovered vulnerabilities, and proposed remediation steps, "
+                    "Report what was found and the proposed steps, "
                     "or verify offline/local test suites."
                 )
 
@@ -496,16 +496,16 @@ class PeerSwarm:
 
                 active_node: Optional[PeerNode] = None
                 # 3-Tier Priority Scheduler:
-                # Tier 1: Non-critic domain specialists (so parallel fan-outs complete all domain work first)
-                # Tier 2: Verification / Critic specialists (wakes up once with all domain findings batched)
+                # Tier 1: Non-verifier specialists (so fan-outs complete the work first)
+                # Tier 2: Verifiers (woken once, with all findings batched)
                 # Tier 3: Coordinator (routing & final synthesis)
                 for name, node in self.nodes.items():
-                    if name != "coordinator" and not self._is_critic_role(name) and node.inbox:
+                    if name != "coordinator" and not self._is_verifier(name) and node.inbox:
                         active_node = node
                         break
                 if active_node is None:
                     for name, node in self.nodes.items():
-                        if name != "coordinator" and self._is_critic_role(name) and node.inbox:
+                        if name != "coordinator" and self._is_verifier(name) and node.inbox:
                             active_node = node
                             break
                 if active_node is None and self.nodes["coordinator"].inbox:

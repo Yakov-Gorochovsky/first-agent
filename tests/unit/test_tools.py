@@ -171,7 +171,7 @@ def test_fetch_url_rate_limiting_retry(monkeypatch):
         return DummyResponse(200, "<html><body><h1>Target Verified</h1></body></html>")
 
     monkeypatch.setattr(requests, "get", fake_get)
-    monkeypatch.setattr("tools._resolve_and_validate_public_url", lambda url: (url, "example.com", "93.184.216.34", 80))
+    monkeypatch.setattr("swarm_tools.web._resolve_and_validate_public_url", lambda url: (url, "example.com", "93.184.216.34", 80))
 
     result = fetch_url("http://example.com/status")
     assert call_count == 2
@@ -202,7 +202,7 @@ def test_fetch_url_structural_dom_and_include_raw(monkeypatch) -> None:
             pass
 
     monkeypatch.setattr(requests, "get", lambda *a, **kw: DummyResp())
-    monkeypatch.setattr("tools._resolve_and_validate_public_url", lambda url: (url, "example.com", "93.184.216.34", 80))
+    monkeypatch.setattr("swarm_tools.web._resolve_and_validate_public_url", lambda url: (url, "example.com", "93.184.216.34", 80))
 
     res_default = fetch_url("https://example.com/login")
     assert "[STRUCTURAL DOM / HTML METADATA]" in res_default

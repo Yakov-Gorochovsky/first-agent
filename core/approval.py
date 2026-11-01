@@ -208,17 +208,23 @@ class ApprovalGate:
 
             return record
 
+    def _find_request(self, request_id: str, tenant_id: Optional[str]) -> ApprovalRecord:
+        """Look up a request. Another tenant's request is reported exactly like a missing one."""
+        record = self._requests.get(request_id)
+        if not record or (tenant_id is not None and record.tenant_id != tenant_id):
+            raise ValueError(f"Request '{request_id}' not found.")
+        return record
+
     def approve(
         self,
         request_id: str,
         approver: str,
         reason: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> ApprovalRecord:
-        """Grant approval by a designated human operator."""
+        """Grant approval. tenant_id scopes the lookup; pass None only for a global administrator."""
         with self._lock:
-            record = self._requests.get(request_id)
-            if not record:
-                raise ValueError(f"Request '{request_id}' not found.")
+            record = self._find_request(request_id, tenant_id)
 
             if record.status != "PENDING":
                 raise ValueError(f"Request '{request_id}' is already {record.status}.")
@@ -256,12 +262,13 @@ class ApprovalGate:
         request_id: str,
         approver: str,
         reason: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> ApprovalRecord:
-        """Deny approval request."""
+        """Deny a pending request. tenant_id scopes the lookup as in approve()."""
         with self._lock:
-            record = self._requests.get(request_id)
-            if not record:
-                raise ValueError(f"Request '{request_id}' not found.")
+            record = self._find_request(request_id, tenant_id)
+            if record.status != "PENDING":
+                raise ValueError(f"Request '{request_id}' is already {record.status}.")
 
             record.status = "DENIED"
             record.approver = approver

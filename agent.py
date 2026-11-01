@@ -133,6 +133,9 @@ def build_swarms():
     return swarm_manager, role_registry, storage, budget, bus, mission_runner
 
 
+TOPOLOGY_MODES = ["auto", "single", "orchestrator", "pipeline", "review_loop", "peer"]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Modular AI Agent Swarm.")
     parser.add_argument("-p", "--prompt", type=str, help="Run a single prompt and exit.")
@@ -147,9 +150,15 @@ def main() -> None:
         "-m",
         "--mode",
         type=str,
-        choices=["auto", "peer", "orchestrator", "pipeline", "review_loop"],
+        choices=TOPOLOGY_MODES,
         default="auto",
-        help="Swarm topology override: 'auto' (MetaPlanner), 'peer', 'orchestrator', 'pipeline', or 'review_loop'.",
+        help="Topology: 'auto' lets the task decide; any other value is a manual choice.",
+    )
+    parser.add_argument("--plan", action="store_true", help="Show the planned team and ask before running it.")
+    parser.add_argument(
+        "--allow-self-heal",
+        action="store_true",
+        help="Operator authorization: let the planner grant framework-repair tools for this run.",
     )
     parser.add_argument(
         "--auto-approve",
@@ -176,11 +185,26 @@ def main() -> None:
     print("=" * 78)
 
     def run_active(prompt_text: str) -> str:
+        override = None if mode == "auto" else mode
+        preset = None
+        if args.plan:
+            spec = mission_runner.plan(
+                prompt_text, tenant_id=tenant_id, topology_override=override, allow_self_heal=args.allow_self_heal
+            )
+            print(f"\nPlan: {spec.title} | Topology: {spec.topology} ({spec.topology_source})")
+            print(f"Why: {spec.task_analysis.get('rationale', 'n/a')}")
+            for role in spec.roles:
+                print(f"  - {role.name}: {role.purpose} {role.capabilities}")
+            if input("Run this plan? [y/N]: ").strip().lower() != "y":
+                return "Mission cancelled."
+            preset = spec.to_dict()
         res = mission_runner.execute(
             prompt=prompt_text,
             tenant_id=tenant_id,
             auto_approve_high_risk=bool(args.auto_approve),
-            topology_override=None if mode == "auto" else mode,
+            topology_override=override,
+            allow_self_heal=args.allow_self_heal,
+            preset_spec=preset,
         )
         return res.output
 
@@ -192,7 +216,8 @@ def main() -> None:
 
     print(
         "Commands: '/swarms' | '/roles' | '/add-role <name> | <title> | <@bundles> | <instructions>' | "
-        "'/del-role <name>' | '/mode peer|orchestrator' | '/tenant <swarm_id>' | '/memory' | '/skills' | 'exit'\n"
+        "'/del-role <name>' | '/mode <topology|auto>' | '/tenant <swarm_id>' | '/memory' | '/skills' | "
+        "'/approve-skill <id>' | 'exit'\n"
     )
     while True:
         try:
@@ -248,11 +273,11 @@ def main() -> None:
             continue
         if user_input.lower().startswith("/mode "):
             new_mode = user_input.split(maxsplit=1)[1].strip().lower()
-            if new_mode in {"peer", "orchestrator"}:
+            if new_mode in TOPOLOGY_MODES:
                 mode = new_mode
                 print(f"  [Switched swarm topology to '{mode}'.]\n")
             else:
-                print("  [Choose '/mode peer' or '/mode orchestrator'.]\n")
+                print(f"  [Choose one of: {', '.join(TOPOLOGY_MODES)}.]\n")
             continue
         if user_input.lower().startswith("/tenant "):
             tenant_id = user_input.split(maxsplit=1)[1].strip()
@@ -261,6 +286,11 @@ def main() -> None:
         if user_input.lower() == "/memory":
             mems = storage.get_tenant_memories(tenant_id)
             print(f"\nPrivate Memories for '{tenant_id}': {mems or 'Empty'}\n")
+            continue
+        if user_input.lower().startswith("/approve-skill "):
+            raw_id = user_input.split(maxsplit=1)[1].strip()
+            approved = raw_id.isdigit() and storage.approve_global_skill(int(raw_id))
+            print(f"  [Skill {raw_id} {'approved' if approved else 'not found'}.]\n")
             continue
         if user_input.lower() == "/skills":
             skills = storage.get_global_skills()

@@ -3,6 +3,9 @@ tests/conftest.py - Shared pytest fixtures and mocks for Neural Swarm test suite
 """
 
 import os
+
+os.environ["SWARM_IGNORE_DOTENV"] = "1"
+
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional
@@ -35,6 +38,7 @@ class ScriptedMockLLM:
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
+        **kwargs: Any,
     ) -> LLMResponse:
         self.calls.append({"messages": messages, "tools": tools})
         if self._idx < len(self._responses):

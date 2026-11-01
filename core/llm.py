@@ -23,9 +23,17 @@ from core.telemetry import UsageLedger, calculate_call_cost
 _THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 
+_TOOL_CALL_TEXT_RE = re.compile(r"<tool_call>.*?(?:</tool_call>|\Z)", re.DOTALL)
+
+
 def strip_think_tags(text: str) -> str:
     """Remove internal <think>...</think> reasoning blocks from model outputs."""
     return _THINK_TAG_RE.sub("", text or "").strip()
+
+
+def strip_tool_call_text(text: str) -> str:
+    """Remove tool-call markup a model wrote as plain text, so it never reaches a final answer."""
+    return _TOOL_CALL_TEXT_RE.sub("", text or "").strip()
 
 
 @dataclass
@@ -125,7 +133,7 @@ class OpenAICompatibleProvider:
         self.client = OpenAI(
             base_url=base_url or CONFIG.api_base_url,
             api_key=api_key or CONFIG.api_key,
-            timeout=45.0,
+            timeout=CONFIG.llm_timeout_sec,
         )
         self.model = model or CONFIG.model_name
         self.native_tools_supported: Optional[bool] = None
@@ -205,8 +213,8 @@ class OpenAICompatibleProvider:
             "stream": False,
             "options": {
                 "temperature": CONFIG.react_temperature,
-                "num_ctx": 4096,
-                "num_predict": 512,
+                "num_ctx": CONFIG.ollama_num_ctx,
+                "num_predict": CONFIG.ollama_num_predict,
             },
         }
         if tools:
@@ -215,7 +223,7 @@ class OpenAICompatibleProvider:
         start_time = time.perf_counter()
 
         def _do_ollama_post(p: Dict[str, Any]) -> requests.Response:
-            r = requests.post(self._ollama_native_chat_url(), json=p, timeout=120)
+            r = requests.post(self._ollama_native_chat_url(), json=p, timeout=CONFIG.llm_timeout_sec)
             r.raise_for_status()
             return r
 
@@ -335,7 +343,7 @@ class OpenAICompatibleProvider:
                         messages=cast(Any, prepared_messages),
                         tools=cast(Any, tools),
                         temperature=CONFIG.react_temperature,
-                        timeout=45.0,
+                        timeout=CONFIG.llm_timeout_sec,
                     ),
                     retry_config=self.retry_config,
                     circuit_breaker=self.circuit_breaker,
@@ -409,7 +417,7 @@ class OpenAICompatibleProvider:
                 messages=cast(Any, react_messages),
                 temperature=CONFIG.react_temperature,
                 stop=["Observation:"],
-                timeout=45.0,
+                timeout=CONFIG.llm_timeout_sec,
             ),
             retry_config=self.retry_config,
             circuit_breaker=self.circuit_breaker,

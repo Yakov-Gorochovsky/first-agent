@@ -165,7 +165,8 @@ def test_peer_swarm_auto_fanout_and_priority_scheduler(
         ("verification_critic", "Verification Critic", "Verify all proofs"),
     ]
     for r_name, r_title, r_inst in planned:
-        reg.register_role(r_name, r_title, r_inst, capabilities=["@web", "@files"])
+        function = "verifier" if "critic" in r_name else "discovery" if r_name == "recon_scout" else "specialist"
+        reg.register_role(r_name, r_title, r_inst, capabilities=["@web", "@files"], function=function)
 
     execution_order = []
 

@@ -199,6 +199,21 @@ class ToolRegistry:
                 )
             )
 
+        # Framework self-modification: operator-authorized missions only
+        for heal_tool in ("scorecard_diagnose", "self_heal_codebase"):
+            if heal_tool in tools.AVAILABLE_TOOLS:
+                self.register(
+                    ToolMetadata(
+                        name=heal_tool,
+                        fn=tools.AVAILABLE_TOOLS[heal_tool],
+                        schema=schemas_by_name.get(heal_tool, {}),
+                        risk_class="high",
+                        side_effects=heal_tool == "self_heal_codebase",
+                        data_classification="restricted",
+                        category="self_heal",
+                    )
+                )
+
     def register(self, meta: ToolMetadata) -> None:
         """Register or override a tool specification."""
         self._tools[meta.name] = meta
@@ -237,6 +252,7 @@ class DynamicRoleSpec:
     limits: Dict[str, Any] = field(default_factory=dict)
     tenant_id: str = "default"
     color: str = "#00f0ff"
+    function: str = "specialist"  # "discovery" | "specialist" | "verifier"
 
     @property
     def max_steps(self) -> int:
@@ -247,23 +263,19 @@ class DynamicRoleSpec:
         active_reg = tool_registry or GLOBAL_TOOL_REGISTRY
         resolved: Set[str] = set(self.tool_list)
 
+        bundles = CONFIG.capability_bundles
         for cap in self.capabilities:
             norm_cap = cap.lower().strip()
-            if norm_cap in {"@all", "all"}:
-                resolved.update([t.name for t in active_reg.list_tools()])
-            elif norm_cap in {"@web", "web"}:
-                resolved.update(["web_search", "fetch_url", "get_weather"])
-            elif norm_cap in {"@code", "code"}:
-                resolved.update(["run_python", "calculator"])
-            elif norm_cap in {"@files", "files", "@workspace"}:
-                resolved.update(["save_note", "read_note", "list_notes"])
-            elif norm_cap in {"@memory", "memory"}:
-                resolved.update(["remember_fact", "recall_memories"])
+            tagged = norm_cap if norm_cap.startswith("@") else f"@{norm_cap}"
+            if tagged == "@all":
+                resolved.update(t.name for t in active_reg.list_tools())
+            elif tagged in bundles:
+                resolved.update(bundles[tagged])
             elif active_reg.get(norm_cap):
                 resolved.add(norm_cap)
 
-        # Filter only existing registered tools
-        return [name for name in resolved if active_reg.get(name) is not None]
+        # Filter only existing registered tools, in a stable order
+        return sorted(name for name in resolved if active_reg.get(name) is not None)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -277,6 +289,7 @@ class DynamicRoleSpec:
             "limits": self.limits,
             "tenant_id": self.tenant_id,
             "color": self.color,
+            "function": self.function,
         }
 
     @classmethod
@@ -295,6 +308,7 @@ class DynamicRoleSpec:
             limits=limits,
             tenant_id=str(data.get("tenant_id", "default")),
             color=str(data.get("color", "#00f0ff")),
+            function=str(data.get("function", "specialist")),
         )
 
 

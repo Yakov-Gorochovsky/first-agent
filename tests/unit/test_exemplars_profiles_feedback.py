@@ -7,9 +7,9 @@ import tempfile
 
 import pytest
 
-from core.exemplars import ExemplarStore
-from core.feedback import FeedbackStore, FeedbackValidationError
-from core.profiles import ProfileStore, ProfileValidationError
+from experimental.exemplars import ExemplarStore
+from experimental.feedback import FeedbackStore, FeedbackValidationError
+from experimental.profiles import ProfileStore, ProfileValidationError
 
 
 @pytest.fixture

@@ -7,8 +7,8 @@ import tempfile
 
 import pytest
 
-from core.distiller import SkillDistiller, SkillRejectedError
-from core.prompt_opt import PromptOptimizer
+from experimental.distiller import SkillDistiller, SkillRejectedError
+from experimental.prompt_opt import PromptOptimizer
 
 
 @pytest.fixture

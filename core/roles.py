@@ -27,6 +27,10 @@ CAPABILITY_BUNDLES: Dict[str, List[str]] = {
 }
 
 
+# The most a role recruited at runtime may hold. Framework repair and '@all' are never spawnable.
+SPAWNABLE_CAPABILITIES = ("@web", "@code", "@files", "@memory")
+
+
 def resolve_capabilities(capabilities: List[str]) -> List[str]:
     """Expand capability tags (e.g. ['@web', '@code']) and tool names into a deduplicated tool list."""
     resolved: List[str] = []
@@ -56,6 +60,7 @@ class RoleSpec:
     color: str = "#00ff9d"
     is_builtin: bool = False
     max_steps: Optional[int] = None
+    function: str = "specialist"  # "discovery" | "specialist" | "verifier"
 
     @property
     def effective_max_steps(self) -> int:
@@ -108,6 +113,7 @@ class RoleRegistry:
                             color=str(item.get("color", "#00f0ff")),
                             is_builtin=bool(item.get("is_builtin", False)),
                             max_steps=int(raw_max_steps) if raw_max_steps is not None else None,
+                            function=str(item.get("function", "specialist")),
                         )
                         parsed[spec.name] = spec
         except Exception:
@@ -116,6 +122,9 @@ class RoleRegistry:
 
     def load(self) -> None:
         """Load roles from workspace/roles.json, falling back to config/default_roles.json."""
+        if self.ephemeral:
+            self._roles = {}
+            return
         self._roles = self._parse_role_list(self.roles_file)
         if not self._roles:
             self._roles = self._parse_role_list(self.default_roles_file)
@@ -149,6 +158,7 @@ class RoleRegistry:
         capabilities: Optional[List[str]] = None,
         color: str = "#00f0ff",
         max_steps: Optional[int] = None,
+        function: str = "specialist",
     ) -> RoleSpec:
         """Create or update a specialist role using Capability Bundles or tool names."""
         safe_name = self._clean_name(name)
@@ -169,6 +179,7 @@ class RoleRegistry:
             color=color or "#00f0ff",
             is_builtin=False,
             max_steps=decided_steps,
+            function=function,
         )
         self._roles[safe_name] = spec
         self.save()
@@ -218,8 +229,17 @@ class RoleRegistry:
                     f"to '{existing.name}' directly!"
                 )
 
-            base_caps = capabilities if capabilities else ["@web", "@code", "@files", "@memory"]
-            merged_caps = list(dict.fromkeys([*base_caps, "@web", "@files", "@memory"]))
+            requested = capabilities or []
+            spawnable_tools = set(resolve_capabilities(list(SPAWNABLE_CAPABILITIES)))
+            for cap in requested:
+                token = str(cap).strip()
+                tagged = token if token.startswith("@") else f"@{token}"
+                if tagged not in SPAWNABLE_CAPABILITIES and token not in spawnable_tools:
+                    return (
+                        f"Privilege Ceiling Violation: spawned roles cannot hold '{cap}'. "
+                        f"Allowed capabilities: {list(SPAWNABLE_CAPABILITIES)}."
+                    )
+            merged_caps = list(dict.fromkeys([*requested, "@files", "@memory"]))
             spec = self.register_role(
                 name=safe_name,
                 title=title,
@@ -241,10 +261,10 @@ class RoleRegistry:
                 "name": "spawn_specialist",
                 "description": (
                     "Dynamically create and recruit a brand-new specialist agent role ONLY when discovery uncovers "
-                    "a domain angle or technical hypothesis that NO existing role in your ACTIVE ROSTER can handle. "
+                    "work that NO existing role in your ACTIVE ROSTER can handle. "
                     "Do NOT call this to duplicate or overwrite roles already present in your ACTIVE ROSTER.\n"
-                    "CRITICAL CAPABILITY RULES:\n"
-                    "- '@web' (fetch_url, web_search): REQUIRED if the specialist needs to probe live URLs, HTTP headers, endpoints, or raw HTML/DOM (via fetch_url(url, include_raw=True)).\n"
+                    "Capabilities:\n"
+                    "- '@web' (fetch_url, web_search): search the web and read public pages.\n"
                     "- '@code' (run_python, calculator): Runs in an OFFLINE sandbox (no internet access). Use for computation, parsing, or local scripts.\n"
                     "- '@files' & '@memory': Automatically included for workspace notes and shared memory."
                 ),
@@ -253,7 +273,7 @@ class RoleRegistry:
                     "properties": {
                         "name": {
                             "type": "string",
-                            "description": "Short snake_case identifier (e.g., 'cors_prober', 'dom_inspector', 'sql_analyst').",
+                            "description": "Short snake_case identifier for the job.",
                         },
                         "title": {
                             "type": "string",
@@ -262,7 +282,7 @@ class RoleRegistry:
                         "instructions": {
                             "type": "string",
                             "description": (
-                                "Actionable operational briefing for the specialist: specify (1) the exact hypothesis or vector to test, "
+                                "Briefing for the specialist: its exact task, the expected result, and how to tell it is done. "
                                 "(2) which tools to actively run (do NOT tell it to merely read/summarize prior notes), and "
                                 "(3) what empirical evidence to verify and save."
                             ),
@@ -271,8 +291,8 @@ class RoleRegistry:
                             "type": "array",
                             "items": {"type": "string"},
                             "description": (
-                                "List of capability bundles: '@web' (required for any live URL/DOM/network probing), "
-                                "'@code' (offline Python/math sandbox), '@files', '@memory', or '@all'."
+                                "Capability bundles this specialist needs: '@web' (public web), "
+                                "'@code' (offline computation), '@files', '@memory'."
                             ),
                         },
                         "max_steps": {

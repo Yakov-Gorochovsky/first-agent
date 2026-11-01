@@ -90,6 +90,11 @@ class TaintTracker:
         "share_global_skill",
     }
 
+    # Never run without a human decision, whatever the taint state or approval policy
+    HUMAN_ONLY_TOOLS: Set[str] = {
+        "self_heal_codebase",
+    }
+
     # Safe read-only / deterministic / sandboxed workspace note tools permitted even when tainted
     SAFE_TOOLS: Set[str] = {
         "calculator",
@@ -137,6 +142,9 @@ class TaintTracker:
         Verify if a tool can execute under current taint status.
         Returns: (is_allowed, error_message_if_blocked)
         """
+        if tool_name in self.HUMAN_ONLY_TOOLS:
+            return False, f"SecurityPolicyViolation: Tool '{tool_name}' always requires human approval."
+
         if not self.enforce:
             return True, None
 

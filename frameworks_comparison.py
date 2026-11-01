@@ -19,8 +19,8 @@ built directly on top of your `core/` primitives:
      in `core/peer_swarm.py`!
 """
 
-from dataclasses import dataclass, field
 import sys
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 if hasattr(sys.stdout, "reconfigure"):

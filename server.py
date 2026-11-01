@@ -11,7 +11,9 @@ Usage:
     Then open http://localhost:8000 in your browser.
 """
 
+import ipaddress
 import json
+import logging
 import queue
 import threading
 import time
@@ -38,6 +40,7 @@ from core.rate_limiter import (
 )
 from core.roles import CAPABILITY_BUNDLES, RoleRegistry
 from core.self_healer import SelfHealer
+from core.simulation import run_cinematic_simulation
 from core.storage import SQLiteStorage, validate_tenant_id
 from core.swarm_manager import SwarmManager
 from core.version import get_version_info
@@ -50,6 +53,8 @@ storage = SQLiteStorage()
 checkpoint_store = CheckpointStore(db_path=str(CONFIG.db_path))
 role_registry = RoleRegistry()
 budget = BudgetTracker(config=BudgetConfig(), bus=bus)
+logger = logging.getLogger("neural_swarm.server")
+
 cost_governor = TenantCostGovernor(
     storage=storage,
     default_rpm=float(CONFIG.max_steps_per_agent * 10),
@@ -132,147 +137,11 @@ def _broadcast_event(event: SwarmEvent) -> None:
 bus.subscribe(_broadcast_event)
 
 
-def _run_cinematic_simulation(tenant_id: str, prompt: str) -> None:
-    """Emit a realistic multi-agent peer-network flow using active roles from RoleRegistry."""
-    budget.reset()
-    budget.tenant_id = tenant_id
-    roles = role_registry.list_roles()
-    r1 = roles[0].name if len(roles) > 0 else "researcher"
-    r2 = roles[1].name if len(roles) > 1 else r1
-    r3 = roles[-1].name if len(roles) > 2 else r2
-
-    def step_sleep(sec: float = 0.85) -> None:
-        time.sleep(sec)
-
-    bus.emit(
-        "peer_message",
-        agent_name="user",
-        tenant_id=tenant_id,
-        from_agent="user",
-        to_agent="coordinator",
-        message=prompt,
-        inboxes={"coordinator": 1},
-    )
-    step_sleep(0.7)
-
-    bus.emit("agent_start", agent_name="coordinator", tenant_id=tenant_id, task=prompt)
-    budget.check_and_increment_step("coordinator")
-    budget.record_tokens("coordinator", 310, 95)
-    step_sleep(0.8)
-
-    bus.emit(
-        "peer_message",
-        agent_name="coordinator",
-        tenant_id=tenant_id,
-        from_agent="coordinator",
-        to_agent=r1,
-        message=f"Fetch live telemetry & benchmarks, then forward raw metrics directly to '{r2}' inbox.",
-        inboxes={"coordinator": 0, r1: 1},
-    )
-    step_sleep(0.9)
-
-    bus.emit("agent_start", agent_name=r1, tenant_id=tenant_id, task="Fetch live telemetry")
-    budget.check_and_increment_step(r1)
-    bus.emit(
-        "tool_call",
-        agent_name=r1,
-        tenant_id=tenant_id,
-        tool="web_search",
-        arguments={"query": prompt[:60]},
-    )
-    step_sleep(0.9)
-    bus.emit(
-        "tool_result",
-        agent_name=r1,
-        tenant_id=tenant_id,
-        tool="web_search",
-        result="Found live benchmark data: latency_p95=42ms, throughput=14,200 req/s, temp=23C.",
-    )
-    budget.record_tokens(r1, 480, 140)
-    step_sleep(0.7)
-
-    bus.emit(
-        "peer_message",
-        agent_name=r1,
-        tenant_id=tenant_id,
-        from_agent=r1,
-        to_agent=r2,
-        message=f"Raw telemetry ready (p95=42ms, 14200 rps). Compute efficiency score and forward to '{r3}'.",
-        inboxes={r1: 0, r2: 1},
-    )
-    step_sleep(0.9)
-
-    bus.emit("agent_start", agent_name=r2, tenant_id=tenant_id, task="Run Python analysis")
-    budget.check_and_increment_step(r2)
-    bus.emit(
-        "tool_call",
-        agent_name=r2,
-        tenant_id=tenant_id,
-        tool="run_python",
-        arguments={"code": "rps, p95 = 14200, 42\nscore = round((rps / p95) * 1.15, 2)\nprint(f'Efficiency Index: {score}')"},
-    )
-    step_sleep(0.9)
-    bus.emit(
-        "tool_result",
-        agent_name=r2,
-        tenant_id=tenant_id,
-        tool="run_python",
-        result="STDOUT:\nEfficiency Index: 388.81",
-    )
-    budget.record_tokens(r2, 520, 165)
-
-    skill = storage.add_global_skill(
-        category="telemetry_analysis",
-        problem=f"Client {tenant_id} endpoint https://api.{tenant_id}.internal:8443 reported raw p95 metrics",
-        solution="Normalize throughput-to-latency ratio (RPS / p95_ms) in Python sandbox before QA handoff.",
-    )
-    bus.emit("skill_learned", agent_name=r2, tenant_id=tenant_id, **skill)
-    step_sleep(0.8)
-
-    bus.emit(
-        "peer_message",
-        agent_name=r2,
-        tenant_id=tenant_id,
-        from_agent=r2,
-        to_agent=r3,
-        message="Computed Efficiency Index = 388.81 via Python sandbox. Please verify accuracy.",
-        inboxes={r2: 0, r3: 1},
-    )
-    step_sleep(0.9)
-
-    bus.emit("agent_start", agent_name=r3, tenant_id=tenant_id, task="Verify calculation")
-    budget.check_and_increment_step(r3)
-    bus.emit(
-        "tool_call",
-        agent_name=r3,
-        tenant_id=tenant_id,
-        tool="calculator",
-        arguments={"expression": "(14200 / 42) * 1.15"},
-    )
-    step_sleep(0.7)
-    bus.emit(
-        "tool_result",
-        agent_name=r3,
-        tenant_id=tenant_id,
-        tool="calculator",
-        result="(14200 / 42) * 1.15 = 388.8095238095238",
-    )
-    budget.record_tokens(r3, 410, 110)
-    step_sleep(0.6)
-
-    final_text = (
-        f"[Peer Swarm Verified Report for '{tenant_id}']\n"
-        f"1. '{r1}' gathered live benchmark metrics (14,200 req/s @ 42ms p95).\n"
-        f"2. '{r2}' executed Python sandbox analysis -> Efficiency Index: 388.81.\n"
-        f"3. '{r3}' independently verified the math (388.8095) and approved the output.\n"
-        "4. PrivacyAirlock distilled the reusable normalization rule into Shared Global Skills."
-    )
-    storage.save_tenant_memory(tenant_id, "last_efficiency_index", "388.81 (Verified)")
-    storage.append_session_turn(tenant_id, "user", prompt)
-    storage.append_session_turn(tenant_id, "assistant", final_text)
-
-    bus.emit("swarm_complete", agent_name=r3, tenant_id=tenant_id, answer=final_text)
-    bus.emit("agent_finish", agent_name=r3, tenant_id=tenant_id, answer=final_text)
+def bootstrap_admin_key(client_ip: str) -> str:
+    """The UI's one-click login. Only a client on this machine may receive the admin key."""
+    if not ipaddress.ip_address(client_ip).is_loopback:
+        return ""
+    return getattr(auth_manager, "active_admin_key", "") or getattr(auth_manager, "initial_admin_key", "") or ""
 
 
 class SwarmRequestHandler(BaseHTTPRequestHandler):
@@ -349,137 +218,359 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
 
         return record
 
+    GET_ROUTES = {
+        "/": "_route_index",
+        "/index.html": "_route_index",
+        "/api/version": "_route_api_version",
+        "/api/state": "_route_api_state",
+        "/api/events": "_route_api_events",
+        "/api/self-heal/status": "_route_api_self_heal_status",
+    }
+
+    POST_ROUTES = {
+        "/api/swarms": "_route_api_swarms",
+        "/api/swarms/delete": "_route_api_swarms_delete",
+        "/api/roles": "_route_api_roles",
+        "/api/roles/delete": "_route_api_roles_delete",
+        "/api/evals": "_route_api_evals",
+        "/api/approvals/resolve": "_route_api_approvals_resolve",
+        "/api/missions/execute": "_route_api_missions_execute",
+        "/api/run": "_route_api_missions_execute",
+        "/api/missions/plan": "_route_api_missions_plan",
+        "/api/skills/approve": "_route_api_skills_approve",
+        "/api/airlock-test": "_route_api_airlock_test",
+        "/api/memory": "_route_api_memory",
+    }
+
+    def _route_index(self, parsed: Any) -> None:
+        index_file = STATIC_DIR / "index.html"
+        if not index_file.exists():
+            self._send_json({"error": "static/index.html not found"}, 404)
+            return
+        html = index_file.read_text(encoding="utf-8")
+        active_key = bootstrap_admin_key(self.client_address[0])
+        ver_info = get_version_info().to_dict()
+        bootstrap_script = (
+            f"<script>\n"
+            f"  window.__BOOTSTRAP_API_KEY__ = {json.dumps(active_key)};\n"
+            f"  window.__SERVER_VERSION__ = {json.dumps(ver_info)};\n"
+            f"</script>"
+        )
+        html = html.replace("<head>", f"<head>\n  {bootstrap_script}", 1)
+        content = html.encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self._send_security_headers()
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
+        self.end_headers()
+        self.wfile.write(content)
+
+    def _route_api_version(self, parsed: Any) -> None:
+        self._send_json(get_version_info().to_dict())
+
+    def _route_api_state(self, parsed: Any) -> None:
+        auth = self._authenticate("user")
+        if not auth:
+            return
+
+        qs = parse_qs(parsed.query)
+        if auth.has_scope("admin"):
+            default_id = swarm_manager.list_swarms()[0].swarm_id if swarm_manager.list_swarms() else "default"
+            raw_tenant = qs.get("tenant", [default_id])[0]
+            try:
+                tenant_id = validate_tenant_id(raw_tenant)
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, 400)
+                return
+        else:
+            tenant_id = auth.tenant_id
+
+        active_budget = swarm_manager.get_last_budget(tenant_id) or budget
+        self._send_json(
+            {
+                "tenant_id": tenant_id,
+                "version": get_version_info().to_dict(),
+                "model": CONFIG.model_name,
+                "endpoint": CONFIG.api_base_url,
+                "swarms": swarm_manager.list_dicts(),
+                "roles": role_registry.list_dicts(),
+                "capability_bundles": CAPABILITY_BUNDLES,
+                "tenant_memories": storage.get_tenant_memories(tenant_id),
+                "global_skills": storage.get_global_skills(limit=12),
+                "session_turns": storage.get_session_turns(tenant_id, limit=10),
+                "pending_approvals": GLOBAL_APPROVAL_GATE.list_pending(tenant_id),
+                "approval_audit": GLOBAL_APPROVAL_GATE.get_audit_trail(limit=10, tenant_id=tenant_id),
+                "checkpoints": checkpoint_store.list_tenant_checkpoints(tenant_id, limit=10),
+                "budget": {
+                    "total_steps": active_budget.total_steps,
+                    "max_swarm_steps": active_budget.config.max_swarm_steps,
+                    "total_tokens": active_budget.total_tokens,
+                    "max_total_tokens": active_budget.config.max_total_tokens,
+                    "elapsed_seconds": active_budget.elapsed_seconds,
+                    "agent_steps": active_budget.agent_steps,
+                },
+            }
+        )
+
+    def _route_api_events(self, parsed: Any) -> None:
+        auth = self._authenticate("user")
+        if not auth:
+            return
+
+        self.send_response(HTTPStatus.OK)
+        self._send_security_headers()
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+        client_conn = SSEClientConnection(
+            client_queue=queue.Queue(maxsize=CONFIG.sse_queue_size),
+            tenant_id=auth.tenant_id,
+            is_admin=auth.has_scope("admin"),
+        )
+        with _sse_clients_lock:
+            _sse_clients.append(client_conn)
+
+        try:
+            self.wfile.write(b"data: {\"event_type\": \"connected\"}\n\n")
+            self.wfile.flush()
+            while True:
+                try:
+                    msg = client_conn.client_queue.get(timeout=CONFIG.sse_heartbeat_sec)
+                    self.wfile.write(f"data: {msg}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+                except queue.Empty:
+                    self.wfile.write(b": heartbeat\n\n")
+                    self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            with _sse_clients_lock:
+                if client_conn in _sse_clients:
+                    _sse_clients.remove(client_conn)
+
+    def _route_api_self_heal_status(self, parsed: Any) -> None:
+        auth = self._authenticate("user")
+        if not auth:
+            return
+        hq = parse_qs(parsed.query)
+        mission_id = (hq.get("mission_id", [""])[0] or "").strip() or None
+        baseline_id = (hq.get("baseline_id", [""])[0] or "").strip() or None
+        self._send_json(self_healer.status(mission_id=mission_id, baseline_id=baseline_id))
+
+    def _route_api_swarms(self, body: Dict[str, Any]) -> None:
+        auth = self._authenticate("admin")
+        if not auth:
+            return
+
+        swarm_id = str(body.get("swarm_id", "")).strip()
+        title = str(body.get("title", "")).strip()
+        topology = str(body.get("topology", "peer")).strip().lower()
+        model = str(body.get("model", "")).strip()
+        color = str(body.get("color", "#38bdf8")).strip()
+        roles = body.get("roles", None)
+        allow_cross_swarm = bool(body.get("allow_cross_swarm", False))
+        directive = str(body.get("directive", "")).strip()
+
+        if not swarm_id or not title:
+            self._send_json({"error": "swarm_id and title are required."}, 400)
+            return
+
+        try:
+            validate_tenant_id(swarm_id)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
+
+        deployment_spec = swarm_manager.deploy_swarm(
+            swarm_id=swarm_id,
+            title=title,
+            topology=topology,
+            model=model,
+            color=color,
+            roles=roles if isinstance(roles, list) and roles else None,
+            allow_cross_swarm=allow_cross_swarm,
+            directive=directive,
+        )
+        self._send_json({"swarm": deployment_spec.to_dict(role_registry), "swarms": swarm_manager.list_dicts()})
+
+    def _route_api_swarms_delete(self, body: Dict[str, Any]) -> None:
+        auth = self._authenticate("admin")
+        if not auth:
+            return
+
+        swarm_id = str(body.get("swarm_id", "")).strip()
+        try:
+            validate_tenant_id(swarm_id)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
+        deleted = swarm_manager.delete_swarm(swarm_id)
+        self._send_json({"deleted": deleted, "swarms": swarm_manager.list_dicts()})
+
+    def _route_api_roles(self, body: Dict[str, Any]) -> None:
+        auth = self._authenticate("admin")
+        if not auth:
+            return
+
+        name = str(body.get("name", "")).strip()
+        title = str(body.get("title", "")).strip()
+        instructions = str(body.get("instructions", "")).strip()
+        capabilities = body.get("capabilities", ["@web", "@code"])
+        color = str(body.get("color", "#00f0ff")).strip()
+        raw_max_steps = body.get("max_steps")
+        try:
+            max_steps = int(raw_max_steps) if raw_max_steps is not None else None
+        except (ValueError, TypeError):
+            max_steps = None
+
+        if not name or not title:
+            self._send_json({"error": "Role name and title are required."}, 400)
+            return
+
+        spec = role_registry.register_role(
+            name=name,
+            title=title,
+            instructions=instructions,
+            capabilities=capabilities if isinstance(capabilities, list) else ["@web", "@code"],
+            color=color,
+            max_steps=max_steps,
+        )
+        bus.emit("role_created", agent_name="system", tenant_id="default", role=spec.to_dict())
+        self._send_json({"role": spec.to_dict(), "roles": role_registry.list_dicts()})
+
+    def _route_api_roles_delete(self, body: Dict[str, Any]) -> None:
+        auth = self._authenticate("admin")
+        if not auth:
+            return
+
+        name = str(body.get("name", "")).strip()
+        deleted = role_registry.delete_role(name)
+        bus.emit("role_deleted", agent_name="system", tenant_id="default", name=name)
+        self._send_json({"deleted": deleted, "roles": role_registry.list_dicts()})
+
+    def _route_api_evals(self, body: Dict[str, Any]) -> None:
+        auth = self._authenticate("admin")
+        if not auth:
+            return
+
+        from evals import run_eval_suite
+
+        scorecard = run_eval_suite(bus=bus)
+        lines = [
+            f"{'✅' if r['status'] == 'PASS' else '❌'} {r['name']} ({r['ms']}ms) — {r['detail']}"
+            for r in scorecard["results"]
+        ]
+        summary_text = (
+            f"STEP 5 EVALUATION & REGRESSION SCORECARD: {scorecard['passed']}/{scorecard['total']} "
+            f"Passed ({scorecard['pass_rate']}) in {scorecard['total_ms']}ms\n\n"
+            + "\n".join(lines)
+        )
+        bus.emit(
+            "swarm_complete",
+            agent_name="critic",
+            tenant_id="system",
+            answer=summary_text,
+        )
+        self._send_json(scorecard)
+
+    def _route_api_approvals_resolve(self, body: Dict[str, Any]) -> None:
+        auth = self._authenticate("user")
+        if not auth:
+            return
+
+        request_id = str(body.get("request_id", "")).strip()
+        decision = str(body.get("decision", "approve")).strip().lower()
+        reason = str(body.get("reason", "")).strip() or None
+        if not request_id or decision not in {"approve", "deny"}:
+            self._send_json({"error": "request_id and decision ('approve' or 'deny') are required."}, 400)
+            return
+
+        try:
+            approver_name = auth.name or auth.tenant_id or "operator"
+            scope = None if auth.has_scope("admin") else auth.tenant_id
+            resolve = GLOBAL_APPROVAL_GATE.approve if decision == "approve" else GLOBAL_APPROVAL_GATE.deny
+            rec = resolve(request_id, approver=approver_name, reason=reason, tenant_id=scope)
+            self._send_json({
+                "request_id": rec.request_id,
+                "status": rec.status,
+                "approver": rec.approver,
+                "pending_approvals": GLOBAL_APPROVAL_GATE.list_pending(rec.tenant_id),
+                "approval_audit": GLOBAL_APPROVAL_GATE.get_audit_trail(limit=10, tenant_id=rec.tenant_id),
+            })
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, 404 if "not found" in str(exc) else 400)
+
+    def _route_api_missions_execute(self, body: Dict[str, Any]) -> None:
+        self._handle_mission_post(urlparse(self.path).path, body)
+
+    def _route_api_missions_plan(self, body: Dict[str, Any]) -> None:
+        self._handle_mission_plan(body)
+
+    def _route_api_skills_approve(self, body: Dict[str, Any]) -> None:
+        auth = self._authenticate("admin")
+        if not auth:
+            return
+        try:
+            skill_id = int(body.get("skill_id", ""))
+        except (TypeError, ValueError):
+            self._send_json({"error": "skill_id must be an integer."}, 400)
+            return
+        if not storage.approve_global_skill(skill_id):
+            self._send_json({"error": f"Skill {skill_id} not found."}, 404)
+            return
+        self._send_json({"skill_id": skill_id, "approved": True})
+
+    def _route_api_airlock_test(self, body: Dict[str, Any]) -> None:
+        auth = self._authenticate("admin")
+        if not auth:
+            return
+
+        category = str(body.get("category", "security"))
+        problem = str(body.get("problem", ""))
+        solution = str(body.get("solution", ""))
+        raw_tenant = str(body.get("tenant_id", auth.tenant_id)).strip()
+        try:
+            tenant_id = validate_tenant_id(raw_tenant)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
+        sanitized = storage.add_global_skill(category, problem, solution)
+        bus.emit("skill_learned", agent_name="privacy_airlock", tenant_id=tenant_id, **sanitized)
+        self._send_json({"sanitized": sanitized})
+
+    def _route_api_memory(self, body: Dict[str, Any]) -> None:
+        auth = self._authenticate("user")
+        if not auth:
+            return
+
+        if auth.has_scope("admin"):
+            raw_tenant = str(body.get("tenant_id", "client_a")).strip()
+            try:
+                tenant_id = validate_tenant_id(raw_tenant)
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, 400)
+                return
+        else:
+            tenant_id = auth.tenant_id
+
+        key = str(body.get("key", "")).strip()
+        fact = str(body.get("fact", "")).strip()
+        if key and fact:
+            storage.save_tenant_memory(tenant_id, key, fact)
+        self._send_json({"tenant_memories": storage.get_tenant_memories(tenant_id)})
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
 
-        if path in {"/", "/index.html"}:
-            index_file = STATIC_DIR / "index.html"
-            if not index_file.exists():
-                self._send_json({"error": "static/index.html not found"}, 404)
-                return
-            html = index_file.read_text(encoding="utf-8")
-            active_key = (
-                getattr(auth_manager, "active_admin_key", "")
-                or getattr(auth_manager, "initial_admin_key", "")
-                or ""
-            )
-            ver_info = get_version_info().to_dict()
-            bootstrap_script = (
-                f"<script>\n"
-                f"  window.__BOOTSTRAP_API_KEY__ = {json.dumps(active_key)};\n"
-                f"  window.__SERVER_VERSION__ = {json.dumps(ver_info)};\n"
-                f"</script>"
-            )
-            html = html.replace("<head>", f"<head>\n  {bootstrap_script}", 1)
-            content = html.encode("utf-8")
-            self.send_response(HTTPStatus.OK)
-            self._send_security_headers()
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(content)))
-            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
-            self.send_header("Pragma", "no-cache")
-            self.send_header("Expires", "0")
-            self.end_headers()
-            self.wfile.write(content)
-            return
-
-        if path == "/api/version":
-            self._send_json(get_version_info().to_dict())
-            return
-
-        if path == "/api/state":
-            auth = self._authenticate("user")
-            if not auth:
-                return
-
-            qs = parse_qs(parsed.query)
-            if auth.has_scope("admin"):
-                default_id = swarm_manager.list_swarms()[0].swarm_id if swarm_manager.list_swarms() else "default"
-                raw_tenant = qs.get("tenant", [default_id])[0]
-                try:
-                    tenant_id = validate_tenant_id(raw_tenant)
-                except ValueError as exc:
-                    self._send_json({"error": str(exc)}, 400)
-                    return
-            else:
-                tenant_id = auth.tenant_id
-
-            active_budget = swarm_manager.get_last_budget(tenant_id) or budget
-            self._send_json(
-                {
-                    "tenant_id": tenant_id,
-                    "version": get_version_info().to_dict(),
-                    "model": CONFIG.model_name,
-                    "endpoint": CONFIG.api_base_url,
-                    "swarms": swarm_manager.list_dicts(),
-                    "roles": role_registry.list_dicts(),
-                    "capability_bundles": CAPABILITY_BUNDLES,
-                    "tenant_memories": storage.get_tenant_memories(tenant_id),
-                    "global_skills": storage.get_global_skills(limit=12),
-                    "session_turns": storage.get_session_turns(tenant_id, limit=10),
-                    "pending_approvals": GLOBAL_APPROVAL_GATE.list_pending(tenant_id),
-                    "approval_audit": GLOBAL_APPROVAL_GATE.get_audit_trail(limit=10, tenant_id=tenant_id),
-                    "checkpoints": checkpoint_store.list_tenant_checkpoints(tenant_id, limit=10),
-                    "budget": {
-                        "total_steps": active_budget.total_steps,
-                        "max_swarm_steps": active_budget.config.max_swarm_steps,
-                        "total_tokens": active_budget.total_tokens,
-                        "max_total_tokens": active_budget.config.max_total_tokens,
-                        "elapsed_seconds": active_budget.elapsed_seconds,
-                        "agent_steps": active_budget.agent_steps,
-                    },
-                }
-            )
-            return
-
-        if path == "/api/events":
-            auth = self._authenticate("user")
-            if not auth:
-                return
-
-            self.send_response(HTTPStatus.OK)
-            self._send_security_headers()
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Connection", "keep-alive")
-            self.end_headers()
-
-            client_conn = SSEClientConnection(
-                client_queue=queue.Queue(maxsize=CONFIG.sse_queue_size),
-                tenant_id=auth.tenant_id,
-                is_admin=auth.has_scope("admin"),
-            )
-            with _sse_clients_lock:
-                _sse_clients.append(client_conn)
-
-            try:
-                self.wfile.write(b"data: {\"event_type\": \"connected\"}\n\n")
-                self.wfile.flush()
-                while True:
-                    try:
-                        msg = client_conn.client_queue.get(timeout=CONFIG.sse_heartbeat_sec)
-                        self.wfile.write(f"data: {msg}\n\n".encode("utf-8"))
-                        self.wfile.flush()
-                    except queue.Empty:
-                        self.wfile.write(b": heartbeat\n\n")
-                        self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError, OSError):
-                pass
-            finally:
-                with _sse_clients_lock:
-                    if client_conn in _sse_clients:
-                        _sse_clients.remove(client_conn)
-            return
-
-        if path == "/api/self-heal/status":
-            auth = self._authenticate("user")
-            if not auth:
-                return
-            hq = parse_qs(parsed.query)
-            mission_id = (hq.get("mission_id", [""])[0] or "").strip() or None
-            baseline_id = (hq.get("baseline_id", [""])[0] or "").strip() or None
-            self._send_json(self_healer.status(mission_id=mission_id, baseline_id=baseline_id))
+        handler = self.GET_ROUTES.get(path)
+        if handler:
+            getattr(self, handler)(parsed)
             return
 
         self._send_json({"error": "Not found"}, 404)
@@ -528,6 +619,175 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
             return True
         return False
 
+    def _mission_request(self, body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Authenticate and authorize a mission body. Sends the error response and returns None on refusal."""
+        auth = self._authenticate("user")
+        if not auth:
+            return None
+
+        prompt = str(body.get("prompt", "")).strip()
+        if not prompt:
+            self._send_json({"error": "Prompt is required."}, 400)
+            return None
+
+        is_admin = auth.has_scope("admin")
+        auto_approve = bool(body.get("auto_approve", False))
+        allow_self_heal = bool(body.get("allow_self_heal", False))
+        if (auto_approve or allow_self_heal) and not is_admin:
+            self._send_json({"error": "auto_approve and allow_self_heal require the admin scope."}, 403)
+            return None
+
+        preset_spec = body.get("spec")
+        if preset_spec is not None and not isinstance(preset_spec, dict):
+            self._send_json({"error": "spec must be an object."}, 400)
+            return None
+
+        tenant_id = auth.tenant_id
+        if is_admin:
+            try:
+                tenant_id = validate_tenant_id(str(body.get("tenant_id", "default")).strip() or "default")
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, 400)
+                return None
+
+        mode = str(body.get("mode", "")).strip().lower()
+        return {
+            "prompt": prompt,
+            "tenant_id": tenant_id,
+            "mode": mode,
+            "auto_approve": auto_approve,
+            "allow_self_heal": allow_self_heal,
+            "preset_spec": preset_spec,
+            "topology_override": None if mode in ("", "auto") else mode,
+        }
+
+    def _acquire_mission_slot(self, tenant_id: str) -> Optional[Any]:
+        """Apply rate, spend, and concurrency governance. Returns a held tracker, or None after refusing."""
+        try:
+            cost_governor.check_rate_limit(tenant_id)
+            cost_governor.check_daily_spend(tenant_id)
+            tracker = cost_governor.track_concurrency(tenant_id)
+            tracker.__enter__()
+            return tracker
+        except RateLimitExceededError as rle:
+            self._send_json({"error": str(rle), "retry_after": rle.retry_after}, 429)
+        except DailyBudgetExceededError as dbe:
+            self._send_json({"error": str(dbe), "current_spend": dbe.current_spend, "max_spend": dbe.max_spend}, 429)
+        except ConcurrencyLimitExceededError as cle:
+            self._send_json({"error": str(cle)}, 409)
+        return None
+
+    @staticmethod
+    def _mission_runner() -> IntegratedMissionRunner:
+        return IntegratedMissionRunner(
+            llm=llm,
+            checkpoint_store=checkpoint_store,
+            approval_gate=GLOBAL_APPROVAL_GATE,
+            bus=bus,
+            storage=storage,
+        )
+
+    @staticmethod
+    def _execute_mission(request: Dict[str, Any]) -> Any:
+        return SwarmRequestHandler._mission_runner().execute(
+            prompt=request["prompt"],
+            tenant_id=request["tenant_id"],
+            auto_approve_high_risk=request["auto_approve"],
+            topology_override=request["topology_override"],
+            allow_self_heal=request["allow_self_heal"],
+            preset_spec=request["preset_spec"],
+        )
+
+    def _handle_mission_plan(self, body: Dict[str, Any]) -> None:
+        """Design a swarm without running it. Planning spends tokens, so it is governed like a mission."""
+        request = self._mission_request(body)
+        if not request:
+            return
+        tracker = self._acquire_mission_slot(request["tenant_id"])
+        if not tracker:
+            return
+        try:
+            spec = self._mission_runner().plan(
+                request["prompt"],
+                tenant_id=request["tenant_id"],
+                topology_override=request["topology_override"],
+                allow_self_heal=request["allow_self_heal"],
+            )
+            self._send_json({"spec": spec.to_dict()})
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, 400)
+        except Exception:
+            logger.exception("Mission planning failed for tenant %s", request["tenant_id"])
+            self._send_json({"error": "Mission planning failed. See server logs."}, 500)
+        finally:
+            tracker.__exit__(None, None, None)
+
+    def _handle_mission_post(self, path: str, body: Dict[str, Any]) -> None:
+        request = self._mission_request(body)
+        if not request:
+            return
+        tracker = self._acquire_mission_slot(request["tenant_id"])
+        if not tracker:
+            return
+
+        if bool(body.get("async", path == "/api/run")):
+            worker = threading.Thread(
+                target=self._run_mission_async,
+                args=(request, bool(body.get("simulate", False)), tracker),
+                daemon=True,
+            )
+            worker.start()
+            self._send_json({"status": "started", "tenant_id": request["tenant_id"], "mode": request["mode"] or "auto"})
+            return
+
+        try:
+            result = self._execute_mission(request)
+            self._send_json({
+                "mission_id": result.mission_id,
+                "tenant_id": result.tenant_id,
+                "status": result.status,
+                "spec": result.spec,
+                "output": result.output,
+                "checkpoints_count": result.checkpoints_count,
+                "latest_checkpoint_hash": result.latest_checkpoint_hash,
+                "audit_events": result.audit_events,
+            })
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, 400)
+        except Exception:
+            logger.exception("Mission execution failed for tenant %s", request["tenant_id"])
+            self._send_json({"error": "Mission execution failed. See server logs."}, 500)
+        finally:
+            tracker.__exit__(None, None, None)
+
+    @staticmethod
+    def _run_mission_async(request: Dict[str, Any], simulate: bool, tracker: Any) -> None:
+        tenant_id = request["tenant_id"]
+        mode = request["mode"] or "auto"
+        try:
+            if simulate:
+                bus.emit("mission_start", agent_name="system", tenant_id=tenant_id, mode=mode, prompt=request["prompt"], simulate=True)
+                run_cinematic_simulation(bus, budget, role_registry, storage, tenant_id, request["prompt"])
+                reply = "Simulation complete."
+            else:
+                res = SwarmRequestHandler._execute_mission(request)
+                reply = res.output
+                bus.emit(
+                    "swarm_complete",
+                    agent_name="coordinator",
+                    tenant_id=tenant_id,
+                    answer=reply,
+                    mission_id=res.mission_id,
+                    checkpoints_count=res.checkpoints_count,
+                    latest_checkpoint_hash=res.latest_checkpoint_hash,
+                )
+            bus.emit("mission_end", agent_name="system", tenant_id=tenant_id, mode=mode, reply=reply)
+        except Exception as exc:
+            logger.exception("Async mission failed for tenant %s", tenant_id)
+            bus.emit("mission_error", agent_name="system", tenant_id=tenant_id, error=str(exc)[:400])
+        finally:
+            tracker.__exit__(None, None, None)
+
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         try:
@@ -552,335 +812,9 @@ class SwarmRequestHandler(BaseHTTPRequestHandler):
         if self._handle_self_heal_post(parsed.path, body):
             return
 
-        if parsed.path == "/api/swarms":
-            auth = self._authenticate("admin")
-            if not auth:
-                return
-
-            swarm_id = str(body.get("swarm_id", "")).strip()
-            title = str(body.get("title", "")).strip()
-            topology = str(body.get("topology", "peer")).strip().lower()
-            model = str(body.get("model", "")).strip()
-            color = str(body.get("color", "#38bdf8")).strip()
-            roles = body.get("roles", None)
-            allow_cross_swarm = bool(body.get("allow_cross_swarm", False))
-            directive = str(body.get("directive", "")).strip()
-
-            if not swarm_id or not title:
-                self._send_json({"error": "swarm_id and title are required."}, 400)
-                return
-
-            try:
-                validate_tenant_id(swarm_id)
-            except ValueError as exc:
-                self._send_json({"error": str(exc)}, 400)
-                return
-
-            deployment_spec = swarm_manager.deploy_swarm(
-                swarm_id=swarm_id,
-                title=title,
-                topology=topology,
-                model=model,
-                color=color,
-                roles=roles if isinstance(roles, list) and roles else None,
-                allow_cross_swarm=allow_cross_swarm,
-                directive=directive,
-            )
-            self._send_json({"swarm": deployment_spec.to_dict(role_registry), "swarms": swarm_manager.list_dicts()})
-            return
-
-        if parsed.path == "/api/swarms/delete":
-            auth = self._authenticate("admin")
-            if not auth:
-                return
-
-            swarm_id = str(body.get("swarm_id", "")).strip()
-            try:
-                validate_tenant_id(swarm_id)
-            except ValueError as exc:
-                self._send_json({"error": str(exc)}, 400)
-                return
-            deleted = swarm_manager.delete_swarm(swarm_id)
-            self._send_json({"deleted": deleted, "swarms": swarm_manager.list_dicts()})
-            return
-
-        if parsed.path == "/api/roles":
-            auth = self._authenticate("admin")
-            if not auth:
-                return
-
-            name = str(body.get("name", "")).strip()
-            title = str(body.get("title", "")).strip()
-            instructions = str(body.get("instructions", "")).strip()
-            capabilities = body.get("capabilities", ["@web", "@code"])
-            color = str(body.get("color", "#00f0ff")).strip()
-            raw_max_steps = body.get("max_steps")
-            try:
-                max_steps = int(raw_max_steps) if raw_max_steps is not None else None
-            except (ValueError, TypeError):
-                max_steps = None
-
-            if not name or not title:
-                self._send_json({"error": "Role name and title are required."}, 400)
-                return
-
-            spec = role_registry.register_role(
-                name=name,
-                title=title,
-                instructions=instructions,
-                capabilities=capabilities if isinstance(capabilities, list) else ["@web", "@code"],
-                color=color,
-                max_steps=max_steps,
-            )
-            bus.emit("role_created", agent_name="system", tenant_id="default", role=spec.to_dict())
-            self._send_json({"role": spec.to_dict(), "roles": role_registry.list_dicts()})
-            return
-
-        if parsed.path == "/api/roles/delete":
-            auth = self._authenticate("admin")
-            if not auth:
-                return
-
-            name = str(body.get("name", "")).strip()
-            deleted = role_registry.delete_role(name)
-            bus.emit("role_deleted", agent_name="system", tenant_id="default", name=name)
-            self._send_json({"deleted": deleted, "roles": role_registry.list_dicts()})
-            return
-
-        if parsed.path == "/api/evals":
-            auth = self._authenticate("admin")
-            if not auth:
-                return
-
-            from evals import run_eval_suite
-
-            scorecard = run_eval_suite(bus=bus)
-            lines = [
-                f"{'✅' if r['status'] == 'PASS' else '❌'} {r['name']} ({r['ms']}ms) — {r['detail']}"
-                for r in scorecard["results"]
-            ]
-            summary_text = (
-                f"STEP 5 EVALUATION & REGRESSION SCORECARD: {scorecard['passed']}/{scorecard['total']} "
-                f"Passed ({scorecard['pass_rate']}) in {scorecard['total_ms']}ms\n\n"
-                + "\n".join(lines)
-            )
-            bus.emit(
-                "swarm_complete",
-                agent_name="critic",
-                tenant_id="system",
-                answer=summary_text,
-            )
-            self._send_json(scorecard)
-            return
-
-        if parsed.path == "/api/approvals/resolve":
-            auth = self._authenticate("user")
-            if not auth:
-                return
-
-            request_id = str(body.get("request_id", "")).strip()
-            decision = str(body.get("decision", "approve")).strip().lower()
-            reason = str(body.get("reason", "")).strip() or None
-            if not request_id or decision not in {"approve", "deny"}:
-                self._send_json({"error": "request_id and decision ('approve' or 'deny') are required."}, 400)
-                return
-
-            try:
-                approver_name = auth.name or auth.tenant_id or "operator"
-                if decision == "approve":
-                    rec = GLOBAL_APPROVAL_GATE.approve(request_id, approver=approver_name, reason=reason)
-                else:
-                    rec = GLOBAL_APPROVAL_GATE.deny(request_id, approver=approver_name, reason=reason)
-                self._send_json({
-                    "request_id": rec.request_id,
-                    "status": rec.status,
-                    "approver": rec.approver,
-                    "pending_approvals": GLOBAL_APPROVAL_GATE.list_pending(rec.tenant_id),
-                    "approval_audit": GLOBAL_APPROVAL_GATE.get_audit_trail(limit=10, tenant_id=rec.tenant_id),
-                })
-            except Exception as exc:
-                self._send_json({"error": str(exc)}, 400)
-            return
-
-        if parsed.path in {"/api/missions/execute", "/api/run"}:
-            auth = self._authenticate("user")
-            if not auth:
-                return
-
-            prompt = str(body.get("prompt", "")).strip()
-            mode = str(body.get("mode", "")).strip().lower()
-            simulate = bool(body.get("simulate", False))
-            auto_approve = bool(body.get("auto_approve", False))
-            is_async = bool(body.get("async", parsed.path == "/api/run"))
-
-            if not prompt:
-                self._send_json({"error": "Prompt is required."}, 400)
-                return
-
-            if auth.has_scope("admin"):
-                raw_tenant = str(body.get("tenant_id", "default")).strip() or "default"
-                try:
-                    tenant_id = validate_tenant_id(raw_tenant)
-                except ValueError as exc:
-                    self._send_json({"error": str(exc)}, 400)
-                    return
-            else:
-                tenant_id = auth.tenant_id
-
-            if not is_async:
-                try:
-                    runner = IntegratedMissionRunner(
-                        llm=llm,
-                        checkpoint_store=checkpoint_store,
-                        approval_gate=GLOBAL_APPROVAL_GATE,
-                        bus=bus,
-                        storage=storage,
-                    )
-                    result = runner.execute(
-                        prompt=prompt,
-                        tenant_id=tenant_id,
-                        auto_approve_high_risk=auto_approve,
-                        topology_override=mode or None,
-                    )
-                    self._send_json({
-                        "mission_id": result.mission_id,
-                        "tenant_id": result.tenant_id,
-                        "status": result.status,
-                        "spec": result.spec,
-                        "output": result.output,
-                        "checkpoints_count": result.checkpoints_count,
-                        "latest_checkpoint_hash": result.latest_checkpoint_hash,
-                        "audit_events": result.audit_events,
-                    })
-                except Exception as exc:
-                    self._send_json({"error": f"Mission execution failed: {exc}"}, 500)
-                return
-
-            # FP-03: Rate Limiting & Daily Spend Cap Governance for async UI/API runs
-            try:
-                cost_governor.check_rate_limit(tenant_id)
-            except RateLimitExceededError as rle:
-                self._send_json({"error": str(rle), "retry_after": rle.retry_after}, 429)
-                return
-
-            try:
-                cost_governor.check_daily_spend(tenant_id)
-            except DailyBudgetExceededError as dbe:
-                self._send_json(
-                    {
-                        "error": str(dbe),
-                        "current_spend": dbe.current_spend,
-                        "max_spend": dbe.max_spend,
-                    },
-                    429,
-                )
-                return
-
-            try:
-                tracker = cost_governor.track_concurrency(tenant_id)
-                tracker.__enter__()
-            except ConcurrencyLimitExceededError as cle:
-                self._send_json({"error": str(cle)}, 409)
-                return
-
-            def _worker() -> None:
-                try:
-                    if simulate:
-                        bus.emit(
-                            "mission_start",
-                            agent_name="system",
-                            tenant_id=tenant_id,
-                            mode=mode or "peer",
-                            prompt=prompt,
-                            simulate=True,
-                        )
-                        _run_cinematic_simulation(tenant_id, prompt)
-                        reply = "Simulation complete."
-                    else:
-                        runner = IntegratedMissionRunner(
-                            llm=llm,
-                            checkpoint_store=checkpoint_store,
-                            approval_gate=GLOBAL_APPROVAL_GATE,
-                            bus=bus,
-                            storage=storage,
-                        )
-                        res = runner.execute(
-                            prompt=prompt,
-                            tenant_id=tenant_id,
-                            auto_approve_high_risk=auto_approve,
-                            topology_override=mode or None,
-                        )
-                        reply = res.output
-                        bus.emit(
-                            "swarm_complete",
-                            agent_name="coordinator",
-                            tenant_id=tenant_id,
-                            answer=reply,
-                            mission_id=res.mission_id,
-                            checkpoints_count=res.checkpoints_count,
-                            latest_checkpoint_hash=res.latest_checkpoint_hash,
-                        )
-
-                    bus.emit(
-                        "mission_end",
-                        agent_name="system",
-                        tenant_id=tenant_id,
-                        mode=mode or "auto",
-                        reply=reply,
-                    )
-                except Exception as exc:
-                    bus.emit(
-                        "mission_error",
-                        agent_name="system",
-                        tenant_id=tenant_id,
-                        error=str(exc),
-                    )
-                finally:
-                    tracker.__exit__(None, None, None)
-
-            threading.Thread(target=_worker, daemon=True).start()
-            self._send_json({"status": "started", "tenant_id": tenant_id, "mode": mode or "auto"})
-            return
-
-        if parsed.path == "/api/airlock-test":
-            auth = self._authenticate("admin")
-            if not auth:
-                return
-
-            category = str(body.get("category", "security"))
-            problem = str(body.get("problem", ""))
-            solution = str(body.get("solution", ""))
-            raw_tenant = str(body.get("tenant_id", auth.tenant_id)).strip()
-            try:
-                tenant_id = validate_tenant_id(raw_tenant)
-            except ValueError as exc:
-                self._send_json({"error": str(exc)}, 400)
-                return
-            sanitized = storage.add_global_skill(category, problem, solution)
-            bus.emit("skill_learned", agent_name="privacy_airlock", tenant_id=tenant_id, **sanitized)
-            self._send_json({"sanitized": sanitized})
-            return
-
-        if parsed.path == "/api/memory":
-            auth = self._authenticate("user")
-            if not auth:
-                return
-
-            if auth.has_scope("admin"):
-                raw_tenant = str(body.get("tenant_id", "client_a")).strip()
-                try:
-                    tenant_id = validate_tenant_id(raw_tenant)
-                except ValueError as exc:
-                    self._send_json({"error": str(exc)}, 400)
-                    return
-            else:
-                tenant_id = auth.tenant_id
-
-            key = str(body.get("key", "")).strip()
-            fact = str(body.get("fact", "")).strip()
-            if key and fact:
-                storage.save_tenant_memory(tenant_id, key, fact)
-            self._send_json({"tenant_memories": storage.get_tenant_memories(tenant_id)})
+        handler = self.POST_ROUTES.get(parsed.path)
+        if handler:
+            getattr(self, handler)(body)
             return
 
         self._send_json({"error": "Unknown endpoint"}, 404)

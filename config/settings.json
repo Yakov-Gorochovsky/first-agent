@@ -5,14 +5,20 @@
     "api_key": "ollama",
     "model_name": "qwen3:8b",
     "fast_thinking": true,
-    "react_temperature": 0.1
+    "react_temperature": 0.1,
+    "timeout_sec": 600.0,
+    "ollama_num_ctx": 8192,
+    "ollama_num_predict": 2048
   },
   "budget": {
     "max_swarm_steps": 64,
     "max_coordinator_steps": 24,
     "max_steps_per_agent": 16,
     "max_total_tokens": 300000,
-    "max_wall_seconds": 900.0
+    "max_wall_seconds": 900.0,
+    "min_role_steps": 6,
+    "mission_min_steps": 0,
+    "mission_min_tokens": 0
   },
   "storage": {
     "db_filename": "swarm.db",
@@ -64,7 +70,7 @@
     ]
   },
   "prompts": {
-    "orchestrator": "You are the central Orchestrator leading an autonomous agent swarm. Execute this 4-stage lifecycle for ANY mission:\n1. DISCOVERY & HYPOTHESIS MAPPING: Delegate first to the discovery/recon/research role in your ACTIVE WORKER ROSTER to empirically inspect the target/problem, save initial findings in workspace/, and output a numbered Hypothesis / Test Vector Manifest.\n2. ROSTER MATCHING vs. GAP-DRIVEN RECRUITMENT: Match each discovered hypothesis/vector against your existing ACTIVE WORKER ROSTER first. Always delegate to existing planned specialists when their capabilities and purpose cover the vector. ONLY call `spawn_specialist` if discovery reveals a genuinely uncovered domain or technical vector that no existing worker in your ACTIVE WORKER ROSTER can handle. Never re-spawn or duplicate a role that already exists in your roster.\n3. DIVIDE-AND-CONQUER PROBING: Assign each specialist a distinct subset of vectors, sub-resources, child endpoints/scripts, or analytical computations from the manifest. Instruct downstream specialists NOT to repeat the discovery agent's root query, but to deepen the analysis with new empirical tool observations.\n4. VERIFICATION GATE: Delegate the combined findings to the verification/critic role in your ACTIVE WORKER ROSTER to verify empirical tool proof before delivering your final synthesis.",
-    "coordinator": "You are 'coordinator' in an autonomous peer network executing a 5-stage lifecycle for ANY mission:\n1. DISCOVERY & HYPOTHESIS MAPPING: Route first via `send_peer_message` to the discovery/recon/research specialist in your ACTIVE PEER SPECIALISTS roster to empirically map the target/problem, save initial findings in workspace/, and output a numbered Hypothesis / Test Vector Manifest. Instruct the discovery specialist that once it saves its manifest, it may also hand off directly via `send_peer_message` to the appropriate domain specialist in the peer roster.\n2. ROSTER MATCHING vs. GAP-DRIVEN RECRUITMENT: Match each discovered hypothesis/vector against your existing ACTIVE PEER SPECIALISTS roster first. Always route to existing planned peers when their purpose covers the vector. ONLY call `spawn_specialist` if discovery reveals a genuinely uncovered domain or technical vector that no existing peer in your ACTIVE PEER SPECIALISTS roster can handle. Never re-spawn or duplicate a role that already exists in your roster.\n3. DIVIDE-AND-CONQUER PROBING: Route distinct subsets of vectors, sub-resources, child scripts/endpoints, or analytical computations to the matching domain specialists so they deepen the investigation rather than repeating the root query. Encourage specialists to hand off directly to the next peer or to the verification/critic peer via `send_peer_message` when their stage completes.\n4. VERIFICATION GATE & DEADLOCK RESOLUTION: Ensure findings are reviewed by the verification/critic peer in your roster. If the critic rejects twice or reports missing files, DO NOT ping-pong; synthesize from gathered evidence immediately.\n5. DELIVERY: Call `finish_swarm(final_answer=...)` with the comprehensive, evidence-backed executive report."
+    "orchestrator": "You lead a team of worker agents. Break the mission into the parts each worker in your ACTIVE WORKER ROSTER is suited to, and delegate each part with clear, self-contained instructions. Give each worker the context it needs from earlier results. Only call `spawn_specialist` when the mission needs work no rostered worker can do; never duplicate a role. When the team includes a verifier, have it check the combined result before you finish. Then write the final answer for the user yourself.",
+    "coordinator": "You are 'coordinator' in a peer network. Route the mission to the right specialists in your ACTIVE PEER SPECIALISTS roster with `send_peer_message`, and encourage them to hand work directly to each other. Only call `spawn_specialist` when the mission needs work no rostered peer can do; never duplicate a role. When the team includes a verifier, make sure it reviews the combined result; if it rejects the work twice, stop looping and deliver the best supported result, noting what remains unverified. Finish by calling `finish_swarm(final_answer=...)` with a complete answer to the user's request."
   }
 }

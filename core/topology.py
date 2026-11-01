@@ -3,7 +3,8 @@ core/topology.py - FP-12: Pluggable Multi-Agent Topology Registry.
 
 Architectural Purpose:
 Replaces rigid procedural branching with a pluggable topology architecture.
-Topologies define how multi-agent teams communicate and reach consensus:
+Topologies define how a team communicates and reaches a result:
+0. 'single': One agent with no coordination overhead.
 1. 'orchestrator': Centralized dispatch & synthesis (Star topology).
 2. 'peer': Decentralized inbox-directed messaging (Mesh topology).
 3. 'pipeline': Linear sequential workflow (Chain topology).
@@ -21,11 +22,11 @@ from core.budget import BudgetTracker
 from core.bus import EventBus
 from core.llm import LLMProvider
 from core.peer_swarm import PeerSwarm
-from core.registry import DynamicRoleSpec, GLOBAL_TOOL_REGISTRY
+from core.registry import GLOBAL_TOOL_REGISTRY, DynamicRoleSpec
 from core.roles import RoleRegistry, RoleSpec
 from core.security import TaintTracker
 from core.storage import SQLiteStorage, StorageBackend
-from core.swarm import OrchestratorSwarm, WorkerAgent
+from core.swarm import OrchestratorSwarm, WorkerAgent, _get_compact_session_history
 
 logger = logging.getLogger("neural_swarm.topology")
 
@@ -71,8 +72,8 @@ class BaseTopology(ABC):
             safe_name = reg._clean_name(r_spec.name)
             if safe_name in {"coordinator", "orchestrator", "user", "airlock"}:
                 safe_name = f"{safe_name}_specialist"
-            eff_tools = r_spec.resolve_effective_tools(GLOBAL_TOOL_REGISTRY)
-            caps = list(dict.fromkeys([*r_spec.capabilities, "@web", "@files", "@memory", *eff_tools]))
+            # A role gets exactly what was planned for it, never a default extra.
+            caps = list(dict.fromkeys(r_spec.capabilities))
             role_obj = RoleSpec(
                 name=safe_name,
                 title=getattr(r_spec, "purpose", "") or safe_name.replace("_", " ").title(),
@@ -81,6 +82,7 @@ class BaseTopology(ABC):
                 color=palette[idx % len(palette)],
                 is_builtin=False,
                 max_steps=r_spec.max_steps,
+                function=r_spec.function,
             )
             reg._roles[safe_name] = role_obj
             allowed.append(safe_name)
@@ -91,6 +93,23 @@ class BaseTopology(ABC):
                 role=role_obj.to_dict(),
             )
         return reg, allowed
+
+    def _build_worker(self, role_spec: DynamicRoleSpec, bus: EventBus) -> WorkerAgent:
+        """Instantiate a worker for a role that runs directly, without a coordinator."""
+        directive = f"\n\nShared goal: {self.directive}" if self.directive else ""
+        return WorkerAgent(
+            name=role_spec.name,
+            role=getattr(role_spec, "purpose", "") or role_spec.name.title(),
+            instructions=f"{role_spec.instructions}{directive}",
+            llm=self.llm,
+            storage=self.storage,
+            budget=self.budget,
+            bus=bus,
+            tool_names=role_spec.resolve_effective_tools(GLOBAL_TOOL_REGISTRY),
+            max_steps=role_spec.max_steps,
+            taint_tracker=self.taint_tracker,
+            approval_gate=self.approval_gate,
+        )
 
     @abstractmethod
     def execute(self, prompt: str) -> str:
@@ -137,6 +156,20 @@ class PeerTopology(BaseTopology):
         return swarm.run(prompt, tenant_id=self.tenant_id)
 
 
+class SingleAgentTopology(BaseTopology):
+    """One agent, no coordination overhead: the right shape for atomic tasks."""
+
+    def execute(self, prompt: str) -> str:
+        if not self.roles:
+            raise TopologyExecutionError("Single-agent topology requires one configured role.")
+        worker = self._build_worker(self.roles[0], self.bus or EventBus())
+        history = _get_compact_session_history(self.storage, self.tenant_id, prompt)
+        output = worker.execute_task(prompt, tenant_id=self.tenant_id, conversation_history=history)
+        self.storage.append_session_turn(self.tenant_id, "user", prompt)
+        self.storage.append_session_turn(self.tenant_id, "assistant", output)
+        return output
+
+
 class PipelineTopology(BaseTopology):
     """Chain Topology: Sequential pipeline where output of role[i] becomes input to role[i+1]."""
 
@@ -155,21 +188,7 @@ class PipelineTopology(BaseTopology):
 
         active_bus = self.bus or EventBus()
         for idx, role_spec in enumerate(self.roles, start=1):
-            eff_tools = role_spec.resolve_effective_tools(GLOBAL_TOOL_REGISTRY)
-            worker = WorkerAgent(
-                name=role_spec.name,
-                role=getattr(role_spec, "purpose", "") or role_spec.name.title(),
-                instructions=role_spec.instructions,
-                llm=self.llm,
-                storage=self.storage,
-                budget=self.budget,
-                bus=active_bus,
-                tool_names=eff_tools,
-                max_steps=role_spec.max_steps,
-                taint_tracker=self.taint_tracker,
-                approval_gate=self.approval_gate,
-            )
-
+            worker = self._build_worker(role_spec, active_bus)
             stage_prompt = f"Pipeline Stage {idx}/{len(self.roles)}. Process the following input:\n\n{current_input}"
             output = worker.execute_task(task_prompt=stage_prompt, tenant_id=self.tenant_id)
             current_input = output or f"[Stage {idx} completed with empty output]"
@@ -200,35 +219,8 @@ class ReviewLoopTopology(BaseTopology):
             rev_role = self.roles[1]
 
         active_bus = self.bus or EventBus()
-        gen_tools = gen_role.resolve_effective_tools(GLOBAL_TOOL_REGISTRY)
-        rev_tools = rev_role.resolve_effective_tools(GLOBAL_TOOL_REGISTRY)
-        generator = WorkerAgent(
-            name=gen_role.name,
-            role=getattr(gen_role, "purpose", "") or gen_role.name.title(),
-            instructions=gen_role.instructions,
-            llm=self.llm,
-            storage=self.storage,
-            budget=self.budget,
-            bus=active_bus,
-            tool_names=gen_tools,
-            max_steps=gen_role.max_steps,
-            taint_tracker=self.taint_tracker,
-            approval_gate=self.approval_gate,
-        )
-
-        reviewer = WorkerAgent(
-            name=rev_role.name,
-            role=getattr(rev_role, "purpose", "") or rev_role.name.title(),
-            instructions=rev_role.instructions,
-            llm=self.llm,
-            storage=self.storage,
-            budget=self.budget,
-            bus=active_bus,
-            tool_names=rev_tools,
-            max_steps=rev_role.max_steps,
-            taint_tracker=self.taint_tracker,
-            approval_gate=self.approval_gate,
-        )
+        generator = self._build_worker(gen_role, active_bus)
+        reviewer = self._build_worker(rev_role, active_bus)
 
         draft = generator.execute_task(task_prompt=prompt, tenant_id=self.tenant_id)
         max_revisions = 3
@@ -261,6 +253,7 @@ class TopologyRegistry:
 
     def __init__(self) -> None:
         self._topologies: Dict[str, Type[BaseTopology]] = {
+            "single": SingleAgentTopology,
             "orchestrator": OrchestratorTopology,
             "peer": PeerTopology,
             "pipeline": PipelineTopology,

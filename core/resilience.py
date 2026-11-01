@@ -132,6 +132,17 @@ class RetryConfig:
     backoff_factor: float = 2.0
     max_delay: float = 45.0
     jitter: bool = True
+    max_provider_wait: float = 300.0  # A longer requested wait means quota is gone; fail fast.
+
+
+NON_RETRYABLE_STATUS = {400, 401, 403, 404, 422}
+
+
+def _is_hopeless(exc: Exception) -> bool:
+    """True for client errors that fail identically on every attempt."""
+    response = getattr(exc, "response", None)
+    status = getattr(exc, "status_code", None) or getattr(response, "status_code", None)
+    return status in NON_RETRYABLE_STATUS
 
 
 def extract_retry_delay(exc: Exception, attempt: int = 1) -> Optional[float]:
@@ -306,7 +317,9 @@ def retry_with_backoff(
             raise
         except retryable_exceptions as exc:
             last_exc = exc
-            if attempt == cfg.max_retries:
+            suggested_delay = extract_retry_delay(exc, attempt=attempt)
+            give_up = _is_hopeless(exc) or (suggested_delay or 0.0) > cfg.max_provider_wait
+            if attempt == cfg.max_retries or give_up:
                 logger.error(
                     json.dumps({
                         "event": "retry_exhausted",
@@ -318,7 +331,6 @@ def retry_with_backoff(
                 raise exc
 
             # Calculate sleep delay: prioritize provider-instructed retryDelay on rate limits
-            suggested_delay = extract_retry_delay(exc, attempt=attempt)
             if suggested_delay is not None:
                 actual_delay = max(suggested_delay + 1.0, 1.0)
             elif cfg.jitter:

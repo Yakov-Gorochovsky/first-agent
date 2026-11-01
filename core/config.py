@@ -15,7 +15,9 @@ from typing import Dict, List, Optional
 from dotenv import load_dotenv
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(ROOT_DIR / ".env", override=True)
+# Tests set SWARM_IGNORE_DOTENV so a developer's local .env can't change their results.
+if not os.getenv("SWARM_IGNORE_DOTENV"):
+    load_dotenv(ROOT_DIR / ".env", override=True)
 
 CONFIG_DIR = ROOT_DIR / "config"
 WORKSPACE_DIR = Path(os.getenv("WORKSPACE_DIR", str(ROOT_DIR / "workspace")))
@@ -49,6 +51,9 @@ class SwarmConfig:
     fast_thinking: bool = True
     react_temperature: float = 0.1
     verbose: bool = True
+    llm_timeout_sec: float = 600.0
+    ollama_num_ctx: int = 8192
+    ollama_num_predict: int = 2048
 
     # Budget settings
     max_swarm_steps: int = 64
@@ -56,6 +61,9 @@ class SwarmConfig:
     max_steps_per_agent: int = 16
     max_total_tokens: int = 300000
     max_wall_seconds: float = 900.0
+    min_role_steps: int = 6
+    mission_min_steps: int = 0
+    mission_min_tokens: int = 0
 
     # Storage settings
     workspace_dir: Path = field(default_factory=lambda: WORKSPACE_DIR)
@@ -123,11 +131,17 @@ class SwarmConfig:
             fast_thinking=os.getenv("FAST_THINKING", str(llm_cfg.get("fast_thinking", True))).lower() == "true",
             react_temperature=float(os.getenv("REACT_TEMPERATURE", str(llm_cfg.get("react_temperature", 0.1)))),
             verbose=os.getenv("VERBOSE", "true").lower() == "true",
+            llm_timeout_sec=float(os.getenv("LLM_TIMEOUT_SEC", str(llm_cfg.get("timeout_sec", 600.0)))),
+            ollama_num_ctx=int(os.getenv("OLLAMA_NUM_CTX", str(llm_cfg.get("ollama_num_ctx", 8192)))),
+            ollama_num_predict=int(os.getenv("OLLAMA_NUM_PREDICT", str(llm_cfg.get("ollama_num_predict", 2048)))),
             max_swarm_steps=max_swarm_env,
             max_coordinator_steps=max_coord_env,
             max_steps_per_agent=max_steps_env,
             max_total_tokens=int(os.getenv("MAX_TOTAL_TOKENS", str(budget_cfg.get("max_total_tokens", 300000)))),
             max_wall_seconds=float(os.getenv("MAX_WALL_SECONDS", str(budget_cfg.get("max_wall_seconds", 900.0)))),
+            min_role_steps=int(os.getenv("MIN_ROLE_STEPS", str(budget_cfg.get("min_role_steps", 6)))),
+            mission_min_steps=int(os.getenv("MISSION_MIN_STEPS", str(budget_cfg.get("mission_min_steps", 0)))),
+            mission_min_tokens=int(os.getenv("MISSION_MIN_TOKENS", str(budget_cfg.get("mission_min_tokens", 0)))),
             db_path=WORKSPACE_DIR / db_filename,
             roles_path=WORKSPACE_DIR / "roles.json",
             default_roles_path=DEFAULT_ROLES_FILE,

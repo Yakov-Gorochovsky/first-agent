@@ -9,17 +9,55 @@ Connects decoupled interfaces:
 """
 
 import json
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from core.approval import ApprovalDeniedError, ApprovalGate
+from core.approval import ApprovalGate
 from core.budget import BudgetExceededError, BudgetTracker
 from core.bus import EventBus
 from core.config import CONFIG
-from core.llm import LLMProvider
+from core.llm import LLMProvider, LLMResponse, ToolCallRequest, strip_tool_call_text
 from core.roles import RoleRegistry, RoleSpec
-from core.security import TaintTracker
+from core.security import TaintTracker, wrap_untrusted_content
 from core.storage import StorageBackend
-from tools import AVAILABLE_TOOLS, TOOL_SCHEMAS
+from core.tool_binding import bind_tools
+from core.tool_runner import ToolRunner
+from tools import AVAILABLE_TOOLS
+
+SPECIALIST_GUIDANCE = (
+    "\n\n[WORKING GUIDELINES]:\n"
+    "1. Do your assigned part of the mission; build on earlier work instead of repeating it.\n"
+    "2. Use a tool when it improves the result, and skip it when it does not.\n"
+    "3. Base factual claims on what your tools returned, and say so when you could not verify something.\n"
+    "4. Use `read_note` and `list_notes` for workspace files, never `run_python`.\n"
+    "5. Put the complete result in your final reply, even if you also saved it to a note."
+)
+FINAL_ANSWER_PROMPT = {
+    "role": "user",
+    "content": "Tools are no longer available. Write your final answer now as plain text, using what you already have.",
+}
+
+
+COORDINATOR_NAMES = ("coordinator", "orchestrator")
+
+
+def _budget_stop_message(exc: BudgetExceededError, observations: List[str]) -> str:
+    if not observations:
+        return f"[Continuation: {exc} Continue the workflow using existing findings or another specialist.]"
+    findings = "\n\n".join(observations)
+    return f"{findings}\n\n[Continuation: {exc} Returning gathered findings so the swarm can continue.]"
+
+
+def _tool_result_messages(resp: LLMResponse, results: List[Tuple[ToolCallRequest, str]]) -> List[Dict[str, Any]]:
+    """Format results the way the model called the tools: native messages or plain ReAct text."""
+    if not resp.used_react_fallback:
+        return [
+            {"role": "tool", "tool_call_id": call.id, "name": call.name, "content": result}
+            for call, result in results
+        ]
+    calls = "\n".join(json.dumps({"tool": call.name, "args": call.arguments}) for call, _ in results)
+    observations = "\n".join(f"Observation from {call.name}: {result}" for call, result in results)
+    prompt = f"{observations}\nUse the observation(s) above to continue or answer in plain text."
+    return [{"role": "assistant", "content": calls}, {"role": "user", "content": prompt}]
 
 
 def _build_context_block(storage: StorageBackend, tenant_id: str, include_skills: bool = True) -> str:
@@ -29,16 +67,18 @@ def _build_context_block(storage: StorageBackend, tenant_id: str, include_skills
     tenant_mems = storage.get_tenant_memories(tenant_id)
     if tenant_mems:
         lines = "\n".join(f"  - {k}: {v}" for k, v in tenant_mems.items())
-        sections.append(f"[PRIVATE TENANT MEMORY (tenant='{tenant_id}')]:\n{lines}")
+        framed = wrap_untrusted_content(f"tenant_memory:{tenant_id}", lines)
+        sections.append(f"[PRIVATE TENANT MEMORY (tenant='{tenant_id}')]:\n{framed}")
 
     if include_skills:
-        global_skills = storage.get_global_skills(limit=5)
+        global_skills = storage.get_global_skills(limit=5, approved_only=True)
         if global_skills:
             s_lines = "\n".join(
                 f"  - [{s['category']}] When: {s['problem_pattern']} -> Do: {s['solution_rule']}"
                 for s in global_skills
             )
-            sections.append(f"[SHARED GLOBAL SKILLS (Anonymized Cross-Swarm Playbooks)]:\n{s_lines}")
+            framed = wrap_untrusted_content("approved_global_skills", s_lines)
+            sections.append(f"[SHARED GLOBAL SKILLS (Anonymized Cross-Swarm Playbooks)]:\n{framed}")
 
     return ("\n\n" + "\n\n".join(sections)) if sections else ""
 
@@ -137,97 +177,50 @@ class WorkerAgent:
         self.approval_gate = approval_gate
 
     def _get_tools_and_schemas(self, tenant_id: str) -> tuple[Dict[str, Callable[..., str]], List[Dict[str, Any]]]:
-        """Bind tenant-scoped memory tools + global skill learning tool + selected tools."""
-        tools_map: Dict[str, Callable[..., str]] = {}
-        schemas: List[Dict[str, Any]] = []
+        return bind_tools(
+            self.tool_names, self.storage, self.bus, self.name, tenant_id, self.extra_tools, self.extra_schemas
+        )
 
-        for name in self.tool_names:
-            if name in AVAILABLE_TOOLS:
-                tools_map[name] = AVAILABLE_TOOLS[name]
+    def _initial_messages(
+        self, task_prompt: str, tenant_id: str, history: Optional[List[Dict[str, str]]]
+    ) -> List[Dict[str, Any]]:
+        include_skills = self.name not in COORDINATOR_NAMES
+        guidance = SPECIALIST_GUIDANCE if include_skills else ""
+        context = _build_context_block(self.storage, tenant_id, include_skills=include_skills)
+        system_prompt = f"You are '{self.name}' ({self.role}).\n{self.instructions}{guidance}{context}"
+        return [{"role": "system", "content": system_prompt}, *(history or []), {"role": "user", "content": task_prompt}]
 
-        for schema in TOOL_SCHEMAS:
-            fn_name = schema["function"]["name"]
-            if fn_name in self.tool_names:
-                schemas.append(schema)
+    def _must_synthesize(self, turn: int, observations: List[str]) -> bool:
+        """Withdraw tools on a specialist's last step, so it answers instead of stopping mid-work."""
+        limit = self.max_steps if self.max_steps and self.max_steps > 0 else self.budget.config.max_steps_per_agent
+        return self.name not in COORDINATOR_NAMES and turn >= limit and bool(observations)
 
-        # Override remember_fact & recall_memories so they use the multi-tenant SQLite storage
-        if "remember_fact" in self.tool_names:
-            def _tenant_remember(key: str, fact: str) -> str:
-                self.storage.save_tenant_memory(tenant_id, key, fact)
-                return f"Saved to tenant '{tenant_id}' private memory: {key} = {fact}"
-            tools_map["remember_fact"] = _tenant_remember
+    def _finish(self, tenant_id: str, answer: str) -> str:
+        self.bus.emit("agent_finish", agent_name=self.name, tenant_id=tenant_id, answer=answer)
+        self.storage.log_trace(tenant_id, self.name, "agent_finish", {"answer": answer[:500]})
+        return answer
 
-        if "recall_memories" in self.tool_names:
-            def _tenant_recall() -> str:
-                mems = self.storage.get_tenant_memories(tenant_id)
-                if not mems:
-                    return f"No private memories stored for tenant '{tenant_id}'."
-                return "\n".join(f"- {k}: {v}" for k, v in mems.items())
-            tools_map["recall_memories"] = _tenant_recall
+    def _retry_final_answer(self, messages: List[Dict[str, Any]]) -> str:
+        """Ask once more when a reply had no usable text, such as tool markup with no tools offered."""
+        resp = self.llm.generate(messages=[*messages, FINAL_ANSWER_PROMPT], tools=None)
+        self.budget.record_tokens(self.name, resp.prompt_tokens, resp.completion_tokens)
+        return strip_tool_call_text(resp.content)
 
-        # Namespace workspace note tools per tenant
-        if "save_note" in self.tool_names and "save_note" in tools_map:
-            orig_save = tools_map["save_note"]
-            tools_map["save_note"] = lambda filename, content, **kw: orig_save(filename, content, tenant_id=tenant_id)
+    def _final_text(self, resp: LLMResponse, messages: List[Dict[str, Any]], observations: List[str]) -> str:
+        answer = strip_tool_call_text(resp.content)
+        if answer or not observations:
+            return answer
+        return self._retry_final_answer(messages) or "\n\n".join(observations)
 
-        if "read_note" in self.tool_names and "read_note" in tools_map:
-            orig_read = tools_map["read_note"]
-            tools_map["read_note"] = lambda filename, **kw: orig_read(filename, tenant_id=tenant_id)
-
-        if "list_notes" in self.tool_names and "list_notes" in tools_map:
-            orig_list = tools_map["list_notes"]
-            tools_map["list_notes"] = lambda **kw: orig_list(tenant_id=tenant_id)
-
-        # Add cross-swarm PrivacyAirlock skill-sharing tool
-        def _share_global_skill(category: str, problem: str, solution: str) -> str:
-            sanitized = self.storage.add_global_skill(category, problem, solution)
-            self.bus.emit(
-                "skill_learned",
-                agent_name=self.name,
-                tenant_id=tenant_id,
-                **sanitized,
-            )
-            return (
-                f"Sanitized & published to Global Skills: [{sanitized['category']}] "
-                f"{sanitized['problem_pattern']} -> {sanitized['solution_rule']}"
-            )
-
-        tools_map["share_global_skill"] = _share_global_skill
-        if "share_global_skill" in self.tool_names:
-            schemas.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "share_global_skill",
-                        "description": (
-                            "Publish a reusable, generic technical lesson or bug-fix pattern "
-                            "to the shared Global Skills playbook (automatically scrubbed of private client data)."
-                        ),
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "category": {
-                                    "type": "string",
-                                    "description": "Category (e.g., 'python', 'web_scraping', 'math').",
-                                },
-                                "problem": {
-                                    "type": "string",
-                                    "description": "Generic description of the technical problem or pitfall.",
-                                },
-                                "solution": {
-                                    "type": "string",
-                                    "description": "Generic reusable solution or best practice.",
-                                },
-                            },
-                            "required": ["category", "problem", "solution"],
-                        },
-                    },
-                }
-            )
-
-        tools_map.update(self.extra_tools)
-        schemas.extend(self.extra_schemas)
-        return tools_map, schemas
+    def _yield_summary(self, resp: LLMResponse) -> Optional[str]:
+        """Return a summary if this turn called a tool that hands control back to the topology."""
+        yielding = [call for call in resp.tool_calls if call.name in self.yield_on_tools]
+        if not yielding:
+            return None
+        if resp.content and resp.content.strip():
+            return resp.content.strip()
+        args = yielding[0].arguments if isinstance(yielding[0].arguments, dict) else {}
+        return str(args.get("final_answer") or args.get("message") or "")[:500]
 
     def execute_task(
         self,
@@ -236,318 +229,43 @@ class WorkerAgent:
         conversation_history: Optional[List[Dict[str, str]]] = None,
     ) -> str:
         """Run the Think -> Act -> Observe loop for this agent under budget constraints."""
-        include_skills = self.name not in ("coordinator", "orchestrator")
-        specialist_doctrine = (
-            "\n\n[SPECIALIST OPERATIONAL DOCTRINE]:\n"
-            "1. ACTIVE PROBING OVER PASSIVE SUMMARY: Prior notes/context show what earlier agents found. Do NOT merely rephrase or summarize prior notes. Use your own tools (`fetch_url`, `web_search`, `run_python`, `calculator`, `read_note`, `save_note`) to actively test hypotheses, probe new endpoints/paths, inspect raw structure, or run computations.\n"
-            "2. PROGRESSIVE DEEPENING (NO REDUNDANT ROOT QUERIES): If an earlier discovery/recon agent already fetched the root resource or mapped the initial dataset, do NOT repeat the exact same root query. Instead, deepen the analysis by fetching discovered sub-resources, child endpoints, referenced scripts/stylesheets/configs, secondary files, or running new domain computations.\n"
-            "3. MANDATORY VERBATIM CODE/DATA CITATIONS: Whenever you fetch or inspect a script, stylesheet, configuration, or DOM structure (e.g., `.js`, `.css`, HTML tags, headers), you MUST quote the exact code lines, function definitions, regexes, or DOM tags verbatim in your saved note and report. Never summarize fetched code in vague prose without quoting the exact code.\n"
-            "4. TOOL CONTRACTS & WORKSPACE FILES: Use `read_note` and `list_notes` to read workspace files (never use `run_python` merely to open/read markdown notes or check file lengths). `fetch_url(url, include_raw=True)` returns HTTP headers, a `[STRUCTURAL DOM / HTML METADATA]` breakdown, and the raw unstripped HTML/JS/CSS snippet. `run_python` runs in an offline sandbox (no internet sockets) for genuine computation, parsing, or test suite execution.\n"
-            "5. ZERO TEXTBOOK FILLER & ARTIFACT PERSISTENCE: Never write generic advice about what a system 'should' do in theory. Save your verified empirical findings to workspace notes via `save_note` and return a structured, evidence-backed report."
-            if include_skills
-            else ""
-        )
-        system_prompt = (
-            f"You are '{self.name}' ({self.role}).\n"
-            f"{self.instructions}"
-            f"{specialist_doctrine}"
-            f"{_build_context_block(self.storage, tenant_id, include_skills=include_skills)}"
-        )
-
-        messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
-        if conversation_history:
-            messages.extend(conversation_history)
-        messages.append({"role": "user", "content": task_prompt})
-
+        messages = self._initial_messages(task_prompt, tenant_id, conversation_history)
         self.bus.emit("agent_start", agent_name=self.name, tenant_id=tenant_id, task=task_prompt)
-        last_error_tool: Optional[tuple[str, str]] = None
-        collected_observations: List[str] = []
-        empty_resource_retries: Dict[str, int] = {}
-        seen_tool_calls: Dict[str, int] = {}
-        MAX_EMPTY_RETRIES = 2
-        run_python_calls = 0
-        local_turn = 0
+        runner = ToolRunner(
+            self.name, tenant_id, self.budget, self.bus, self.storage, self.taint_tracker, self.approval_gate
+        )
+        observations: List[str] = []
+        turn = 0
 
         while True:
-            local_turn += 1
+            turn += 1
             tools_map, schemas = self._get_tools_and_schemas(tenant_id)
-            # Force synthesis only when the specialist approaches its actual configured max_steps
-            active_schemas: Optional[List[Dict[str, Any]]] = schemas
-            effective_max = (
-                self.max_steps
-                if (self.max_steps is not None and self.max_steps > 0)
-                else self.budget.config.max_steps_per_agent
-            )
-            if self.name not in ("coordinator", "orchestrator") and local_turn >= effective_max and collected_observations:
-                active_schemas = None
+            active_schemas = None if self._must_synthesize(turn, observations) else schemas
 
             try:
                 self.budget.check_and_increment_step(self.name, max_steps=self.max_steps)
             except BudgetExceededError as exc:
-                if collected_observations:
-                    obs_text = "\n\n".join(collected_observations)
-                    answer = (
-                        f"{obs_text}\n\n"
-                        f"[Continuation: {exc} Returning gathered findings so the swarm can continue.]"
-                    )
-                else:
-                    answer = (
-                        f"[Continuation: {exc} Continue the workflow using existing findings or another specialist.]"
-                    )
-                self.bus.emit(
-                    "agent_finish",
-                    agent_name=self.name,
-                    tenant_id=tenant_id,
-                    answer=answer,
-                )
-                self.storage.log_trace(
-                    tenant_id, self.name, "agent_finish", {"answer": answer[:500]}
-                )
-                return answer
+                return self._finish(tenant_id, _budget_stop_message(exc, observations))
 
-            resp = self.llm.generate(messages=messages, tools=active_schemas)
+            call_messages = messages if active_schemas else [*messages, FINAL_ANSWER_PROMPT]
+            resp = self.llm.generate(messages=call_messages, tools=active_schemas)
             self.budget.record_tokens(self.name, resp.prompt_tokens, resp.completion_tokens)
 
             if not resp.tool_calls:
-                answer = resp.content.strip()
-                if not answer and collected_observations:
-                    answer = "\n\n".join(collected_observations)
-                self.bus.emit(
-                    "agent_finish",
-                    agent_name=self.name,
-                    tenant_id=tenant_id,
-                    answer=answer,
-                )
-                self.storage.log_trace(
-                    tenant_id, self.name, "agent_finish", {"answer": answer[:500]}
-                )
-                return answer
+                return self._finish(tenant_id, self._final_text(resp, messages, observations))
 
             if not resp.used_react_fallback and resp.raw_message is not None:
                 messages.append(resp.raw_message)
 
-            react_called = []
-            react_observations = []
+            results = [(call, runner.run(call, tools_map)) for call in resp.tool_calls]
+            observations.extend(f"[{call.name}]: {result[:600]}" for call, result in results)
 
-            for tc in resp.tool_calls:
-                self.bus.emit(
-                    "tool_call",
-                    agent_name=self.name,
-                    tenant_id=tenant_id,
-                    tool=tc.name,
-                    arguments=tc.arguments,
-                )
-                self.storage.log_trace(
-                    tenant_id, self.name, "tool_call", {"tool": tc.name, "args": tc.arguments}
-                )
-
-                # FP-02 & FP-11: Enforce Taint Tracking Policy & Human Approval Gate before execution
-                allowed, block_reason = self.taint_tracker.can_execute_tool(tc.name, tc.arguments or {})
-                needs_human_approval = (
-                    not allowed
-                    or (
-                        self.approval_gate is not None
-                        and tc.name in self.taint_tracker.HIGH_RISK_TOOLS
-                        and self.approval_gate.policy.high_risk == "approve"
-                    )
-                )
-
-                if needs_human_approval and self.approval_gate is not None:
-                    reason_text = block_reason or f"High-risk tool '{tc.name}' requires human operator authorization."
-                    rec = self.approval_gate.request_approval(
-                        tenant_id=tenant_id,
-                        agent_name=self.name,
-                        action=tc.name,
-                        args=tc.arguments or {},
-                    )
-                    self.bus.emit(
-                        "approval_required",
-                        agent_name=self.name,
-                        tenant_id=tenant_id,
-                        request_id=rec.request_id,
-                        tool=tc.name,
-                        arguments=tc.arguments or {},
-                        arg_hash=rec.arg_hash,
-                        reason=reason_text,
-                        expires_at=rec.expires_at,
-                    )
-                    self.storage.log_trace(
-                        tenant_id,
-                        self.name,
-                        "approval_required",
-                        {"request_id": rec.request_id, "tool": tc.name, "arg_hash": rec.arg_hash},
-                    )
-                    try:
-                        approved_rec = self.approval_gate.wait_for_decision(rec.request_id)
-                        self.approval_gate.verify_and_burn_token(
-                            request_id=rec.request_id,
-                            expected_action=tc.name,
-                            submitted_args=tc.arguments or {},
-                        )
-                        self.bus.emit(
-                            "approval_resolved",
-                            agent_name=self.name,
-                            tenant_id=tenant_id,
-                            request_id=rec.request_id,
-                            tool=tc.name,
-                            status="APPROVED",
-                            approver=approved_rec.approver,
-                        )
-                        fn = tools_map.get(tc.name)
-                        if not fn:
-                            result = f"Error: Unknown tool '{tc.name}'. Available: {list(tools_map)}"
-                        else:
-                            prev_local_exec = CONFIG.unsafe_allow_local_exec
-                            try:
-                                if tc.name == "run_python":
-                                    CONFIG.unsafe_allow_local_exec = True
-                                raw_result = str(fn(**(tc.arguments or {})))
-                            finally:
-                                CONFIG.unsafe_allow_local_exec = prev_local_exec
-                            result = self.taint_tracker.observe_tool_result(tc.name, raw_result)
-                    except Exception as exc:
-                        self.bus.emit(
-                            "approval_resolved",
-                            agent_name=self.name,
-                            tenant_id=tenant_id,
-                            request_id=rec.request_id,
-                            tool=tc.name,
-                            status="DENIED",
-                            reason=str(exc),
-                        )
-                        result = f"ApprovalDenied: {exc}"
-                elif not allowed:
-                    result = block_reason or "Blocked by taint tracking security policy."
-                else:
-                    fn = tools_map.get(tc.name)
-                    if not fn:
-                        result = f"Error: Unknown tool '{tc.name}'. Available: {list(tools_map)}"
-                    else:
-                        try:
-                            raw_result = str(fn(**(tc.arguments or {})))
-                            result = self.taint_tracker.observe_tool_result(tc.name, raw_result)
-                        except Exception as exc:
-                            result = f"Error running '{tc.name}': {exc}"
-
-                # Per-resource empty check & retry budget (exempt retries from agent step count)
-                is_empty_resource = (
-                    "is currently empty" in result
-                    or "does not exist" in result
-                    or "No matches found" in result
-                )
-                if is_empty_resource and tc.name in ("list_notes", "read_note", "recall_memories"):
-                    args_key = f"{tc.name}:{json.dumps(tc.arguments or {}, sort_keys=True)}"
-                    current_count = empty_resource_retries.get(args_key, 0) + 1
-                    empty_resource_retries[args_key] = current_count
-
-                    if current_count <= MAX_EMPTY_RETRIES:
-                        self.budget.refund_step(self.name)
-                        result += (
-                            f"\n[NOTE: Retry {current_count}/{MAX_EMPTY_RETRIES} for empty resource. "
-                            f"Step budget was not consumed. If this resource has not been created yet, "
-                            f"proceed with other tools, in-memory context, or create the file first.]"
-                        )
-                    else:
-                        result = (
-                            f"[RESOURCE_EMPTY_EXHAUSTED]: Tool '{tc.name}' returned empty/not found {current_count - 1} times. "
-                            f"Further queries for this specific resource are blocked. Do NOT query this again. "
-                            f"Synthesize using in-memory observations or proceed with the workflow."
-                        )
-
-                if tc.name in ("fetch_url", "web_search", "read_note", "list_notes"):
-                    call_sig = f"{tc.name}:{json.dumps(tc.arguments or {}, sort_keys=True)}"
-                    seen_tool_calls[call_sig] = seen_tool_calls.get(call_sig, 0) + 1
-                    if seen_tool_calls[call_sig] >= 2:
-                        result += (
-                            f"\n[DUPLICATE CALL NOTICE: You already called `{tc.name}` with these exact arguments "
-                            f"in this turn. Do NOT repeat identical queries; probe a different sub-resource/vector "
-                            f"or synthesize your findings now.]"
-                        )
-
-                if tc.name == "run_python":
-                    run_python_calls += 1
-                    if run_python_calls >= 2:
-                        result += (
-                            f"\n[NOTE: You have already executed `run_python` {run_python_calls} times in this task. "
-                            "Do NOT re-run repetitive scripts; save your findings with `save_note` and return your synthesis now.]"
-                        )
-
-                collected_observations.append(f"[{tc.name}]: {result[:600]}")
-
-                # Auto-detect error recovery and distill a sanitized Global Skill!
-                is_error = result.startswith("Error") or "STDERR:\nTraceback" in result
-                if is_error:
-                    last_error_tool = (tc.name, result[:200])
-                elif last_error_tool and last_error_tool[0] == tc.name:
-                    sanitized = self.storage.add_global_skill(
-                        category=tc.name,
-                        problem=f"Tool {tc.name} failed with: {last_error_tool[1]}",
-                        solution=f"Resolved by calling {tc.name} with valid structure.",
-                    )
-                    self.bus.emit(
-                        "skill_learned",
-                        agent_name=self.name,
-                        tenant_id=tenant_id,
-                        **sanitized,
-                    )
-                    last_error_tool = None
-
-                self.bus.emit(
-                    "tool_result",
-                    agent_name=self.name,
-                    tenant_id=tenant_id,
-                    tool=tc.name,
-                    result=result,
-                )
-
-                if not resp.used_react_fallback:
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "name": tc.name,
-                            "content": result,
-                        }
-                    )
-                else:
-                    react_called.append({"tool": tc.name, "args": tc.arguments})
-                    react_observations.append(f"Observation from {tc.name}: {result}")
-
-            if any(tc.name in self.yield_on_tools for tc in resp.tool_calls):
-                yield_summary = resp.content.strip() if resp.content else ""
-                if not yield_summary:
-                    for tc in resp.tool_calls:
-                        if tc.name in self.yield_on_tools and isinstance(tc.arguments, dict):
-                            yield_summary = str(
-                                tc.arguments.get("final_answer")
-                                or tc.arguments.get("message")
-                                or ""
-                            )[:500]
-                            break
-                self.bus.emit(
-                    "agent_finish",
-                    agent_name=self.name,
-                    tenant_id=tenant_id,
-                    answer=yield_summary,
-                )
-                self.storage.log_trace(
-                    tenant_id, self.name, "agent_finish", {"answer": yield_summary[:500]}
-                )
+            summary = self._yield_summary(resp)
+            if summary is not None:
+                self._finish(tenant_id, summary)
                 return ""
 
-            if resp.used_react_fallback:
-                messages.append(
-                    {"role": "assistant", "content": "\n".join(json.dumps(c) for c in react_called)}
-                )
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "\n".join(react_observations)
-                            + "\nUse the observation(s) above to continue or answer in plain text."
-                        ),
-                    }
-                )
+            messages.extend(_tool_result_messages(resp, results))
 
 
 class OrchestratorSwarm:

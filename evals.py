@@ -54,6 +54,7 @@ class ScriptedMockLLM:
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
+        **kwargs: Any,
     ) -> LLMResponse:
         if self._idx < len(self._responses):
             resp = self._responses[self._idx]
@@ -309,7 +310,8 @@ def eval_security_hardening() -> str:
         assert "expression length exceeds safe limit" in len_dos, len_dos
 
         # 4. Path traversal, restricted file protection, and multi-tenant workspace isolation
-        from tools import WORKSPACE_DIR, read_note
+        from core.config import WORKSPACE_DIR
+        from tools import read_note
 
         env_write = save_note(".env", "malicious")
         keys_write = save_note("keys.json", "malicious")

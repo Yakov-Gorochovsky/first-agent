@@ -46,11 +46,11 @@ flowchart TD
         RET["Hybrid BM25 + Vector Retrieval (core/retrieval.py)"]
         SCR["Call-by-Reference Scratchpad (core/scratchpad.py)"]
         CMP["ContextCompactor (core/compaction.py)"]
-        EXM["ExemplarStore (core/exemplars.py)"]
-        PRF["ProfileStore (core/profiles.py)"]
-        FDB["FeedbackStore (core/feedback.py)"]
-        DST["SkillDistiller (core/distiller.py)"]
-        OPT["PromptOptimizer (core/prompt_opt.py)"]
+        EXM["ExemplarStore (experimental/exemplars.py)"]
+        PRF["ProfileStore (experimental/profiles.py)"]
+        FDB["FeedbackStore (experimental/feedback.py)"]
+        DST["SkillDistiller (experimental/distiller.py)"]
+        OPT["PromptOptimizer (experimental/prompt_opt.py)"]
     end
 
     subgraph SelfHealing["Evidence-Based 4-Pillar Self-Healer"]
@@ -58,7 +58,7 @@ flowchart TD
         PROP["FixProposer & Interactive Repair (core/self_healer.py)"]
         GIT["GitSafetyController & Rollback (core/self_healer.py)"]
         HEAL["SelfHealer Runtime (core/self_healer.py)"]
-        OPT_ROLE["system_optimizer & @self_heal (tools.py)"]
+        OPT_ROLE["@self_heal, operator-authorized (tools.py)"]
     end
 
     Ingress --> Planning --> Execution --> StateAndMemory
@@ -79,6 +79,9 @@ flowchart TD
 | **[`core/topology.py`](core/topology.py)** | `BaseTopology`, `OrchestratorTopology`, `PeerTopology`, `PipelineTopology`, `ReviewLoopTopology` | Pluggable multi-agent coordination architectures replacing procedural branching with clean, decoupled topology drivers. |
 | **[`core/factory.py`](core/factory.py)** | `SwarmSpec`, `AgentFactory`, `SwarmFactory` | Instantiates arbitrary agent swarms from declarative specs with multi-tenant isolation and client mass-assignment protection. |
 | **[`core/approval.py`](core/approval.py)** | `ApprovalGate`, `GLOBAL_APPROVAL_GATE`, `ApprovalRecord` | Live interactive human approval gate pausing `WorkerAgent.execute_task` on high-risk tools, with SHA-256 argument binding, UI/CLI resolution (`POST /api/approvals/resolve`), and single-use token burn. |
+| **[`core/tool_runner.py`](core/tool_runner.py)** | `ToolRunner` | Runs one agent's tool calls under taint policy and human approval, and adds guidance on empty or repeated calls. |
+| **[`core/tool_binding.py`](core/tool_binding.py)** | `bind_tools` | Binds granted tools to the agent's tenant, so model arguments can't name another tenant. |
+| **[`swarm_tools/`](swarm_tools)** | Tool implementations | One module per concern: safety checks, calculator, web, Python execution, workspace, self-heal. `tools.py` holds the registry and schemas. |
 | **[`core/meta_planner.py`](core/meta_planner.py)** | `TaskDrivenMetaPlanner`, `SwarmGenerationValidator` | Decomposes raw missions into optimal swarms using native function-calling structured output (`emit_structured_output`) with repair loops and strict privilege ceilings. |
 | **[`core/mission.py`](core/mission.py)** | `IntegratedMissionRunner`, `MissionExecutionResult` | Default execution pipeline (`POST /api/missions/execute`, Web UI, and `agent.py`) orchestrating Planner -> Factory -> Topology -> Live ApprovalGate -> Step-by-Step HMAC CheckpointStore, with deterministic mission scope isolation (`clean_tenant="system"` on self-heal tasks). |
 | **[`core/peer_swarm.py`](core/peer_swarm.py)** | `PeerSwarm`, `PeerNode`, `PeerMessage` | Decentralized peer mesh network with point-to-point inboxes, parallel fan-out scheduler, exhausted-peer protection, and anti-hallucination remote remediation gate. |
@@ -91,11 +94,11 @@ flowchart TD
 | **[`core/checkpoint.py`](core/checkpoint.py)** | `CheckpointStore`, `MissionCheckpoint`, `IdempotencyRegistry`, `DurableMissionRunner` | Step-level mission state persistence with HMAC-SHA256 signatures, tenant re-authorization on resume, and idempotent side-effect deduplication. |
 | **[`core/scratchpad.py`](core/scratchpad.py)** | `ScratchpadStore`, `ScratchpadPointer`, `ScratchpadItem` | Out-of-band store for bulky payloads using 128-bit random tokens, zero filesystem paths, tenant quotas, and taint preservation. |
 | **[`core/compaction.py`](core/compaction.py)** | `ContextCompactor`, `CompactionResult` | Batched observation compaction into digests with restorable pointers, reducing context by >50% while protecting system prompts. |
-| **[`core/exemplars.py`](core/exemplars.py)** | `ExemplarStore`, `Exemplar` | Curated in-context demonstrations with an administrative approval gate, PII scrubbing, user scoping, and untrusted framing. |
-| **[`core/profiles.py`](core/profiles.py)** | `ProfileStore`, `UserProfile` | User preferences with schema allow-lists, length caps, HTML escaping, and code-level security primacy. |
-| **[`core/feedback.py`](core/feedback.py)** | `FeedbackStore`, `PointwiseFeedback`, `PreferencePair` | Pointwise ratings (+1/-1) and pairwise preference sets with mandatory training consent verification and PII scrubbing. |
-| **[`core/distiller.py`](core/distiller.py)** | `SkillDistiller`, `DistilledSkill` | Post-mission background skill extraction requiring explicit success signals, planted injection rejection, and strict capability matching. |
-| **[`core/prompt_opt.py`](core/prompt_opt.py)** | `PromptOptimizer`, `PromptArtifact` | Versioned prompt optimization over `dev` splits with single-pass evaluation gating on frozen `test` splits and spend caps. |
+| **[`experimental/exemplars.py`](experimental/exemplars.py)** | `ExemplarStore`, `Exemplar` | Curated in-context demonstrations with an administrative approval gate, PII scrubbing, user scoping, and untrusted framing. |
+| **[`experimental/profiles.py`](experimental/profiles.py)** | `ProfileStore`, `UserProfile` | User preferences with schema allow-lists, length caps, HTML escaping, and code-level security primacy. |
+| **[`experimental/feedback.py`](experimental/feedback.py)** | `FeedbackStore`, `PointwiseFeedback`, `PreferencePair` | Pointwise ratings (+1/-1) and pairwise preference sets with mandatory training consent verification and PII scrubbing. |
+| **[`experimental/distiller.py`](experimental/distiller.py)** | `SkillDistiller`, `DistilledSkill` | Post-mission background skill extraction requiring explicit success signals, planted injection rejection, and strict capability matching. |
+| **[`experimental/prompt_opt.py`](experimental/prompt_opt.py)** | `PromptOptimizer`, `PromptArtifact` | Versioned prompt optimization over `dev` splits with single-pass evaluation gating on frozen `test` splits and spend caps. |
 | **[`tools.py`](tools.py)** | `run_python`, `fetch_url`, `calculator`, `save_note`, `read_note`, `scorecard_diagnose`, `self_heal_codebase` | Hardened, sandboxed tool primitives with AST validation, pure file-reading blocker, SSRF DNS pinning, tenant directory partitioning, and first-class `@self_heal` capabilities. |
 | **[`benchmarks/`](benchmarks/)** | `runner.py`, `smoke_tasks.json`, `reports/baseline-v0.json` | Calibrated smoke benchmark suite spanning 4 domain packs with deterministic verification. |
 
@@ -127,11 +130,11 @@ flowchart TD
 | Idempotent Side-Effect Recovery  | core/checkpoint.py       | test_checkpoint.py        |
 | 128-Bit Opaque Scratchpad Ref    | core/scratchpad.py       | test_scratchpad_and_...   |
 | Compaction Trust Inheritance     | core/compaction.py       | test_scratchpad_and_...   |
-| Few-Shot Admin Approval Gate     | core/exemplars.py        | test_exemplars_profile... |
-| Code-Level Invariant Primacy     | core/profiles.py         | test_exemplars_profile... |
-| Contractual Training Consent     | core/feedback.py         | test_exemplars_profile... |
-| Zero Signature-Leak Distillation | core/distiller.py        | test_distiller_and_...    |
-| Frozen Test Split Quarantine     | core/prompt_opt.py       | test_distiller_and_...    |
+| Few-Shot Admin Approval Gate     | experimental/exemplars.py        | test_exemplars_profile... |
+| Code-Level Invariant Primacy     | experimental/profiles.py         | test_exemplars_profile... |
+| Contractual Training Consent     | experimental/feedback.py         | test_exemplars_profile... |
+| Zero Signature-Leak Distillation | experimental/distiller.py        | test_distiller_and_...    |
+| Frozen Test Split Quarantine     | experimental/prompt_opt.py       | test_distiller_and_...    |
 | AST Pure File-Read Sandbox Guard | tools.py                 | test_tools.py             |
 | Mission Scope & Tenant Isolation | core/mission.py          | test_vertical_slice.py    |
 | Remote Anti-Hallucination Gate    | core/peer_swarm.py       | test_peer_inbox.py        |
@@ -180,18 +183,17 @@ flowchart LR
 Self-healing is not restricted to an admin modal; it is exposed directly to the swarm:
 - **`scorecard_diagnose(mission_id)`**: Tool returning human-readable 4-pillar scores and open rule violations.
 - **`self_heal_codebase(max_fixes, verify, rules)`**: Tool triggering a complete autonomous healing cycle with isolated verification and Git commit/rollback.
-- **`system_optimizer`**: Built-in specialist role registered in `config/default_roles.json` equipped with `["@self_heal", "@code", "@files", "@memory"]`.
+- **Authorization**: `@self_heal` is outside the default privilege ceiling. The planner can grant it only on a run an operator authorized with `--allow-self-heal` or an admin `allow_self_heal` request. `self_heal_codebase` also always requires a human decision, so an unattended run cannot use it.
 
 ---
 
-## 6. Planned Roadmap: Intent Expansion, Interactive Plan Preview & Mission Playbooks
+## 6. How a Swarm Is Chosen
 
-To keep the core execution loop (`TaskDrivenMetaPlanner` $\rightarrow$ `SwarmFactory` $\rightarrow$ `BaseTopology` $\rightarrow$ `ApprovalGate` $\rightarrow$ `CheckpointStore`) deterministic and easy to debug while making mission dispatch effortless for end users, the next planned UX/Planning enhancements are:
+1. The planner model classifies the task's **work shape**: `atomic`, `independent_parts`, `sequential_stages`, `draft_and_review`, or `interdependent`.
+2. `WORK_SHAPE_TOPOLOGY` in `core/meta_planner.py` maps that shape to `single`, `orchestrator`, `pipeline`, `review_loop`, or `peer`. This step is deterministic code.
+3. `SwarmGenerationValidator` checks the privilege ceiling, team size for the topology, and budgets. A failed check goes back to the model with the reason, for a bounded number of retries.
+4. A manual choice (`-m`, the UI selector, or `mode` in the API) replaces steps 1 and 2, and the planner designs a team for it. `auto` or an empty value leaves the decision to the task.
 
-1. **Interactive Plan Preview ("Approve Mission Plan" Mode)**:
-   - Before executing specialist turns, allow the user to optionally inspect and edit the `SwarmSpec` generated by `TaskDrivenMetaPlanner` (topology, specialist roster, capabilities, and initial test vectors) from a 1-sentence goal.
-2. **One-Click UI Mission Playbook Chips**:
-   - Provide domain-agnostic starter chips above the command input bar (`Web & Security Audit`, `Codebase QA & Refactor`, `Data & Financial Analysis`, `Red-Team Probe`) that populate clean, 1-sentence mission goals without overriding dynamic role capabilities.
-3. **Per-Role Model Routing Activation (FP-04 Integration)**:
-   - Route `TaskDrivenMetaPlanner` and `critic` verification steps to a higher-reasoning model tier while keeping high-frequency worker tool steps on fast, low-cost Flash models.
+Roles declare a `function` (`discovery`, `specialist`, `verifier`) as data. The peer scheduler reads that field and never inspects role names. A plan can be previewed and edited with `POST /api/missions/plan` or `agent.py --plan`; an edited plan is validated again before it runs.
 
+The roadmap lives in [FUTURE_PLANS.md](FUTURE_PLANS.md).

@@ -89,7 +89,8 @@ class StorageBackend(Protocol):
     def save_tenant_memory(self, tenant_id: str, key: str, fact: str) -> None: ...
     def get_tenant_memories(self, tenant_id: str) -> Dict[str, str]: ...
     def add_global_skill(self, category: str, problem: str, solution: str) -> Dict[str, str]: ...
-    def get_global_skills(self, limit: Optional[int] = None) -> List[Dict[str, Any]]: ...
+    def get_global_skills(self, limit: Optional[int] = None, approved_only: bool = False) -> List[Dict[str, Any]]: ...
+    def approve_global_skill(self, skill_id: int) -> bool: ...
     def append_session_turn(self, tenant_id: str, role: str, content: str) -> None: ...
     def get_session_turns(self, tenant_id: str, limit: Optional[int] = None) -> List[Dict[str, str]]: ...
     def clear_session(self, tenant_id: str) -> None: ...
@@ -186,6 +187,9 @@ class SQLiteStorage:
                 CREATE INDEX IF NOT EXISTS idx_usage_ledger_mission ON usage_ledger(mission_id);
                 """
             )
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(global_skills)")}
+            if "approved" not in columns:
+                conn.execute("ALTER TABLE global_skills ADD COLUMN approved INTEGER NOT NULL DEFAULT 0")
 
     def save_tenant_memory(self, tenant_id: str, key: str, fact: str) -> None:
         safe_tenant = sanitize_tenant_id(tenant_id)
@@ -224,6 +228,10 @@ class SQLiteStorage:
                 ON CONFLICT(category, problem_pattern) DO UPDATE SET
                     solution_rule = excluded.solution_rule,
                     learned_count = global_skills.learned_count + 1,
+                    approved = CASE
+                        WHEN global_skills.solution_rule = excluded.solution_rule THEN global_skills.approved
+                        ELSE 0
+                    END,
                     updated_at = excluded.updated_at;
                 """,
                 (safe_category, safe_problem, safe_solution, time.time()),
@@ -234,19 +242,27 @@ class SQLiteStorage:
             "solution_rule": safe_solution,
         }
 
-    def get_global_skills(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    def get_global_skills(self, limit: Optional[int] = None, approved_only: bool = False) -> List[Dict[str, Any]]:
         eff_limit = limit if limit is not None else CONFIG.max_global_skills
+        where = "WHERE approved = 1" if approved_only else ""
         with self._connect() as conn:
             rows = conn.execute(
-                """
-                SELECT category, problem_pattern, solution_rule, learned_count
+                f"""
+                SELECT id, category, problem_pattern, solution_rule, learned_count, approved
                 FROM global_skills
+                {where}
                 ORDER BY learned_count DESC, updated_at DESC
                 LIMIT ?
                 """,
                 (eff_limit,),
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def approve_global_skill(self, skill_id: int) -> bool:
+        """Mark a shared skill as reviewed by an administrator so agents may see it."""
+        with self._connect() as conn:
+            cursor = conn.execute("UPDATE global_skills SET approved = 1 WHERE id = ?", (skill_id,))
+            return cursor.rowcount > 0
 
     def append_session_turn(self, tenant_id: str, role: str, content: str) -> None:
         safe_tenant = sanitize_tenant_id(tenant_id)

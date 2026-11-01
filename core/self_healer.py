@@ -25,7 +25,7 @@ import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.bus import EventBus
 from core.config import CONFIG

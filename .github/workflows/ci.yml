@@ -30,11 +30,11 @@ jobs:
 
       - name: Run Ruff Linter
         run: |
-          ruff check core tools.py server.py agent.py evals.py
+          ruff check core experimental swarm_tools tools.py server.py agent.py evals.py demo.py
 
       - name: Run Mypy Type Checker
         run: |
-          mypy core tools.py server.py agent.py evals.py
+          mypy core swarm_tools tools.py server.py agent.py evals.py demo.py
 
       - name: Run Pytest Suite with Coverage
         run: |

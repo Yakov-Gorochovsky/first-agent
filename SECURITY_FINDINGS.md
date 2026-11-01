@@ -438,12 +438,56 @@ The following security findings were verified via code audit and local test repr
   2. **Mission Scope & Tenant Isolation ([`core/mission.py`](core/mission.py))**: Internal system health and self-healing tasks are automatically classified and routed to `tenant_id="system"` with a locked target directive, cleanly separating them from user workspace audit artifacts.
   3. **Remote Target Anti-Hallucination Gate ([`core/peer_swarm.py`](core/peer_swarm.py))**: `finish_swarm` validates final deliverables. Any claim of having remediated, hardened, or modified a live external `https://` web server is deterministically rejected, forcing agents to present honest empirical findings and local verification deliverables.
 
+---
 
+## 5. Corrections and Additional Findings (`v0.7.0`)
 
+An independent review of the code found that some earlier statements in this document overstated the protection in place. Where they disagree with this section, this section is correct.
 
+### Correction to Finding 15: local execution is a guardrail, not a sandbox
 
+Container mode is the isolation boundary. `UNSAFE_ALLOW_LOCAL_EXEC=true` runs code on the host, and the network bootstrap runs in the same interpreter as the code it restricts, so that code can undo it. Worse, `core/swarm.py` used to switch the flag on for every `run_python` call, which silently defeated the fail-closed default. That override is removed. Local mode now also runs in a temporary directory rather than the workspace, and in a namespace that does not expose the bootstrap's saved functions. It stays a developer opt-in and must not be enabled where untrusted input can reach `run_python`.
 
+### Correction to Finding 16: taint tracking does not block `save_note`
 
+Tainted missions can still write workspace notes, because the swarm's note-passing depends on it. High-risk tools (execution, egress, cross-swarm send) remain gated. Content saved to notes must be treated as untrusted when read back.
 
+### Correction to Finding 36: the remote-remediation gate is a phrase match
 
+The check in `core/peer_swarm.py` catches a short list of phrases. It reduces one specific false claim and is not a general anti-hallucination control.
 
+### Finding 37 (Remediated, P0): API users could disable approvals
+
+Any authenticated user could send `auto_approve: true`. It now requires the admin scope, and so does `allow_self_heal`.
+
+### Finding 38 (Remediated, P1): Governance skipped on the default API path
+
+Rate, spend, and concurrency limits applied only to asynchronous runs, while `POST /api/missions/execute` is synchronous by default. Both paths now share one check, and the concurrency slot is released in a `finally` block. Planning, which also spends tokens, is covered too.
+
+### Finding 39 (Remediated, P1): Cross-tenant approval resolution
+
+A user of one tenant could approve or deny another tenant's request by ID. Lookups are now tenant-scoped for non-admins, and a foreign request is reported exactly like a missing one (404).
+
+### Finding 40 (Remediated, P1): Runtime privilege escalation through `spawn_specialist`
+
+A coordinator could recruit a role holding `@all` or `@self_heal`, and topologies added `@web` to every role. Spawned roles are now capped at `@web`, `@code`, `@files`, and `@memory`, and a role receives only what was planned for it. Planner output can no longer carry `tool_list` or `model_policy`.
+
+### Finding 41 (Remediated, P1): Unreviewed text injected into every tenant's prompts
+
+Shared skills reached all tenants without review, including ones written automatically from tool errors. That automatic writer is removed. New skills start unapproved, a changed solution revokes approval, and only admin-approved skills reach agents. Skills and tenant memory are now framed as untrusted content.
+
+### Finding 42 (Remediated, P1): Keyword routing into self-modifying tools
+
+Missions containing certain words were routed to a role able to rewrite the framework. Self-healing is now an explicit operator authorization, and `self_heal_codebase` always needs a human decision.
+
+### Finding 43 (Remediated, P0): Admin key served to any client of `GET /`
+
+The page embedded the active admin key for the UI's one-click login, with no authentication check. On a non-loopback bind, anyone able to load the page received it. The key now reaches only clients on the same machine. A reverse proxy on the same host would look local, so don't put one in front of the server without disabling this path.
+
+### Finding 44 (Remediated, P1): Cross-tenant events on the shared bus
+
+Each mission's checkpoint listener accepted every event on the server's shared bus, so one tenant's agent output and approval records could land in another tenant's checkpoints and audit results. The listener now ignores other tenants' events. Two missions of the same tenant can still run concurrently if its concurrency limit allows; their events are not separated from each other.
+
+### Finding 45 (Remediated, P2): Plans could set their own run limits
+
+The model could set step and time limits low enough to end a healthy mission, as seen live with a 1-step role and a 10-second mission. Time limits now come from config only, and role step limits have a configured minimum.

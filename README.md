@@ -1,114 +1,98 @@
-# Neural Swarm — Modular Multi-Agent AI Harness & Swarm Operating Engine
+# Neural Swarm
 
-A first-principles, loosely-coupled multi-agent AI engineering platform and swarm runtime in Python featuring **Task-Driven Meta-Planning**, **Pluggable Topologies (Orchestrator, Peer Network, Linear Pipeline, Review Loop)**, **Cryptographic Human Approval Gates**, **Hybrid BM25 + Vector Retrieval**, **Multi-Tenant State Checkpointing & Resumption**, **Per-Role Model Routing & Data Residency**, and an **Autonomous Skill Distillation Pipeline**.
+Give it any task, and it designs the agent team to match. A multi-agent runtime in plain Python, built without an agent framework so every layer can be read, tested, and replaced.
 
-Built with zero heavy framework dependencies so every layer of the agent harness is transparent, testable, and swappable.
-
----
-
-## Architecture Highlights
-
-```mermaid
-flowchart TD
-    subgraph Foundation["1. Foundation & Safety (Phase A)"]
-        CB["CircuitBreaker & Resilience (core/resilience.py)"]
-        TEL["Pricing Table & Usage Ledger (core/telemetry.py)"]
-        SMK["Smoke Benchmark Suite (benchmarks/)"]
-        SAN["AST & Hardened Execution (tools.py)"]
-        TNT["TaintTracker & Delimiters (core/security.py)"]
-        GOV["TokenBucket & CostGovernor (core/rate_limiter.py)"]
-    end
-
-    subgraph SwarmCore["2. Generic Swarm Architecture (Phase B)"]
-        REG["Capability & Tool Registry (core/registry.py)"]
-        TOP["Pluggable Topologies (core/topology.py)"]
-        FAC["Agent & Swarm Factory (core/factory.py)"]
-        APP["Cryptographic Approval Gates (core/approval.py)"]
-        PLN["Task-Driven Meta-Planner (core/meta_planner.py)"]
-    end
-
-    subgraph RetrievalEff["3. Retrieval & Efficiency (Phase C)"]
-        HYB["Hybrid BM25 & Dense RRF Store (core/retrieval.py)"]
-        LAY["Cache-Stable Prompt Layout (core/prompt_layout.py)"]
-        CLN["HTML Distiller & Output Summarizer (core/cleaning.py)"]
-        HND["Typed Machine Handoffs (core/handoffs.py)"]
-        RTR["Data Residency & Provider Router (core/router.py)"]
-        CHK["HMAC Checkpoints & Resumption (core/checkpoint.py)"]
-    end
-
-    subgraph MemorySelf["4. Memory & Self-Improvement (Phase D)"]
-        SCR["Call-by-Reference Scratchpad (core/scratchpad.py)"]
-        CMP["Restorable Context Compactor (core/compaction.py)"]
-        EXM["Dynamic Exemplar Memory (core/exemplars.py)"]
-        PRF["User Profiles & Preferences (core/profiles.py)"]
-        FDB["Feedback Log & Preference Pairs (core/feedback.py)"]
-        DST["Background Skill Distiller (core/distiller.py)"]
-        OPT["Prompt Optimization Loop (core/prompt_opt.py)"]
-    end
-
-    Foundation --> SwarmCore --> RetrievalEff --> MemorySelf
+```text
+"What is 15% of 240?"                    -> one agent
+"Summarise, translate, then format"      -> a pipeline of three
+"Draft an abstract to review standards"  -> a writer and a reviewer
+"Compare cost, nutrition, and storage"   -> a coordinator and three specialists
 ```
 
-### Architecture & Wiring Status
+Try the selection path offline, with no API key:
 
-The codebase is organized into **Active Runtime Pipelines** and **Modular Subsystem Libraries**:
+```bash
+python demo.py
+```
 
-#### 1. Integrated Active Pipelines (Runtime-Wired)
-- **Unified Default Mission Pipeline ([`core/mission.py`](core/mission.py), [`server.py`](server.py), [`agent.py`](agent.py), [`static/index.html`](static/index.html))**: `POST /api/missions/execute` (`IntegratedMissionRunner`) is the default execution path across the Web UI, CLI, and API. Every mission dynamically plans a custom agent team via **TaskDrivenMetaPlanner** (using native function-calling structured output `emit_structured_output`), instantiates the selected topology via **SwarmFactory**, enforces live human operator authorization via **ApprovalGate** (`auto_approve_high_risk=False`, resolved via `POST /api/approvals/resolve` in the UI or interactive prompt in the CLI), and persists **HMAC-SHA256 signed checkpoints** at every specialist stage in **CheckpointStore**.
-- **Evidence-Based 4-Pillar Scorecard & Autonomous Self-Healer ([`core/self_healer.py`](core/self_healer.py), [`tools.py`](tools.py), [`static/index.html`](static/index.html))**: Measures mission execution purely from real database traces, workspace artifacts, and AST code metrics across 4 Pillars (Quality, Tokens, Speed, Code). Features LLM-driven root cause diagnosis with an **Interactive Test-Repair Loop**, isolated subprocess verification benchmarking, non-compensatory tradeoff verdicts, and clean Git tagged rollbacks. Exposes `@self_heal` tools (`scorecard_diagnose`, `self_heal_codebase`) and the `system_optimizer` role directly to the swarm.
-- **Multi-Tenant Server & Telemetry UI ([`server.py`](server.py))**: Constant-time API key auth (`hmac.compare_digest`), scope RBAC (`admin` vs `user`), tenant isolation, strict security headers (CSP, HSTS, X-Content-Type-Options), live **Approval Gate & Checkpoints** operator panel, and cross-tenant SSE event segregation.
-- **Multi-Agent Topologies ([`core/swarm.py`](core/swarm.py), [`core/peer_swarm.py`](core/peer_swarm.py), [`core/topology.py`](core/topology.py))**: Central orchestrator, decentralized peer inbox network, sequential pipeline, and generator-critic review loop topologies with anti-loop defense (per-resource empty retry budget with step refunds, Exhausted Peer Shield, 2-node Ping-Pong Circuit Breaker, parallel fan-out scheduler, and remote target anti-hallucination gate).
-- **Security-Hardened Primitives ([`tools.py`](tools.py))**: AST-whitelisted arithmetic calculator, SSRF firewall blocking RFC-1918 private IPs and cloud metadata endpoints, deterministic AST pure file-read blocker (preventing approval popup storms and forcing `read_note`/`list_notes`), path-traversal prevention, and containerized Python execution (fail-closed when container runtime is absent unless explicit unsafe local execution is configured).
+The demo uses a scripted model, so it shows the plumbing rather than model quality.
 
-#### 2. Standalone Component Libraries (Unit Tested)
-The following modules provide tested capabilities with rigorous unit test suites, available for programmatic integration:
-- **[`core/router.py`](core/router.py)**: Central policy router enforcing jurisdiction allow-lists (`local`, `us`, `eu`, `apac`) and provider contractual constraints with policy-filtered fallback chains.
-- **[`core/scratchpad.py`](core/scratchpad.py) & [`core/compaction.py`](core/compaction.py)**: Out-of-band bulky observation storage using 128-bit random opaque tokens and restorable observation digests.
-- **[`core/exemplars.py`](core/exemplars.py), [`core/profiles.py`](core/profiles.py), [`core/feedback.py`](core/feedback.py)**: Approved few-shot exemplar pools, schema-bounded user profiles, and training consent enforcement.
-- **[`core/distiller.py`](core/distiller.py) & [`core/prompt_opt.py`](core/prompt_opt.py)**: Autonomous skill distillation with capability matching, kill-switch protection, and prompt optimization evaluated across train/dev/test splits.
-- **[`core/retrieval.py`](core/retrieval.py)**: Multi-tenant hybrid retrieval combining Okapi BM25 and vector embeddings with Reciprocal Rank Fusion (RRF).
+## How the swarm is chosen
 
----
+```mermaid
+flowchart LR
+    T[Task] --> P[Planner model classifies the work]
+    P --> M{Topology}
+    O[Manual choice] -.overrides.-> M
+    M --> V[Code validates team, privileges, budget]
+    V --> R[Run under approval gates]
+    R --> C[Signed checkpoints]
+```
 
-## Security Invariants & Hardening Controls
+The model decides how the work is shaped. Code turns that into a topology and enforces the rules.
 
-The engine implements defense-in-depth controls across all execution paths:
-- **36 Security Findings Remediated & Documented** in [`SECURITY_FINDINGS.md`](SECURITY_FINDINGS.md).
-- **56 Engineering Problems & Quantitative Metrics Tracked** in [`PROBLEMS_AND_METRICS.md`](PROBLEMS_AND_METRICS.md) and [`benchmarks/baselines/smoke_live_gemini_flash.json`](benchmarks/baselines/smoke_live_gemini_flash.json) (**10/10 tasks [100%] passed** on live `gemini-3.5-flash-lite` across 5 domain packs: `26,846` prompt tokens, `2,619` completion tokens, `$0.002799` total USD cost).
-- **Core Security Controls**:
-  - Container execution sandbox with fail-closed local execution default.
-  - SSRF & DNS resolution validation blocking loopback and private networks.
-  - Deterministic AST pure file-read blocker in `run_python` preventing approval popup spam and sandbox escape.
-  - Mission scope and tenant namespace isolation separating internal framework self-healing from user workspace notes.
-  - Remote target anti-hallucination gate preventing swarms from claiming impossible live external server modifications.
-  - Multi-tenant SQLite database and filesystem isolation with case folding and reserved device name rejection.
-  - Constant-time API key verification (`hmac.compare_digest`) via `Authorization: Bearer` headers (rejecting query-string tokens).
-  - Cryptographically random human approval tokens (`secrets.token_urlsafe(32)`) with single-use consumption and argument binding.
-  - HMAC-SHA256 checkpoint verification requiring configured HMAC secrets.
+| The work is | Topology | Team size |
+| :-- | :-- | :-- |
+| One indivisible job | `single` | 1 |
+| Separate independent parts | `orchestrator` | 1-6 |
+| Stages that build on each other | `pipeline` | 2-6 |
+| One artifact, drafted and improved | `review_loop` | 2 |
+| Specialists who must exchange findings | `peer` | 3-6 |
 
----
+Roles are invented per task, in the field's own terms, and receive only the capabilities the plan gives them. To choose a topology yourself, use `-m` in the CLI, the selector in the UI, or `mode` in the API. A manual choice always wins.
+
+## Security
+
+Rules that must hold are enforced in code, not in prompts:
+
+- **Tenant isolation:** tenant identity comes from the API key, never from the request.
+- **Human approval:** high-risk tool calls need a single-use approval bound to the exact arguments.
+- **Taint tracking:** after a mission reads untrusted content, its high-risk tools need approval.
+- **Privilege ceiling:** planned and runtime-spawned roles can't exceed an allow-list.
+- **Code execution:** `run_python` runs in a container with no network, and is disabled if no container runtime exists.
+- **Web access:** `fetch_url` refuses private addresses and cloud metadata endpoints.
+- **Learned skills:** shared skills reach agents only after an admin approves them.
+
+Details, including corrections to earlier claims, are in [SECURITY_FINDINGS.md](SECURITY_FINDINGS.md).
+
+## Evidence
+
+No result yet shows that the swarm beats a single agent. [`benchmarks/compare.py`](benchmarks/compare.py) measures exactly that, on 30 paired tasks across 11 subject areas, and hasn't been run on a live model. The committed smoke baseline measures one worker agent, not a swarm; [benchmarks/README.md](benchmarks/README.md) explains the difference.
 
 ## Quickstart
 
+Requires Python 3.11 or later.
+
 ```bash
-# 1. Environment Setup
 python -m venv .venv
-.\.venv\Scripts\activate
-pip install -r requirements.txt
-pip install -r requirements-dev.txt
-cp .env.example .env
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.txt -r requirements-dev.txt
+cp .env.example .env             # add your LLM key
 
-# 2. Run Complete Pytest Suite (154 tests, 100% green)
-pytest
-
-# 3. Run Multi-Domain Smoke Benchmark Suite (10 tasks across 4 domain packs)
-python benchmarks/runner.py
-
-# 4. Launch Live Web Telemetry Dashboard (http://127.0.0.1:8000)
-python server.py
-
-# 5. Interactive Terminal Swarm CLI
-python agent.py -m peer -t client_alpha
+pytest                           # offline, uses a mock LLM
+python server.py                 # Web UI at http://127.0.0.1:8000
+python agent.py                  # interactive CLI
+python agent.py --plan -p "Plan a three-day trip to Lisbon"   # review the team first
 ```
 
-Read **[ARCHITECTURE.md](ARCHITECTURE.md)** for detailed module references, protocol definitions, and data models.
+## Project layout
+
+| Path | Contents |
+| :-- | :-- |
+| `core/` | Planner, topologies, swarm runtime, approvals, storage, security |
+| `swarm_tools/` | Tool implementations, one module per concern (`tools.py` is the registry) |
+| `experimental/` | Tested modules with no runtime path yet |
+| `benchmarks/` | Smoke suite and the swarm vs. single-agent comparison |
+| `config/` | Prompts, seed roles, capability bundles |
+| `static/` | Web UI |
+| `tests/` | Unit, integration, and end-to-end tests, all offline |
+
+## Further reading
+
+- [ARCHITECTURE.md](ARCHITECTURE.md): modules, data flow, invariants
+- [FUTURE_PLANS.md](FUTURE_PLANS.md): roadmap
+- [PROBLEMS_AND_METRICS.md](PROBLEMS_AND_METRICS.md): engineering log
+
+## License
+
+[MIT](LICENSE)
