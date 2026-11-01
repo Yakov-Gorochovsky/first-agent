@@ -107,7 +107,7 @@ def check_contains(output: str, expected_substr: str) -> bool:
 
 
 def check_regex(output: str, pattern: str) -> bool:
-    return bool(re.search(pattern, output or "", re.IGNORECASE))
+    return bool(re.search(pattern, output or "", re.IGNORECASE | re.DOTALL))
 
 
 def check_guardrail_rejection(output: str, expected_error: str) -> bool:

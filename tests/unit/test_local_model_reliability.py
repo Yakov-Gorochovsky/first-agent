@@ -125,3 +125,69 @@ def test_ollama_limits_come_from_config() -> None:
     source = Path("core/llm.py").read_text(encoding="utf-8")
     assert '"num_ctx": CONFIG.ollama_num_ctx' in source and '"num_predict": CONFIG.ollama_num_predict' in source
     assert "timeout=45.0" not in source and "timeout=120" not in source
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("reply", [
+    "The search failed. Let me proceed with the search again.",
+    "To convert, add 273.15.\n\nLet me calculate this.",
+    "I'll try a different approach.",
+])
+def test_reply_that_only_announces_more_work_gets_one_more_chance(tmp_path: Path, reply: str) -> None:
+    llm = ToolThenTextLLM(reply, "373 K")
+    assert _worker(llm, tmp_path).execute_task("Write", tenant_id="t") == "373 K"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("reply", ["The answer is 373 K.", "I will always love the sea, the poet wrote. It ends here."])
+def test_finished_reply_is_not_retried(tmp_path: Path, reply: str) -> None:
+    llm = ToolThenTextLLM(reply)
+    assert _worker(llm, tmp_path).execute_task("Write", tenant_id="t") == reply
+    assert len(llm.final_prompts) == 1
+
+
+@pytest.mark.integration
+def test_announcement_is_kept_when_the_retry_returns_nothing(tmp_path: Path) -> None:
+    llm = ToolThenTextLLM("Let me check.", "<tool_call>x</tool_call>")
+    assert _worker(llm, tmp_path).execute_task("Write", tenant_id="t") == "Let me check."
+
+
+@pytest.mark.unit
+def test_refused_run_python_points_to_the_calculator(monkeypatch: pytest.MonkeyPatch) -> None:
+    from swarm_tools.python_exec import run_python
+
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    monkeypatch.setattr(CONFIG, "python_sandbox_mode", "auto")
+    monkeypatch.setattr(CONFIG, "unsafe_allow_local_exec", False)
+    assert "calculator" in run_python("print(1.005 ** 48)")
+
+
+@pytest.mark.unit
+def test_regex_checker_spans_lines() -> None:
+    from benchmarks.runner import check_regex
+
+    assert check_regex("1. **Offer**\n2. Acceptance", "(?=.*offer)(?=.*acceptance)")
+
+
+@pytest.mark.integration
+def test_final_pipeline_stage_sees_the_request_and_must_deliver_in_full(monkeypatch: pytest.MonkeyPatch) -> None:
+    from core.factory import DynamicRoleSpec
+    from core.topology import PipelineTopology
+
+    prompts: List[str] = []
+
+    class StageWorker:
+        def execute_task(self, task_prompt: str, tenant_id: str) -> str:
+            prompts.append(task_prompt)
+            return f"stage {len(prompts)} output"
+
+    monkeypatch.setattr(PipelineTopology, "_build_worker", lambda self, role, bus: StageWorker())
+    roles = [DynamicRoleSpec(name, "Work", "Do it.") for name in ("drafter", "editor")]
+    budget = BudgetTracker(config=BudgetConfig())
+
+    result = PipelineTopology(tenant_id="t", roles=roles, llm=None, budget=budget).execute("Plan four weeks")
+
+    assert result == "stage 2 output"
+    assert "Original request" not in prompts[0]
+    assert "Plan four weeks" in prompts[1] and "stage 1 output" in prompts[1]
+    assert "complete deliverable" in prompts[1]

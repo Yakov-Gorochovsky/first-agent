@@ -9,6 +9,7 @@ Connects decoupled interfaces:
 """
 
 import json
+import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core.approval import ApprovalGate
@@ -33,8 +34,16 @@ SPECIALIST_GUIDANCE = (
 )
 FINAL_ANSWER_PROMPT = {
     "role": "user",
-    "content": "Tools are no longer available. Write your final answer now as plain text, using what you already have.",
+    "content": (
+        "Tools are no longer available. Write your final answer now as plain text, using what you already have. "
+        "Give the answer itself, not a description of what you would do next."
+    ),
 }
+# A reply that ends by announcing more work has not answered, however long it is.
+_UNFINISHED_ENDING_RE = re.compile(
+    r"(?:^|[.!?:]\s+|\n\s*)(?:let me|i will|i'll|i am going to|i'm going to)\b[^.!?\n]*[.!?:]?\s*$",
+    re.IGNORECASE,
+)
 
 
 COORDINATOR_NAMES = ("coordinator", "orchestrator")
@@ -208,9 +217,10 @@ class WorkerAgent:
 
     def _final_text(self, resp: LLMResponse, messages: List[Dict[str, Any]], observations: List[str]) -> str:
         answer = strip_tool_call_text(resp.content)
-        if answer or not observations:
+        needs_retry = _UNFINISHED_ENDING_RE.search(answer) if answer else observations
+        if not needs_retry:
             return answer
-        return self._retry_final_answer(messages) or "\n\n".join(observations)
+        return self._retry_final_answer(messages) or answer or "\n\n".join(observations)
 
     def _yield_summary(self, resp: LLMResponse) -> Optional[str]:
         """Return a summary if this turn called a tool that hands control back to the topology."""

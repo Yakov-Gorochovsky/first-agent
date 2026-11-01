@@ -147,7 +147,8 @@ def run_python(code: str) -> str:
             return (
                 "SecurityError: True container isolation (Docker/Podman) is unavailable on this host. "
                 "Subprocess execution failed closed to prevent host compromise. "
-                "To permit local execution for development, enable UNSAFE_ALLOW_LOCAL_EXEC=true in your .env."
+                "To permit local execution for development, enable UNSAFE_ALLOW_LOCAL_EXEC=true in your .env. "
+                "Don't work out numbers by hand: use the 'calculator' tool for arithmetic."
             )
 
     container_name = f"swarm-exec-{secrets.token_hex(8)}"

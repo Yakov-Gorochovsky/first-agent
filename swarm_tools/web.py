@@ -12,6 +12,12 @@ from core.config import CONFIG
 from core.resilience import RetryConfig, retry_with_backoff
 from swarm_tools.safety import _pinned_getaddrinfo, _resolve_and_validate_public_url
 
+if CONFIG.use_system_trust_store:
+    # Certificates are still verified, against the OS store, for hosts whose HTTPS is inspected by antivirus.
+    import truststore
+
+    truststore.inject_into_ssl()
+
 _DDG_LINK_RE = re.compile(r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', re.DOTALL)
 _DDG_SNIPPET_RE = re.compile(r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>', re.DOTALL)
 

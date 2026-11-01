@@ -89,6 +89,7 @@ class SwarmConfig:
     calc_max_exponent: int = 1000
     python_sandbox_mode: str = "auto"
     unsafe_allow_local_exec: bool = False
+    use_system_trust_store: bool = False
     secret_key: Optional[str] = None
 
     # Server settings
@@ -159,6 +160,7 @@ class SwarmConfig:
             calc_max_exponent=int(tools_cfg.get("calc_max_exponent", 1000)),
             python_sandbox_mode=os.getenv("PYTHON_SANDBOX_MODE", str(tools_cfg.get("python_sandbox_mode", "auto"))).lower(),
             unsafe_allow_local_exec=os.getenv("UNSAFE_ALLOW_LOCAL_EXEC", str(tools_cfg.get("unsafe_allow_local_exec", "false"))).lower() == "true",
+            use_system_trust_store=os.getenv("USE_SYSTEM_TRUST_STORE", "false").lower() == "true",
             secret_key=os.getenv("SECRET_KEY", os.getenv("CHECKPOINT_HMAC_SECRET", None)),
             host=os.getenv("HOST", str(server_cfg.get("host", "127.0.0.1"))),
             port=int(os.getenv("PORT", str(server_cfg.get("port", 8000)))),

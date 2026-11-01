@@ -190,6 +190,13 @@ class PipelineTopology(BaseTopology):
         for idx, role_spec in enumerate(self.roles, start=1):
             worker = self._build_worker(role_spec, active_bus)
             stage_prompt = f"Pipeline Stage {idx}/{len(self.roles)}. Process the following input:\n\n{current_input}"
+            if idx == len(self.roles):
+                stage_prompt = (
+                    f"Final Pipeline Stage {idx}/{len(self.roles)}. Original request:\n{prompt}\n\n"
+                    f"Work so far:\n{current_input}\n\n"
+                    "Your reply is what the user receives, so it must contain the complete deliverable "
+                    "itself, not a reference to a saved file."
+                )
             output = worker.execute_task(task_prompt=stage_prompt, tenant_id=self.tenant_id)
             current_input = output or f"[Stage {idx} completed with empty output]"
 
