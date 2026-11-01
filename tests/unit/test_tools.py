@@ -114,8 +114,10 @@ def test_notes_multi_tenant_isolation_and_restricted_files() -> None:
         (WORKSPACE_DIR / "outside.txt").unlink(missing_ok=True)
 
 
-def test_run_python_process_breakout_blocked():
-    """Verify FP-01: child interpreter / process spawning from within sandbox is blocked."""
+def test_run_python_process_breakout_blocked(monkeypatch):
+    """Verify FP-01: the local fallback blocks child processes. Inside a container they are harmless."""
+    monkeypatch.setattr(CONFIG, "python_sandbox_mode", "local")
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/docker")  # Local mode must win when Docker exists.
     orig = CONFIG.unsafe_allow_local_exec
     CONFIG.unsafe_allow_local_exec = True
     try:

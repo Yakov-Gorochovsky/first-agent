@@ -282,8 +282,11 @@ def eval_security_hardening() -> str:
     """Verify SSRF block, subprocess secret scrubbing, exponent DoS protection, and path traversal guardrails."""
     from tools import calculator, fetch_url, run_python, save_note
 
+    # These checks target the local fallback's guards, so Docker on the host must not bypass them.
     orig_allow = CONFIG.unsafe_allow_local_exec
+    orig_mode = CONFIG.python_sandbox_mode
     try:
+        CONFIG.python_sandbox_mode = "local"
         CONFIG.unsafe_allow_local_exec = True
         # 1. SSRF blocks loopback & cloud metadata IPs
         ssrf_local = fetch_url("http://127.0.0.1:8000/api/state")
@@ -359,6 +362,7 @@ def eval_security_hardening() -> str:
         assert "SOCK_BLOCKED" in py_sock_ssrf and "FAIL_SOCK_ALLOWED" not in py_sock_ssrf, py_sock_ssrf
     finally:
         CONFIG.unsafe_allow_local_exec = orig_allow
+        CONFIG.python_sandbox_mode = orig_mode
 
     return "SSRF blocked (fetch_url & run_python subprocess), env secrets scrubbed, exponent DoS & .env write blocked."
 
