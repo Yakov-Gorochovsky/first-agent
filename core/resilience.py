@@ -11,6 +11,7 @@ import json
 import logging
 import random
 import re
+import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -145,6 +146,85 @@ def _is_hopeless(exc: Exception) -> bool:
     return status in NON_RETRYABLE_STATUS
 
 
+RATE_LIMIT_MARKERS = (
+    "rate limit",
+    "ratelimit",
+    "resource_exhausted",
+    "quota exceeded",
+    "exceeded your current quota",
+    "too many requests",
+    "tpm limit",
+    "rpm limit",
+)
+# Quota ids and messages that mean the allowance for the whole day is gone (e.g. Gemini's
+# "GenerateRequestsPerDayPerProjectPerModel-FreeTier"). Retrying before the reset cannot succeed.
+DAILY_QUOTA_MARKERS = ("perday", "per day", "per_day", "daily quota", "daily limit")
+# A bare "429" also appears inside ordinary numbers ("14290 tokens"); only count it as a status.
+_STATUS_429_RE = re.compile(r"(?:error code|status(?: code)?|http)[\s:=]*429(?!\d)", re.IGNORECASE)
+
+
+def _error_text(exc: Exception) -> str:
+    body = getattr(exc, "body", None)
+    return f"{exc} {body}" if body else str(exc)
+
+
+def is_rate_limit_error(exc: Exception) -> bool:
+    """True when the provider refused the call for rate or quota reasons, not because the call was wrong."""
+    response = getattr(exc, "response", None)
+    status_code = getattr(exc, "status_code", None) or getattr(response, "status_code", None)
+    if status_code == 429 or getattr(exc, "code", None) in (429, "429", "rate_limit_exceeded"):
+        return True
+    text = _error_text(exc).lower()
+    return bool(_STATUS_429_RE.search(text)) or any(marker in text for marker in RATE_LIMIT_MARKERS)
+
+
+def is_daily_quota_error(exc: Exception) -> bool:
+    """True when a rate-limit error reports that the daily quota is used up."""
+    if not is_rate_limit_error(exc):
+        return False
+    text = _error_text(exc).lower()
+    return any(marker in text for marker in DAILY_QUOTA_MARKERS)
+
+
+class RequestPacer:
+    """Spaces calls at least `min_interval_sec` apart, so a free tier's per-minute limit is rarely hit."""
+
+    def __init__(
+        self,
+        min_interval_sec: float,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.min_interval_sec = max(0.0, float(min_interval_sec))
+        self._clock = clock
+        self._sleep = sleep
+        self._lock = threading.Lock()
+        self._next_allowed = 0.0
+
+    def wait(self) -> None:
+        if self.min_interval_sec <= 0:
+            return
+        with self._lock:
+            delay = self._next_allowed - self._clock()
+            if delay > 0:
+                self._sleep(delay)
+            self._next_allowed = self._clock() + self.min_interval_sec
+
+
+_PACERS: Dict[str, RequestPacer] = {}
+_PACERS_LOCK = threading.Lock()
+
+
+def shared_pacer(endpoint: str, min_interval_sec: float) -> RequestPacer:
+    """One pacer per endpoint for the whole process: a quota belongs to the key, not to one client object."""
+    with _PACERS_LOCK:
+        pacer = _PACERS.get(endpoint)
+        if pacer is None or pacer.min_interval_sec != max(0.0, float(min_interval_sec)):
+            pacer = RequestPacer(min_interval_sec)
+            _PACERS[endpoint] = pacer
+        return pacer
+
+
 def extract_retry_delay(exc: Exception, attempt: int = 1) -> Optional[float]:
     """
     Universally extract recommended retry delay (in seconds) from any rate limit error:
@@ -268,22 +348,7 @@ def extract_retry_delay(exc: Exception, attempt: int = 1) -> Optional[float]:
             pass
 
     # 4. Universal rate limit indicators without explicit timestamp (HTTP 429, Quota, TPM/RPM limit)
-    status_code = getattr(exc, "status_code", None) or getattr(response, "status_code", None)
-    err_code = getattr(exc, "code", None)
-    is_rate_limit = (
-        status_code == 429
-        or err_code in (429, "429", "rate_limit_exceeded")
-        or "429" in exc_str
-        or "rate limit" in exc_str.lower()
-        or "ratelimit" in exc_str.lower()
-        or "resource_exhausted" in exc_str.lower()
-        or "quota exceeded" in exc_str.lower()
-        or "too many requests" in exc_str.lower()
-        or "tpm limit" in exc_str.lower()
-        or "rpm limit" in exc_str.lower()
-    )
-
-    if is_rate_limit:
+    if is_rate_limit_error(exc):
         # Step-wise progressive cooldown for rate limits without explicit delay:
         # attempt 1: 5s, attempt 2: 12s, attempt 3: 25s, attempt 4+: 45s
         backoffs = [5.0, 12.0, 25.0, 45.0]
@@ -318,7 +383,11 @@ def retry_with_backoff(
         except retryable_exceptions as exc:
             last_exc = exc
             suggested_delay = extract_retry_delay(exc, attempt=attempt)
-            give_up = _is_hopeless(exc) or (suggested_delay or 0.0) > cfg.max_provider_wait
+            give_up = (
+                _is_hopeless(exc)
+                or is_daily_quota_error(exc)
+                or (suggested_delay or 0.0) > cfg.max_provider_wait
+            )
             if attempt == cfg.max_retries or give_up:
                 logger.error(
                     json.dumps({

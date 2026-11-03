@@ -52,6 +52,8 @@ class SwarmConfig:
     react_temperature: float = 0.1
     verbose: bool = True
     llm_timeout_sec: float = 600.0
+    llm_min_interval_sec: float = 0.0  # Space API calls apart; set for free tiers with per-minute limits.
+    llm_max_retries: int = 5
     ollama_num_ctx: int = 8192
     ollama_num_predict: int = 2048
 
@@ -133,6 +135,10 @@ class SwarmConfig:
             react_temperature=float(os.getenv("REACT_TEMPERATURE", str(llm_cfg.get("react_temperature", 0.1)))),
             verbose=os.getenv("VERBOSE", "true").lower() == "true",
             llm_timeout_sec=float(os.getenv("LLM_TIMEOUT_SEC", str(llm_cfg.get("timeout_sec", 600.0)))),
+            llm_min_interval_sec=float(
+                os.getenv("LLM_MIN_INTERVAL_SEC", str(llm_cfg.get("min_interval_sec", 0.0)))
+            ),
+            llm_max_retries=max(1, int(os.getenv("LLM_MAX_RETRIES", str(llm_cfg.get("max_retries", 5))))),
             ollama_num_ctx=int(os.getenv("OLLAMA_NUM_CTX", str(llm_cfg.get("ollama_num_ctx", 8192)))),
             ollama_num_predict=int(os.getenv("OLLAMA_NUM_PREDICT", str(llm_cfg.get("ollama_num_predict", 2048)))),
             max_swarm_steps=max_swarm_env,

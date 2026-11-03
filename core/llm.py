@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Protocol, cast
 from openai import BadRequestError, OpenAI
 
 from core.config import CONFIG
-from core.resilience import CircuitBreaker, RetryConfig, retry_with_backoff
+from core.resilience import CircuitBreaker, RetryConfig, retry_with_backoff, shared_pacer
 from core.telemetry import UsageLedger, calculate_call_cost
 
 _THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
@@ -134,13 +134,15 @@ class OpenAICompatibleProvider:
             base_url=base_url or CONFIG.api_base_url,
             api_key=api_key or CONFIG.api_key,
             timeout=CONFIG.llm_timeout_sec,
+            max_retries=0,  # retry_with_backoff owns retries, so each attempt goes through the pacer.
         )
+        self.pacer = shared_pacer(str(self.client.base_url), CONFIG.llm_min_interval_sec)
         self.model = model or CONFIG.model_name
         self.native_tools_supported: Optional[bool] = None
         self.fast_qwen_mode = CONFIG.fast_thinking if fast_qwen_mode is None else fast_qwen_mode
         self.ledger = ledger or UsageLedger()
         self.circuit_breaker = circuit_breaker or CircuitBreaker(name=f"llm_{self.model}")
-        self.retry_config = retry_config or RetryConfig(max_retries=5, initial_delay=1.0, backoff_factor=2.0)
+        self.retry_config = retry_config or RetryConfig(max_retries=CONFIG.llm_max_retries, initial_delay=1.0, backoff_factor=2.0)
         self.bus = bus
         self.tenant_id = "default"
 
@@ -157,6 +159,11 @@ class OpenAICompatibleProvider:
                 )
             except Exception:
                 pass
+
+    def _paced_create(self, **kwargs: Any) -> Any:
+        """One chat completion call, after waiting for the shared pacer."""
+        self.pacer.wait()
+        return self.client.chat.completions.create(**kwargs)
 
     def _is_local_ollama(self) -> bool:
         base = str(getattr(self.client, "base_url", "")).lower()
@@ -338,7 +345,7 @@ class OpenAICompatibleProvider:
         if tools and self.native_tools_supported is not False:
             try:
                 resp = retry_with_backoff(
-                    lambda: self.client.chat.completions.create(
+                    lambda: self._paced_create(
                         model=self.model,
                         messages=cast(Any, prepared_messages),
                         tools=cast(Any, tools),
@@ -412,7 +419,7 @@ class OpenAICompatibleProvider:
             )
 
         resp = retry_with_backoff(
-            lambda: self.client.chat.completions.create(
+            lambda: self._paced_create(
                 model=self.model,
                 messages=cast(Any, react_messages),
                 temperature=CONFIG.react_temperature,

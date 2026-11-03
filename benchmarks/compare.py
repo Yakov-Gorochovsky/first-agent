@@ -14,7 +14,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -33,10 +33,31 @@ from core.checkpoint import CheckpointStore
 from core.config import CONFIG
 from core.llm import LLMProvider, OpenAICompatibleProvider
 from core.mission import IntegratedMissionRunner
+from core.resilience import is_daily_quota_error, is_rate_limit_error
 from core.storage import SQLiteStorage
 
 DEFAULT_TASKS = PROJECT_ROOT / "benchmarks" / "eval_tasks.json"
 CONDITIONS = {"swarm": None, "single": "single"}
+MAX_RATE_LIMIT_RETRIES = 3  # Cool-downs for one mission before the run stops and waits for --resume.
+
+
+class RateLimitWatch:
+    """Remembers whether any call hit a rate limit. Mission code may swallow the error, but the result is spoiled."""
+
+    def __init__(self, inner: LLMProvider) -> None:
+        self.inner = inner
+        self.model = getattr(inner, "model", "unknown")
+        self.kind: Optional[str] = None  # None, "minute" or "daily"
+
+    def generate(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None, **kwargs: Any) -> Any:
+        try:
+            return self.inner.generate(messages=messages, tools=tools, **kwargs)
+        except Exception as exc:
+            if is_daily_quota_error(exc):
+                self.kind = "daily"
+            elif is_rate_limit_error(exc) and self.kind is None:
+                self.kind = "minute"
+            raise
 
 
 def task_passed(task: Dict[str, Any], output: str) -> bool:
@@ -101,7 +122,8 @@ def summarize(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 def run_task(task: Dict[str, Any], condition: str, provider: LLMProvider, workdir: Path) -> Dict[str, Any]:
     """Run one task under one condition. A crash is a failed result, not an aborted benchmark."""
-    metered = MeteredProvider(provider)
+    watch = RateLimitWatch(provider)
+    metered = MeteredProvider(watch)  # type: ignore[arg-type]
     tenant = f"eval_{task['id'].lower().replace('-', '_')}_{condition}"
     runner = IntegratedMissionRunner(
         llm=metered,
@@ -124,13 +146,14 @@ def run_task(task: Dict[str, Any], condition: str, provider: LLMProvider, workdi
         "task_id": task["id"],
         "pack": task["pack"],
         "condition": condition,
-        "passed": error is None and task_passed(task, output),
+        "passed": error is None and watch.kind is None and task_passed(task, output),
         "topology": topology,
         "seconds": round(time.perf_counter() - started, 2),
         "tokens": metered.prompt_tokens + metered.completion_tokens,
         "cost_usd": round(metered.cost_usd, 6),
-        "error": error,
+        "error": error if error or not watch.kind else f"RateLimited: {watch.kind} limit hit during the mission",
         "output": output[:1500],
+        "rate_limited": watch.kind,
     }
 
 
@@ -143,7 +166,12 @@ def load_completed_rows(path: Path) -> List[Dict[str, Any]]:
 
 
 def build_report(
-    rows: List[Dict[str, Any]], model_name: str, spend_cap_usd: float, stopped_early: bool, complete: bool
+    rows: List[Dict[str, Any]],
+    model_name: str,
+    spend_cap_usd: float,
+    stopped_early: bool,
+    complete: bool,
+    stopped_reason: Optional[str] = None,
 ) -> Dict[str, Any]:
     return {
         "git_commit_sha": get_git_commit_sha(),
@@ -153,6 +181,7 @@ def build_report(
         "spend_cap_usd": spend_cap_usd,
         "complete": complete,
         "stopped_early_at_spend_cap": stopped_early,
+        "stopped_reason": stopped_reason,
         "summary": summarize(rows),
         "results": rows,
     }
@@ -166,35 +195,87 @@ def write_report(report: Dict[str, Any], path: Path) -> None:
     temp_path.replace(path)
 
 
+def _run_mission_patiently(
+    task: Dict[str, Any],
+    condition: str,
+    provider: LLMProvider,
+    sleep: Callable[[float], None],
+    cooldown_sec: float,
+    quota_wait_sec: float,
+    wait_on_quota: bool,
+) -> Dict[str, Any]:
+    """Run one mission, rerunning it after rate limits. Returns a scored row, or one whose rate_limited is set."""
+    minute_retries = 0
+    wasted_usd = 0.0
+    while True:
+        with tempfile.TemporaryDirectory(prefix="swarm-eval-") as workdir:
+            row = run_task(task, condition, provider, Path(workdir))
+        kind = row.get("rate_limited")
+        if kind is None:
+            # Spend on discarded attempts is still real spend, so it counts against --spend-cap.
+            return {**row, "cost_usd": round(row["cost_usd"] + wasted_usd, 6)}
+        wasted_usd += row["cost_usd"]
+        row = {**row, "cost_usd": round(wasted_usd, 6)}
+        if kind == "daily":
+            if not wait_on_quota:
+                return row
+            print(f"[{task['id']}] {condition}: daily quota used up, waiting {quota_wait_sec:.0f}s", flush=True)
+            sleep(quota_wait_sec)
+            continue
+        if minute_retries >= MAX_RATE_LIMIT_RETRIES:
+            return row
+        minute_retries += 1
+        print(f"[{task['id']}] {condition}: rate limited, cooling down {cooldown_sec:.0f}s", flush=True)
+        sleep(cooldown_sec)
+
+
 def run_comparison(
     tasks: List[Dict[str, Any]],
     provider: LLMProvider,
     spend_cap_usd: float,
     prior_rows: Sequence[Dict[str, Any]] = (),
     out: Optional[Path] = None,
+    sleep: Callable[[float], None] = time.sleep,
+    cooldown_sec: float = 300.0,
+    quota_wait_sec: float = 3600.0,
+    wait_on_quota: bool = False,
 ) -> Dict[str, Any]:
-    """Run every task and condition not already in prior_rows, saving to out after each mission."""
+    """Run every task and condition not already in prior_rows, saving to out after each mission.
+
+    A rate-limited mission is never scored: it is rerun after a cool-down, and if the limit persists
+    (or the daily quota is gone) the run stops so `--resume` can pick it up later.
+    """
     rows = list(prior_rows)
     done = {(row["task_id"], row["condition"]) for row in rows}
     model_name = getattr(provider, "model", "unknown")
     spent = sum(row["cost_usd"] for row in rows)
-    stopped_early = False
+    stopped_reason: Optional[str] = None
     for task in tasks:
         if spent >= spend_cap_usd:
-            stopped_early = True
+            stopped_reason = "spend_cap"
             break
         for condition in CONDITIONS:
             if (task["id"], condition) in done:
                 continue
-            with tempfile.TemporaryDirectory(prefix="swarm-eval-") as workdir:
-                row = run_task(task, condition, provider, Path(workdir))
+            row = _run_mission_patiently(
+                task, condition, provider, sleep, cooldown_sec, quota_wait_sec, wait_on_quota
+            )
+            if row.get("rate_limited"):
+                spent += row["cost_usd"]
+                stopped_reason = "daily_quota" if row["rate_limited"] == "daily" else "rate_limited"
+                print(f"[{task['id']}] {condition}: stopping ({stopped_reason}); rerun with --resume later", flush=True)
+                break
             rows = [*rows, row]
             spent += row["cost_usd"]
             verdict = "PASS" if row["passed"] else "FAIL"
             print(f"[{task['id']}] {condition:<6} {verdict} topology={row['topology']} ${row['cost_usd']:.4f}", flush=True)
             if out:
-                write_report(build_report(rows, model_name, spend_cap_usd, stopped_early, False), out)
-    report = build_report(rows, model_name, spend_cap_usd, stopped_early, not stopped_early)
+                write_report(build_report(rows, model_name, spend_cap_usd, False, False), out)
+        if stopped_reason:
+            break
+    report = build_report(
+        rows, model_name, spend_cap_usd, stopped_reason == "spend_cap", stopped_reason is None, stopped_reason
+    )
     if out:
         write_report(report, out)
     return report
@@ -207,6 +288,15 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser.add_argument("--spend-cap", type=float, default=2.0, help="Stop starting new tasks past this USD total.")
     parser.add_argument("--out", type=Path, help="Write the JSON report here, updated after every mission.")
     parser.add_argument("--resume", action="store_true", help="Keep finished missions from --out and run the rest.")
+    parser.add_argument(
+        "--cooldown", type=float, default=300.0, help="Seconds to wait before rerunning a rate-limited mission."
+    )
+    parser.add_argument(
+        "--wait-on-quota",
+        action="store_true",
+        help="When the daily quota runs out, wait and retry instead of stopping (unattended runs).",
+    )
+    parser.add_argument("--quota-wait", type=float, default=3600.0, help="Seconds between daily-quota retries.")
     args = parser.parse_args(argv)
     if args.resume and not args.out:
         parser.error("--resume needs --out")
@@ -214,7 +304,16 @@ def main(argv: Optional[List[str]] = None) -> None:
     tasks = json.loads(args.tasks.read_text(encoding="utf-8"))
     selected = tasks[: args.limit] if args.limit else tasks
     prior_rows = load_completed_rows(args.out) if args.resume else []
-    report = run_comparison(selected, OpenAICompatibleProvider(), args.spend_cap, prior_rows, args.out)
+    report = run_comparison(
+        selected,
+        OpenAICompatibleProvider(),
+        args.spend_cap,
+        prior_rows,
+        args.out,
+        cooldown_sec=args.cooldown,
+        quota_wait_sec=args.quota_wait,
+        wait_on_quota=args.wait_on_quota,
+    )
     print(json.dumps(report["summary"], indent=2))
     if args.out:
         print(f"Report saved to {args.out}")
