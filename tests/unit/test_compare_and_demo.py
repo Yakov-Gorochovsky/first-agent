@@ -156,3 +156,11 @@ def test_resume_reruns_crashed_missions(tmp_path):
 
     assert compare.load_completed_rows(out) == rows[:1]
     assert compare.load_completed_rows(tmp_path / "missing.json") == []
+
+
+@pytest.mark.unit
+def test_big_o_checker_accepts_latex_and_rejects_wrong_answers() -> None:
+    task = next(t for t in json.loads(DEFAULT_TASKS.read_text(encoding="utf-8")) if t["id"] == "EV-24")
+    assert task_passed(task, r"The time complexity is $O(\log n)$.")
+    assert task_passed(task, "O(log n)")
+    assert not task_passed(task, "O(n log n)")
