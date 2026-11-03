@@ -16,8 +16,7 @@ The main goal after proving the swarm works is that it **gets better with use**,
 | :-- | :-- | :-- | :-- |
 | 1 | **Green CI on Linux.** Confirm tests, lint, and types pass on Python 3.11 and 3.12. | Next | The GitHub Actions run passes on `main`. |
 | 2 | **Reliable live runs.** Add a real fallback to another model or provider when one is out of quota: nothing passes a `ModelPolicyRouter` into the factory today, and the planner strips `model_policy`, so the existing fallback chain can't run. | Next | A mission survives a forced 429 on its primary model. |
-| 3 | **Live swarm vs. single-agent evaluation.** Run `benchmarks/compare.py` and commit the report. | Planned | A report with discordant pairs and cost per success is committed, whatever it shows. |
-| 4 | **Tune the planner against the results.** Check whether topology choice varies sensibly by task, and whether the planner keeps producing the same few roles. | Planned | Selection is reviewed on the evaluation set, and the prompt changes are re-measured. |
+| 4 | **Tune the planner against the results.** The first live evaluation ([report](benchmarks/reports/compare_gemini_flash_lite.json), `gemini-3.5-flash-lite`) passed 30/30 for both swarm and single agent with no discordant pairs, and the planner chose `single` for 28 of 30 tasks. The set is too easy to separate the two: add harder multi-part tasks where a team should help, then check whether topology choice varies sensibly and whether the planner keeps producing the same few roles. | Next | Selection is reviewed on a harder evaluation set, and the prompt changes are re-measured. |
 | 5 | **Recorded demo.** A short recording of one live mission for the README. | Planned | Linked from the README. |
 
 ## 2. Learn from results
